@@ -1,0 +1,77 @@
+schema = "bloom.petal.local-app.v2"
+name = "polymarket"
+
+[source]
+kind = "github"
+repository = "bloom-directory/bloom-petal-polymarket"
+
+[build]
+command = "scripts/build.sh"
+outputs = ["app/polymarket"]
+
+[consent]
+summary = "Expose Polymarket market reads, onboarding, account views, funding drafts, and trade draft/post/cancel flows as a v2 Petal app."
+
+[caps]
+allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read", "bloom:vfs.write"]
+
+[[net.allow]]
+host = "gamma-api.polymarket.com"
+methods = ["get"]
+paths = ["/markets", "/markets/slug/*", "/public-search"]
+
+[[net.allow]]
+host = "data-api.polymarket.com"
+methods = ["get"]
+paths = ["/positions", "/trades", "/activity"]
+
+[[net.allow]]
+host = "clob.polymarket.com"
+methods = ["get"]
+paths = [
+  "/auth/derive-api-key",
+  "/balance-allowance",
+  "/balance-allowance/update",
+  "/book",
+  "/data/orders",
+  "/midpoint",
+  "/orders",
+  "/price",
+  "/spread",
+]
+
+[[net.allow]]
+host = "clob.polymarket.com"
+methods = ["post"]
+paths = [
+  "/auth/api-key",
+  "/auth/builder-api-key",
+  "/balance-allowance/update",
+  "/order",
+]
+
+[[net.allow]]
+host = "clob.polymarket.com"
+methods = ["delete"]
+paths = ["/order"]
+
+[[net.allow]]
+host = "polymarket.com"
+methods = ["get"]
+paths = ["/api/geoblock"]
+
+[[net.allow]]
+host = "relayer-v2.polymarket.com"
+methods = ["get", "post"]
+paths = ["/nonce", "/submit", "/transaction"]
+
+[sign]
+allowed_intents = [
+  "polymarket.clob_auth",
+  "polymarket.order.poly1271",
+  "polymarket.relayer_batch",
+]
+
+[store]
+namespaces = ["state"]
+secret_namespaces = ["secrets"]

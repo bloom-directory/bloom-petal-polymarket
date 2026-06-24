@@ -1,0 +1,10 @@
+# Polymarket v2 Petal
+
+- Keep this package on `bloom:route@0.1.0`; do not add legacy or compat route
+  artifacts.
+- The route component owns the Polymarket behavior. It may use v2 HTTP, store,
+  signing, and mediated wallet/chain VFS imports, but it must not delegate to
+  the legacy native `polymarket/...` VFS handler.
+- After changing `route/src/lib.rs` or the route list, run
+  `scripts/build.sh` to regenerate local route
+  artifacts for validation. Do not commit generated `.wasm` artifacts.
