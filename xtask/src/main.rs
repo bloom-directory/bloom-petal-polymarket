@@ -58,6 +58,11 @@ fn run() -> Result<(), String> {
                 .arg("--target-dir")
                 .arg(&target_dir)
                 .env("BLOOM_ROUTE_RS", source)
+                .env("BLOOM_ROUTE_PATH", route_path)
+                .env(
+                    "BLOOM_ROUTE_CANONICAL_PATH",
+                    canonical_route_path(route_path),
+                )
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit()),
         )?;
@@ -126,6 +131,12 @@ fn discover_routes_at(
         if path.extension() != Some(OsStr::new("rs")) {
             continue;
         }
+        if path.file_name() == Some(OsStr::new("$list.rs")) {
+            return Err(format!(
+                "{} is no longer supported; use $index.rs for directory routes",
+                path.display()
+            ));
+        }
         let route_path = route_path(root, &path)?;
         if routes.insert(route_path.clone(), path.clone()).is_some() {
             return Err(format!("duplicate route path {route_path}"));
@@ -163,6 +174,16 @@ fn route_id(route_path: &str) -> String {
             _ => '_',
         })
         .collect()
+}
+
+fn canonical_route_path(route_path: &str) -> String {
+    match route_path {
+        "$index" => String::new(),
+        _ => route_path
+            .strip_suffix("/$index")
+            .unwrap_or(route_path)
+            .to_string(),
+    }
 }
 
 fn require_tool(tool: &str) -> Result<(), String> {

@@ -1,5 +1,5 @@
-crate::bloom_dir_component!("trade/[wallet]/receipts/[id]/$index", {
-    let mut out = crate::strings(&crate::RECEIPT_FILES);
-    out.extend(crate::strings(&crate::RECEIPT_WRITABLE_FILES));
+crate::bloom_dir_component!({
+    let mut out = crate::files(&crate::RECEIPT_FILES);
+    out.extend(crate::RECEIPT_WRITABLE_FILES.iter().map(|name| crate::writable(*name)));
     out
 });

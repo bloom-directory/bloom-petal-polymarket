@@ -1,12 +1,10 @@
 # Next Steps
 
-This branch establishes the route-file build system and starts the migration
-toward small, focused WASM components. All 48 Bloom route files now build
-independently and use focused route macros. Directory routes expose `list`
-directly through the same component used for lookup/metadata, so separate
-`$list.rs` source files are no longer needed. The old central dispatcher remains
-in `route/src/lib.rs` only as dead transitional code waiting to be deleted once
-shared helpers are split into modules.
+This branch establishes the route-file build system and moves the petal to
+small, focused WASM components. All 48 Bloom route files build independently and
+use focused route macros. Directory routes expose `list` directly through the
+same component used for lookup/metadata, so separate `$list.rs` source files are
+no longer needed.
 
 ## Current State
 
@@ -18,10 +16,17 @@ shared helpers are split into modules.
   route framework:
   - `bloom_dir_component!`
   - `bloom_fallible_dir_component!`
+  - `bloom_ctx_dir_component!`
   - `bloom_read_component!`
-- write-capable route files now use `bloom_write_component!`
-- no route files use the transitional `bloom_route_component!` compatibility
-  adapter anymore.
+- `bloom_write_component!`
+- `xtask` derives `BLOOM_ROUTE_PATH` and `BLOOM_ROUTE_CANONICAL_PATH` from each
+  source file, so route files no longer repeat their own path strings.
+- `$list.rs` sources are rejected by `xtask`; directory endpoints are `$index.rs`
+  files that implement both lookup/metadata and list exports.
+- The old central `lookup`/`list`/`read`/`write`/`path_kind` dispatcher has been
+  removed.
+- The route crate no longer depends on `crates/bloom-polymarket`; the helper
+  types and signing/order modules it needs are owned by `route/src`.
 
 ## Size Snapshot
 
@@ -41,17 +46,14 @@ After `scripts/build.sh`:
 
 ## Suggested Handoff Order
 
-1. Move shared framework helpers out of `route/src/lib.rs` into route-local
+1. Move shared framework helpers out of `route/src/lib.rs` into smaller
    modules, for example `route/src/framework.rs`, `route/src/http.rs`,
    `route/src/store.rs`, and route-domain modules.
-2. Split route-domain helpers into focused modules, for example account,
+2. Split the remaining route-domain helpers into focused modules, for example account,
    onboard, fund, trade reads, trade writes, relayer, and CLOB signing.
-3. Remove the now-unused `bloom_route_component!` compatibility macro.
-4. Remove the central
-   `lookup`, `list`, `read`, `write`, and `path_kind` dispatcher.
-5. Move the pieces currently imported from `crates/bloom-polymarket` into
-   route-local modules, then remove the path dependency.
-6. Re-run:
+3. Measure generated component sizes again after module splitting and identify
+   the largest remaining imports for each write-heavy route.
+4. Re-run:
 
 ```sh
 cargo test --manifest-path route/Cargo.toml

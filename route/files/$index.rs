@@ -1,1 +1,1 @@
-crate::bloom_dir_component!("$index", crate::strings(&crate::ROOT_DIRS));
+crate::bloom_dir_component!(crate::dir_names(&crate::ROOT_DIRS));

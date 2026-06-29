@@ -1,6 +1,5 @@
 crate::bloom_write_component!(
-    "trade/[wallet]/receipts/[id]/cancel",
-    |ctx: &crate::Ctx| {
+|ctx: &crate::Ctx| {
         let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
             return crate::route_invalid("missing wallet");
         };

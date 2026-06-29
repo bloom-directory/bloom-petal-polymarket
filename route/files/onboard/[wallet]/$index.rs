@@ -1,5 +1,5 @@
-crate::bloom_dir_component!("onboard/[wallet]/$index", {
-    let mut out = vec!["begin".to_string()];
-    out.extend(crate::strings(&crate::ONBOARD_FILES));
+crate::bloom_dir_component!({
+    let mut out = vec![crate::writable("begin")];
+    out.extend(crate::files(&crate::ONBOARD_FILES));
     out
 });

@@ -1,4 +1,5 @@
-crate::bloom_dir_component!(
-    "trade/[wallet]/$index",
-    vec!["new".into(), "drafts".into(), "receipts".into()]
-);
+crate::bloom_dir_component!(vec![
+    crate::writable("new"),
+    crate::dir("drafts"),
+    crate::dir("receipts"),
+]);

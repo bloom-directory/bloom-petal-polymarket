@@ -20,6 +20,16 @@ mod selected_route {
     include!(env!("BLOOM_ROUTE_RS"));
 }
 
+mod builder_creds;
+mod creds;
+mod eip712;
+mod order;
+mod order_store;
+mod signer;
+mod trade;
+mod types;
+mod wallet;
+
 #[cfg(not(test))]
 use selected_route::Route;
 
@@ -27,51 +37,22 @@ use selected_route::Route;
 export!(Route);
 
 #[macro_export]
-macro_rules! bloom_route_component {
-    ($route_path:literal) => {
-        pub struct Route;
-
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::route_metadata(&ctx, $route_path)
-            }
-
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::route_lookup(&ctx, $route_path)
-            }
-
-            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
-                $crate::route_list(&ctx, $route_path)
-            }
-
-            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
-                $crate::route_read(&ctx, $route_path)
-            }
-
-            fn write(ctx: $crate::Ctx, body: Vec<u8>) -> Result<(), $crate::RouteError> {
-                $crate::route_write(&ctx, &body, $route_path)
-            }
-        }
-    };
-}
-
-#[macro_export]
 macro_rules! bloom_dir_component {
-    ($route_path:literal, $children:expr) => {
+    ($children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
                 let children = $children;
-                $crate::framework_list(&ctx, $route_path, children)
+                $crate::framework_list(&ctx, children)
             }
 
             fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
@@ -87,21 +68,21 @@ macro_rules! bloom_dir_component {
 
 #[macro_export]
 macro_rules! bloom_fallible_dir_component {
-    ($route_path:literal, $children:expr) => {
+    ($children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
                 let children = $children;
-                $crate::framework_fallible_list(&ctx, $route_path, children)
+                $crate::framework_fallible_list(&ctx, children)
             }
 
             fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
@@ -117,21 +98,21 @@ macro_rules! bloom_fallible_dir_component {
 
 #[macro_export]
 macro_rules! bloom_ctx_dir_component {
-    ($route_path:literal, $children:expr) => {
+    ($children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
                 let children = $children;
-                $crate::framework_fallible_list(&ctx, $route_path, children(&ctx))
+                $crate::framework_fallible_list(&ctx, children(&ctx))
             }
 
             fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
@@ -147,16 +128,16 @@ macro_rules! bloom_ctx_dir_component {
 
 #[macro_export]
 macro_rules! bloom_read_component {
-    ($route_path:literal, $read:expr) => {
+    ($read:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::File)
+                $crate::framework_metadata(&ctx, $crate::RouteFileKind::File)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::File)
+                $crate::framework_lookup(&ctx, $crate::RouteFileKind::File)
             }
 
             fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -177,16 +158,16 @@ macro_rules! bloom_read_component {
 
 #[macro_export]
 macro_rules! bloom_write_component {
-    ($route_path:literal, $read:expr, $write:expr) => {
+    ($read:expr, $write:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::WritableFile)
+                $crate::framework_metadata(&ctx, $crate::RouteFileKind::WritableFile)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::WritableFile)
+                $crate::framework_lookup(&ctx, $crate::RouteFileKind::WritableFile)
             }
 
             fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -215,6 +196,59 @@ fn component_getrandom(buf: &mut [u8]) -> Result<(), getrandom::Error> {
 
 getrandom::register_custom_getrandom!(component_getrandom);
 
+pub use builder_creds::{BuilderCredentialStore, BuilderCredentials};
+pub use creds::CredentialStore;
+pub use eip712::{deposit_wallet_implementation, derive_deposit_wallet_address};
+pub use order_store::{DraftStatus, OrderDraft, OrderLock, OrderReceipt, OrderStore};
+pub use signer::KeystoreSigner;
+pub use types::{Credentials, Market, OrderBook, Position, Side, TokenMarket, Trade};
+
+pub const POLYGON: u64 = 137;
+pub const AMOY: u64 = 80_002;
+
+#[derive(Debug, thiserror::Error)]
+pub enum PolymarketError {
+    #[error("url: {0}")]
+    Url(#[from] url::ParseError),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("polymarket api error (status {status}): {body}")]
+    Api { status: u16, body: String },
+    #[error("signing: {0}")]
+    Signing(String),
+    #[error("invalid: {0}")]
+    Invalid(String),
+}
+
+impl PolymarketError {
+    pub fn signing(s: impl Into<String>) -> Self {
+        PolymarketError::Signing(s.into())
+    }
+
+    pub fn invalid(s: impl Into<String>) -> Self {
+        PolymarketError::Invalid(s.into())
+    }
+}
+
+pub type Result<T, E = PolymarketError> = std::result::Result<T, E>;
+
+pub fn validate_wallet_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+    {
+        return Err(PolymarketError::invalid(format!(
+            "invalid wallet name '{name}'"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RouteFileKind {
     Dir,
@@ -222,12 +256,22 @@ enum RouteFileKind {
     WritableFile,
 }
 
-fn framework_metadata(
-    ctx: &Ctx,
-    route_path: &str,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RouteChild {
+    name: String,
     kind: RouteFileKind,
-) -> Result<RouteMeta, RouteError> {
-    let relative = route_relative(ctx, route_path);
+}
+
+fn current_route_path() -> &'static str {
+    env!("BLOOM_ROUTE_PATH")
+}
+
+fn current_route_canonical_path() -> &'static str {
+    env!("BLOOM_ROUTE_CANONICAL_PATH")
+}
+
+fn framework_metadata(ctx: &Ctx, kind: RouteFileKind) -> Result<RouteMeta, RouteError> {
+    let relative = route_relative(ctx);
     let writable = kind == RouteFileKind::WritableFile;
     Ok(RouteMeta {
         kind: match kind {
@@ -242,7 +286,7 @@ fn framework_metadata(
         cache_ttl_ms: route_cache_ttl_ms(&relative),
         side_effecting_read: false,
         write_async: false,
-        description: Some(format!("Polymarket route {route_path}")),
+        description: Some(format!("Polymarket route {}", current_route_path())),
         consent_summary: None,
         required_caps: route_required_caps(&relative, writable),
         sign_intent: None,
@@ -250,39 +294,25 @@ fn framework_metadata(
     })
 }
 
-fn framework_lookup(ctx: &Ctx, route_path: &str, kind: RouteFileKind) -> Result<Entry, RouteError> {
-    let relative = route_relative(ctx, route_path);
-    let kind = match kind {
-        RouteFileKind::Dir => DispatchEntryKind::Dir,
-        RouteFileKind::File => DispatchEntryKind::File,
-        RouteFileKind::WritableFile => DispatchEntryKind::WritableFile,
-    };
-    Ok(route_entry(entry(entry_name(&relative), kind)))
+fn framework_lookup(ctx: &Ctx, kind: RouteFileKind) -> Result<Entry, RouteError> {
+    let relative = route_relative(ctx);
+    Ok(framework_entry(entry_name(&relative), kind))
 }
 
-fn framework_list(
-    ctx: &Ctx,
-    route_path: &str,
-    children: Vec<String>,
-) -> Result<Vec<Entry>, RouteError> {
-    let relative = route_relative(ctx, route_path);
+fn framework_list(_ctx: &Ctx, children: Vec<RouteChild>) -> Result<Vec<Entry>, RouteError> {
     Ok(children
         .into_iter()
-        .filter(|name| is_safe_segment(name))
-        .filter_map(|name| {
-            let child = child_relative(&relative, &name);
-            path_kind(&child).map(|kind| route_entry(entry(&name, kind)))
-        })
+        .filter(|child| is_safe_segment(&child.name))
+        .map(|child| framework_entry(&child.name, child.kind))
         .collect())
 }
 
 fn framework_fallible_list(
     ctx: &Ctx,
-    route_path: &str,
-    children: Result<Vec<String>, DispatchResponse>,
+    children: Result<Vec<RouteChild>, DispatchResponse>,
 ) -> Result<Vec<Entry>, RouteError> {
     match children {
-        Ok(children) => framework_list(ctx, route_path, children),
+        Ok(children) => framework_list(ctx, children),
         Err(DispatchResponse::Error { code, message }) => Err(route_error(code, message)),
         Err(_) => Err(RouteError::Backend(
             "list returned non-list response".into(),
@@ -294,7 +324,9 @@ fn framework_read(resp: DispatchResponse) -> Result<Vec<u8>, RouteError> {
     match resp {
         DispatchResponse::Read(bytes) => Ok(bytes),
         DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend("read returned non-read response".into())),
+        _ => Err(RouteError::Backend(
+            "read returned non-read response".into(),
+        )),
     }
 }
 
@@ -302,26 +334,17 @@ fn framework_write(resp: DispatchResponse) -> Result<(), RouteError> {
     match resp {
         DispatchResponse::Write => Ok(()),
         DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend("write returned non-write response".into())),
+        _ => Err(RouteError::Backend(
+            "write returned non-write response".into(),
+        )),
     }
 }
 
-fn route_relative(ctx: &Ctx, route_path: &str) -> String {
+fn route_relative(ctx: &Ctx) -> String {
     if ctx.path.is_empty() {
-        return template_relative(route_path);
+        return current_route_canonical_path().to_string();
     }
     metadata_path(&ctx.path)
-}
-
-fn template_relative(route_path: &str) -> String {
-    match route_path {
-        "$index" | "$list" => String::new(),
-        _ => route_path
-            .strip_suffix("/$index")
-            .or_else(|| route_path.strip_suffix("/$list"))
-            .unwrap_or(route_path)
-            .to_string(),
-    }
 }
 
 fn route_param<'a>(ctx: &'a Ctx, name: &str) -> Option<&'a str> {
@@ -342,81 +365,66 @@ fn route_invalid(message: impl Into<String>) -> DispatchResponse {
     error(-3, message)
 }
 
+fn dir(name: impl Into<String>) -> RouteChild {
+    RouteChild {
+        name: name.into(),
+        kind: RouteFileKind::Dir,
+    }
+}
+
+fn file(name: impl Into<String>) -> RouteChild {
+    RouteChild {
+        name: name.into(),
+        kind: RouteFileKind::File,
+    }
+}
+
+fn writable(name: impl Into<String>) -> RouteChild {
+    RouteChild {
+        name: name.into(),
+        kind: RouteFileKind::WritableFile,
+    }
+}
+
+fn dirs(names: Vec<String>) -> Vec<RouteChild> {
+    names.into_iter().map(dir).collect()
+}
+
+fn dir_names(names: &[&str]) -> Vec<RouteChild> {
+    names.iter().map(|name| dir(*name)).collect()
+}
+
+fn files(names: &[&str]) -> Vec<RouteChild> {
+    names.iter().map(|name| file(*name)).collect()
+}
+
+fn result_dirs(
+    names: Result<Vec<String>, DispatchResponse>,
+) -> Result<Vec<RouteChild>, DispatchResponse> {
+    names.map(dirs)
+}
+
+fn framework_entry(name: &str, kind: RouteFileKind) -> Entry {
+    Entry {
+        name: name.into(),
+        kind: match kind {
+            RouteFileKind::Dir => EntryKind::Dir,
+            RouteFileKind::File | RouteFileKind::WritableFile => EntryKind::File,
+        },
+        mode: match kind {
+            RouteFileKind::Dir => 0o755,
+            RouteFileKind::File => 0o444,
+            RouteFileKind::WritableFile => 0o644,
+        },
+        size: Some(0),
+        link_target: None,
+    }
+}
+
 fn metadata_path(path: &str) -> String {
     match path {
-        "$index" | "$list" => String::new(),
-        _ => path
-            .strip_suffix("/$index")
-            .or_else(|| path.strip_suffix("/$list"))
-            .unwrap_or(path)
-            .to_string(),
-    }
-}
-
-fn route_metadata(ctx: &Ctx, route_path: &str) -> Result<RouteMeta, RouteError> {
-    let relative = metadata_path(&ctx.path);
-    let kind = match path_kind(&relative) {
-        Some(DispatchEntryKind::Dir) => EntryKind::Dir,
-        Some(DispatchEntryKind::File | DispatchEntryKind::WritableFile) => EntryKind::File,
-        None => return Err(RouteError::NotFound(ctx.path.clone())),
-    };
-    let writable = matches!(path_kind(&relative), Some(DispatchEntryKind::WritableFile));
-    Ok(RouteMeta {
-        kind,
-        mode: match kind {
-            EntryKind::Dir => 0o755,
-            EntryKind::File if writable => 0o644,
-            EntryKind::File => 0o444,
-            EntryKind::Symlink => 0o777,
-        },
-        cache_ttl_ms: route_cache_ttl_ms(&relative),
-        side_effecting_read: false,
-        write_async: false,
-        description: Some(format!("Polymarket route {route_path}")),
-        consent_summary: None,
-        required_caps: route_required_caps(&relative, writable),
-        sign_intent: None,
-        executable: false,
-    })
-}
-
-fn route_lookup(ctx: &Ctx, _route_path: &str) -> Result<Entry, RouteError> {
-    match lookup(&ctx.path) {
-        DispatchResponse::Lookup(entry) => Ok(route_entry(entry)),
-        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend(
-            "lookup returned non-lookup response".into(),
-        )),
-    }
-}
-
-fn route_list(ctx: &Ctx, _route_path: &str) -> Result<Vec<Entry>, RouteError> {
-    match list(&ctx.path) {
-        DispatchResponse::List(entries) => Ok(entries.into_iter().map(route_entry).collect()),
-        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend(
-            "list returned non-list response".into(),
-        )),
-    }
-}
-
-fn route_read(ctx: &Ctx, _route_path: &str) -> Result<Vec<u8>, RouteError> {
-    match read(&ctx.path) {
-        DispatchResponse::Read(bytes) => Ok(bytes),
-        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend(
-            "read returned non-read response".into(),
-        )),
-    }
-}
-
-fn route_write(ctx: &Ctx, body: &[u8], _route_path: &str) -> Result<(), RouteError> {
-    match write(&ctx.path, body) {
-        DispatchResponse::Write => Ok(()),
-        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-        _ => Err(RouteError::Backend(
-            "write returned non-write response".into(),
-        )),
+        "$index" => String::new(),
+        _ => path.strip_suffix("/$index").unwrap_or(path).to_string(),
     }
 }
 
@@ -451,19 +459,6 @@ fn route_required_caps(path: &str, writable: bool) -> Vec<String> {
     caps
 }
 
-fn route_entry(entry: DispatchEntry) -> Entry {
-    Entry {
-        name: entry.name,
-        kind: match entry.kind {
-            DispatchEntryKind::Dir => EntryKind::Dir,
-            DispatchEntryKind::File | DispatchEntryKind::WritableFile => EntryKind::File,
-        },
-        mode: entry.mode,
-        size: Some(entry.size),
-        link_target: entry.link_target,
-    }
-}
-
 fn route_error(code: i32, message: String) -> RouteError {
     match code {
         -1 => RouteError::NotFound(message),
@@ -485,42 +480,7 @@ mod bloom_petal_sdk {
     const SECRET_NS: &str = "secrets";
 
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum DispatchEntryKind {
-        Dir,
-        File,
-        WritableFile,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct DispatchEntry {
-        pub name: String,
-        pub kind: DispatchEntryKind,
-        pub size: u64,
-        pub mode: u32,
-        pub ttl_hint_ms: Option<u64>,
-        pub link_target: Option<String>,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum DispatchOp {
-        Lookup,
-        List,
-        Read,
-        Write,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct DispatchRequest {
-        pub op: DispatchOp,
-        pub path: String,
-        pub body: Vec<u8>,
-        pub ctx: Vec<(String, String)>,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum DispatchResponse {
-        Lookup(DispatchEntry),
-        List(Vec<DispatchEntry>),
         Read(Vec<u8>),
         Write,
         Error { code: i32, message: String },
@@ -704,29 +664,20 @@ mod bloom_petal_sdk {
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use alloy::primitives::{Address, B256, U256};
-use bloom_petal_sdk::{
-    DispatchEntry, DispatchEntryKind, DispatchOp, DispatchRequest, DispatchResponse, HostStatus,
-    HttpRequest, SdkError, SignRequest,
-};
-use bloom_polymarket::eip712::{
+use crate::eip712::{
     Batch, CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE_V2, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
     NEG_RISK_EXCHANGE_V2, PUSD, batch_signing_hash, clob_auth_signing_hash,
-    derive_deposit_wallet_address,
 };
-use bloom_polymarket::order::{
+use crate::order::{
     LimitQuote, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order, format_micro,
     parse_micro, poly1271_digest, wrap_poly1271_signature,
 };
-use bloom_polymarket::signer::{
-    POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_TIMESTAMP, l2_headers,
-};
-use bloom_polymarket::trade as shared_trade;
-use bloom_polymarket::types::{Market, Side};
-use bloom_polymarket::wallet::{V2_APPROVAL_LABELS, v2_approval_calls};
-use bloom_polymarket::{
-    BuilderCredentials, Credentials, OrderBook, POLYGON, Position, Trade, validate_wallet_name,
-};
+use crate::signer::{POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_TIMESTAMP, l2_headers};
+use crate::trade as shared_trade;
+use crate::types::BookLevel;
+use crate::wallet::{V2_APPROVAL_LABELS, v2_approval_calls};
+use alloy::primitives::{Address, B256, U256};
+use bloom_petal_sdk::{DispatchResponse, HostStatus, HttpRequest, SdkError, SignRequest};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -791,133 +742,6 @@ const TRADE_POST_HINT: &str = r#"write {"post":true} to sign and post a revalida
 "#;
 const TRADE_CANCEL_HINT: &str = r#"write {"cancel":true} to cancel the posted CLOB order recorded by this receipt. Cancelling uses CLOB DELETE /order and updates the private receipt/draft status.
 "#;
-
-pub fn handle(req: DispatchRequest) -> DispatchResponse {
-    let relative = match validate_relative_path(&req.path) {
-        Ok(path) => path,
-        Err(message) => return error(-3, message),
-    };
-    match req.op {
-        DispatchOp::Lookup => lookup(relative),
-        DispatchOp::List => list(relative),
-        DispatchOp::Read => read(relative),
-        DispatchOp::Write => write(relative, &req.body),
-    }
-}
-
-fn lookup(relative: &str) -> DispatchResponse {
-    match path_kind(relative) {
-        Some(kind) => DispatchResponse::Lookup(entry(entry_name(relative), kind)),
-        None => error(-1, "not found"),
-    }
-}
-
-fn list(relative: &str) -> DispatchResponse {
-    if path_kind(relative) != Some(DispatchEntryKind::Dir) {
-        return error(-3, "not a directory");
-    }
-    let segs = split(relative);
-    let names = match (segs.first().copied(), segs.len()) {
-        (None, 0) => ROOT_DIRS.iter().map(|s| (*s).to_string()).collect(),
-        (Some("markets"), 1) => match list_market_slugs() {
-            Ok(slugs) => slugs,
-            Err(resp) => return resp,
-        },
-        (Some("markets"), 2) => strings(&MARKET_FILES),
-        (Some("meta"), 1) => strings(&META_FILES),
-        (Some("positions"), 1) => vfs_wallets_or_store(""),
-        (Some("positions"), 2) => strings(&POSITION_FILES),
-        (Some("onboard"), 1) => vfs_wallets_or_store("onboard/"),
-        (Some("onboard"), 2) => {
-            let mut out = vec!["begin".to_string()];
-            out.extend(strings(&ONBOARD_FILES));
-            out
-        }
-        (Some("account"), 1) => vfs_wallets_or_store("creds/"),
-        (Some("account"), 2) => strings(&ACCOUNT_FILES),
-        (Some("fund"), 1) => vfs_wallets_or_store("fund/"),
-        (Some("fund"), 2) => {
-            let mut out = vec!["new".to_string()];
-            out.extend(store_ids(&format!("fund/{}/requests/", segs[1]), ".json"));
-            out
-        }
-        (Some("fund"), 3) if segs[2] != "new" => strings(&FUND_FILES),
-        (Some("trade"), 1) => vfs_wallets_or_store("trade/"),
-        (Some("trade"), 2) => vec!["new".into(), "drafts".into(), "receipts".into()],
-        (Some("trade"), 3) if segs[2] == "drafts" => {
-            store_ids(&format!("trade/{}/drafts/", segs[1]), "/order.json")
-        }
-        (Some("trade"), 3) if segs[2] == "receipts" => {
-            store_ids(&format!("trade/{}/receipts/", segs[1]), "/receipt.json")
-        }
-        (Some("trade"), 4) if segs[2] == "drafts" => {
-            let mut out = strings(&DRAFT_FILES);
-            out.extend(strings(&DRAFT_WRITABLE_FILES));
-            out
-        }
-        (Some("trade"), 4) if segs[2] == "receipts" => {
-            let mut out = strings(&RECEIPT_FILES);
-            out.extend(strings(&RECEIPT_WRITABLE_FILES));
-            out
-        }
-        _ => Vec::new(),
-    };
-    DispatchResponse::List(
-        names
-            .into_iter()
-            .filter(|name| is_safe_segment(name))
-            .filter_map(|name| {
-                let child = child_relative(relative, &name);
-                path_kind(&child).map(|kind| entry(&name, kind))
-            })
-            .collect(),
-    )
-}
-
-fn read(relative: &str) -> DispatchResponse {
-    if !matches!(
-        path_kind(relative),
-        Some(DispatchEntryKind::File | DispatchEntryKind::WritableFile)
-    ) {
-        return error(-3, "not a file");
-    }
-    let segs = split(relative);
-    match (segs.first().copied(), segs.len()) {
-        (Some("markets"), 3) => read_market(segs[1], segs[2]),
-        (Some("meta"), 2) => read_meta(segs[1]),
-        (Some("search"), 2) => read_search(segs[1]),
-        (Some("positions"), 3) => read_positions(segs[1], segs[2]),
-        (Some("onboard"), 3) => read_onboard(segs[1], segs[2]),
-        (Some("account"), 3) => read_account(segs[1], segs[2]),
-        (Some("fund"), 3) if segs[2] == "new" => DispatchResponse::Read(FUND_NEW_HINT.into()),
-        (Some("fund"), 4) => read_fund(segs[1], segs[2], segs[3]),
-        (Some("trade"), 3) if segs[2] == "new" => DispatchResponse::Read(TRADE_NEW_HINT.into()),
-        (Some("trade"), 5) => read_trade(segs[1], segs[2], segs[3], segs[4]),
-        _ => error(-3, "not a file"),
-    }
-}
-
-fn write(relative: &str, body: &[u8]) -> DispatchResponse {
-    if path_kind(relative) != Some(DispatchEntryKind::WritableFile) {
-        return error(-2, "path is not writable");
-    }
-    let segs = split(relative);
-    match (segs.first().copied(), segs.len()) {
-        (Some("onboard"), 3) if segs[2] == "begin" => write_onboard_begin(segs[1]),
-        (Some("trade"), 3) if segs[2] == "new" => write_trade_new(segs[1], body),
-        (Some("trade"), 5) if segs[2] == "drafts" && segs[4] == "revalidate" => {
-            write_trade_revalidate(segs[1], segs[3], body)
-        }
-        (Some("trade"), 5) if segs[2] == "drafts" && segs[4] == "post" => {
-            write_trade_post(segs[1], segs[3], body)
-        }
-        (Some("trade"), 5) if segs[2] == "receipts" && segs[4] == "cancel" => {
-            write_trade_cancel(segs[1], segs[3], body)
-        }
-        (Some("fund"), 3) if segs[2] == "new" => write_fund_new(segs[1], body),
-        _ => error(-2, "path is not writable"),
-    }
-}
 
 fn read_meta(file: &str) -> DispatchResponse {
     match file {
@@ -2253,10 +2077,7 @@ fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, DispatchRe
     })
 }
 
-fn best_price(
-    levels: &[bloom_polymarket::types::BookLevel],
-    ask: bool,
-) -> Result<Option<u64>, DispatchResponse> {
+fn best_price(levels: &[BookLevel], ask: bool) -> Result<Option<u64>, DispatchResponse> {
     let mut best: Option<u64> = None;
     for level in levels {
         let price = parse_micro(&level.price).map_err(|e| error(-4, e.to_string()))?;
@@ -5236,78 +5057,11 @@ fn is_safe_segment(segment: &str) -> bool {
         && !segment.bytes().any(|byte| byte == 0)
 }
 
-fn path_kind(relative: &str) -> Option<DispatchEntryKind> {
-    let segs = split(relative);
-    match (segs.first().copied(), segs.len()) {
-        (None, 0) => Some(DispatchEntryKind::Dir),
-        (Some("markets"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("markets"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("markets"), 3) if MARKET_FILES.contains(&segs[2]) => Some(DispatchEntryKind::File),
-        (Some("meta"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("meta"), 2) if META_FILES.contains(&segs[1]) => Some(DispatchEntryKind::File),
-        (Some("search"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("search"), 2) => Some(DispatchEntryKind::File),
-        (Some("positions"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("positions"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("positions"), 3) if POSITION_FILES.contains(&segs[2]) => {
-            Some(DispatchEntryKind::File)
-        }
-        (Some("onboard"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("onboard"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("onboard"), 3) if segs[2] == "begin" => Some(DispatchEntryKind::WritableFile),
-        (Some("onboard"), 3) if ONBOARD_FILES.contains(&segs[2]) => Some(DispatchEntryKind::File),
-        (Some("account"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("account"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("account"), 3) if ACCOUNT_FILES.contains(&segs[2]) => Some(DispatchEntryKind::File),
-        (Some("fund"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("fund"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("fund"), 3) if segs[2] == "new" => Some(DispatchEntryKind::WritableFile),
-        (Some("fund"), 3) => Some(DispatchEntryKind::Dir),
-        (Some("fund"), 4) if FUND_FILES.contains(&segs[3]) => Some(DispatchEntryKind::File),
-        (Some("trade"), 1) => Some(DispatchEntryKind::Dir),
-        (Some("trade"), 2) => Some(DispatchEntryKind::Dir),
-        (Some("trade"), 3) if segs[2] == "new" => Some(DispatchEntryKind::WritableFile),
-        (Some("trade"), 3) if segs[2] == "drafts" || segs[2] == "receipts" => {
-            Some(DispatchEntryKind::Dir)
-        }
-        (Some("trade"), 4) if segs[2] == "drafts" || segs[2] == "receipts" => {
-            Some(DispatchEntryKind::Dir)
-        }
-        (Some("trade"), 5) if segs[2] == "drafts" && DRAFT_FILES.contains(&segs[4]) => {
-            Some(DispatchEntryKind::File)
-        }
-        (Some("trade"), 5) if segs[2] == "drafts" && DRAFT_WRITABLE_FILES.contains(&segs[4]) => {
-            Some(DispatchEntryKind::WritableFile)
-        }
-        (Some("trade"), 5) if segs[2] == "receipts" && RECEIPT_FILES.contains(&segs[4]) => {
-            Some(DispatchEntryKind::File)
-        }
-        (Some("trade"), 5)
-            if segs[2] == "receipts" && RECEIPT_WRITABLE_FILES.contains(&segs[4]) =>
-        {
-            Some(DispatchEntryKind::WritableFile)
-        }
-        _ => None,
-    }
-}
-
 fn split(relative: &str) -> Vec<&str> {
     if relative.is_empty() {
         Vec::new()
     } else {
         relative.split('/').collect()
-    }
-}
-
-fn strings(items: &[&str]) -> Vec<String> {
-    items.iter().map(|item| (*item).into()).collect()
-}
-
-fn child_relative(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.into()
-    } else {
-        format!("{parent}/{child}")
     }
 }
 
@@ -5317,22 +5071,6 @@ fn entry_name(relative: &str) -> &str {
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or("")
-}
-
-fn entry(name: &str, kind: DispatchEntryKind) -> DispatchEntry {
-    let mode = match kind {
-        DispatchEntryKind::Dir => 0o755,
-        DispatchEntryKind::WritableFile => 0o644,
-        _ => 0o444,
-    };
-    DispatchEntry {
-        name: name.into(),
-        kind,
-        size: 0,
-        mode,
-        ttl_hint_ms: None,
-        link_target: None,
-    }
 }
 
 fn url_with_query(base: &str, pairs: &[(&str, &str)]) -> String {
@@ -5376,9 +5114,9 @@ fn sdk_error_with_context(context: &str, e: SdkError) -> DispatchResponse {
     error(code, format!("{context}: {}", e.message()))
 }
 
-fn polymarket_error(e: bloom_polymarket::PolymarketError) -> DispatchResponse {
+fn polymarket_error(e: PolymarketError) -> DispatchResponse {
     match e {
-        bloom_polymarket::PolymarketError::Invalid(message) => error(-3, message),
+        PolymarketError::Invalid(message) => error(-3, message),
         other => error(-4, other.to_string()),
     }
 }
@@ -5812,36 +5550,37 @@ mod tests {
     }
 
     #[test]
-    fn path_shapes_are_static_and_expected() {
-        assert_eq!(path_kind(""), Some(DispatchEntryKind::Dir));
-        assert_eq!(path_kind("markets/foo"), Some(DispatchEntryKind::Dir));
-        assert_eq!(
-            path_kind("markets/foo/book.json"),
-            Some(DispatchEntryKind::File)
+    fn route_sources_are_individual_and_index_only_for_directories() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("files");
+        let mut stack = vec![root];
+        let mut routes = Vec::new();
+
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read route dir") {
+                let path = entry.expect("read route entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+                    continue;
+                }
+                assert_ne!(
+                    path.file_name().and_then(std::ffi::OsStr::to_str),
+                    Some("$list.rs"),
+                    "$list.rs route sources are no longer supported"
+                );
+                routes.push(path);
+            }
+        }
+
+        assert_eq!(routes.len(), 48);
+        assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
+        assert!(
+            routes
+                .iter()
+                .any(|path| path.ends_with("trade/[wallet]/receipts/[id]/cancel.rs"))
         );
-        assert_eq!(path_kind("meta"), Some(DispatchEntryKind::Dir));
-        assert_eq!(path_kind("meta/parity.json"), Some(DispatchEntryKind::File));
-        assert_eq!(
-            path_kind("onboard/alice/begin"),
-            Some(DispatchEntryKind::WritableFile)
-        );
-        assert_eq!(
-            path_kind("trade/alice/drafts/0001/plan.md"),
-            Some(DispatchEntryKind::File)
-        );
-        assert_eq!(
-            path_kind("trade/alice/drafts/0001/revalidate"),
-            Some(DispatchEntryKind::WritableFile)
-        );
-        assert_eq!(
-            path_kind("trade/alice/receipts/0001/receipt.json"),
-            Some(DispatchEntryKind::File)
-        );
-        assert_eq!(
-            path_kind("trade/alice/receipts/0001/cancel"),
-            Some(DispatchEntryKind::WritableFile)
-        );
-        assert_eq!(path_kind("trade/alice/new/extra"), None);
     }
 
     #[test]

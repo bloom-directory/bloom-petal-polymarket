@@ -1,4 +1,1 @@
-crate::bloom_dir_component!(
-    "account/[wallet]/$index",
-    crate::strings(&crate::ACCOUNT_FILES)
-);
+crate::bloom_dir_component!(crate::files(&crate::ACCOUNT_FILES));

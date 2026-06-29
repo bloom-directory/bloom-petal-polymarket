@@ -1,1 +1,1 @@
-crate::bloom_fallible_dir_component!("markets/$index", crate::list_market_slugs());
+crate::bloom_fallible_dir_component!(crate::result_dirs(crate::list_market_slugs()));

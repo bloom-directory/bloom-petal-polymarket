@@ -1,1 +1,1 @@
-crate::bloom_dir_component!("search/$index", Vec::new());
+crate::bloom_dir_component!(Vec::new());
