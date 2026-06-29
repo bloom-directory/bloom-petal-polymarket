@@ -1,8 +1,10 @@
 # Next Steps
 
 This branch establishes the route-file build system and starts the migration
-toward small, focused WASM components. All 67 Bloom route files now build
-independently and use focused route macros. The old central dispatcher remains
+toward small, focused WASM components. All 48 Bloom route files now build
+independently and use focused route macros. Directory routes expose `list`
+directly through the same component used for lookup/metadata, so separate
+`$list.rs` source files are no longer needed. The old central dispatcher remains
 in `route/src/lib.rs` only as dead transitional code waiting to be deleted once
 shared helpers are split into modules.
 
@@ -32,7 +34,7 @@ After `scripts/build.sh`:
 - `app/polymarket/fund/[wallet]/new.wasm`: about 236 KB
 - `app/polymarket/onboard/[wallet]/begin.wasm`: about 711 KB
 - `app/polymarket/trade/[wallet]/drafts/[id]/post.wasm`: about 1.1 MB
-- 63 of 67 generated components are under 700 KB; 2 remain over 1 MB.
+- 44 of 48 generated components are under 700 KB; 2 remain over 1 MB.
 - write-heavy trade components are still larger than public read components
   because they pull in signing, policy, CLOB posting, relayer, and receipt
   helpers directly.
@@ -57,7 +59,8 @@ scripts/build.sh
 ```
 
 Optionally run `scripts/validate.sh` when the Bloom CLI or `BLOOM_REPO` is
-available.
+available. This branch assumes the Bloom runtime no longer requires separate
+`$list.wasm` artifacts and will call the directory component's `list` export.
 
 ## WAT Experiment
 
