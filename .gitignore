@@ -1,4 +1,5 @@
 /target/
 /route/target/
+/xtask/target/
 /artifacts/
 /app/polymarket/**/*.wasm

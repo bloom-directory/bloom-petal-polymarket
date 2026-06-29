@@ -1,5 +1,5 @@
 #![allow(clippy::too_many_arguments)]
-#![cfg_attr(test, allow(dead_code))]
+#![allow(dead_code)]
 
 //! Local Polymarket handler petal.
 //!
@@ -16,79 +16,134 @@ wit_bindgen::generate!({
     generate_all
 });
 
-struct Route;
-
-impl Guest for Route {
-    fn metadata(ctx: Ctx) -> Result<RouteMeta, RouteError> {
-        let relative = metadata_path(&ctx.path);
-        let kind = match path_kind(&relative) {
-            Some(DispatchEntryKind::Dir) => EntryKind::Dir,
-            Some(DispatchEntryKind::File | DispatchEntryKind::WritableFile) => EntryKind::File,
-            None => return Err(RouteError::NotFound(ctx.path)),
-        };
-        let writable = matches!(path_kind(&relative), Some(DispatchEntryKind::WritableFile));
-        Ok(RouteMeta {
-            kind,
-            mode: match kind {
-                EntryKind::Dir => 0o755,
-                EntryKind::File if writable => 0o644,
-                EntryKind::File => 0o444,
-                EntryKind::Symlink => 0o777,
-            },
-            cache_ttl_ms: route_cache_ttl_ms(&relative),
-            side_effecting_read: false,
-            write_async: false,
-            description: Some(format!("Polymarket route {relative}")),
-            consent_summary: None,
-            required_caps: route_required_caps(&relative, writable),
-            sign_intent: None,
-            executable: false,
-        })
-    }
-
-    fn lookup(ctx: Ctx) -> Result<Entry, RouteError> {
-        match lookup(&ctx.path) {
-            DispatchResponse::Lookup(entry) => Ok(route_entry(entry)),
-            DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-            _ => Err(RouteError::Backend(
-                "lookup returned non-lookup response".into(),
-            )),
-        }
-    }
-
-    fn list(ctx: Ctx) -> Result<Vec<Entry>, RouteError> {
-        match list(&ctx.path) {
-            DispatchResponse::List(entries) => Ok(entries.into_iter().map(route_entry).collect()),
-            DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-            _ => Err(RouteError::Backend(
-                "list returned non-list response".into(),
-            )),
-        }
-    }
-
-    fn read(ctx: Ctx) -> Result<Vec<u8>, RouteError> {
-        match read(&ctx.path) {
-            DispatchResponse::Read(bytes) => Ok(bytes),
-            DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-            _ => Err(RouteError::Backend(
-                "read returned non-read response".into(),
-            )),
-        }
-    }
-
-    fn write(ctx: Ctx, body: Vec<u8>) -> Result<(), RouteError> {
-        match write(&ctx.path, &body) {
-            DispatchResponse::Write => Ok(()),
-            DispatchResponse::Error { code, message } => Err(route_error(code, message)),
-            _ => Err(RouteError::Backend(
-                "write returned non-write response".into(),
-            )),
-        }
-    }
+mod selected_route {
+    include!(env!("BLOOM_ROUTE_RS"));
 }
 
 #[cfg(not(test))]
+use selected_route::Route;
+
+#[cfg(not(test))]
 export!(Route);
+
+#[macro_export]
+macro_rules! bloom_route_component {
+    ($route_path:literal) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::route_metadata(&ctx, $route_path)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::route_lookup(&ctx, $route_path)
+            }
+
+            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                $crate::route_list(&ctx, $route_path)
+            }
+
+            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                $crate::route_read(&ctx, $route_path)
+            }
+
+            fn write(ctx: $crate::Ctx, body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                $crate::route_write(&ctx, &body, $route_path)
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! bloom_dir_component {
+    ($route_path:literal, $children:expr) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let children = $children;
+                $crate::framework_list(&ctx, $route_path, children)
+            }
+
+            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                Err($crate::RouteError::Invalid("not a file".into()))
+            }
+
+            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                Err($crate::RouteError::Denied("path is not writable".into()))
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! bloom_fallible_dir_component {
+    ($route_path:literal, $children:expr) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let children = $children;
+                $crate::framework_fallible_list(&ctx, $route_path, children)
+            }
+
+            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                Err($crate::RouteError::Invalid("not a file".into()))
+            }
+
+            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                Err($crate::RouteError::Denied("path is not writable".into()))
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! bloom_read_component {
+    ($route_path:literal, $read:expr) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::File)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::File)
+            }
+
+            fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                Err($crate::RouteError::Invalid("not a directory".into()))
+            }
+
+            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                let read = $read;
+                $crate::framework_read(read(&ctx))
+            }
+
+            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                Err($crate::RouteError::Denied("path is not writable".into()))
+            }
+        }
+    };
+}
 
 fn component_getrandom(buf: &mut [u8]) -> Result<(), getrandom::Error> {
     let bytes =
@@ -99,6 +154,125 @@ fn component_getrandom(buf: &mut [u8]) -> Result<(), getrandom::Error> {
 
 getrandom::register_custom_getrandom!(component_getrandom);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouteFileKind {
+    Dir,
+    File,
+    WritableFile,
+}
+
+fn framework_metadata(
+    ctx: &Ctx,
+    route_path: &str,
+    kind: RouteFileKind,
+) -> Result<RouteMeta, RouteError> {
+    let relative = route_relative(ctx, route_path);
+    let writable = kind == RouteFileKind::WritableFile;
+    Ok(RouteMeta {
+        kind: match kind {
+            RouteFileKind::Dir => EntryKind::Dir,
+            RouteFileKind::File | RouteFileKind::WritableFile => EntryKind::File,
+        },
+        mode: match kind {
+            RouteFileKind::Dir => 0o755,
+            RouteFileKind::File => 0o444,
+            RouteFileKind::WritableFile => 0o644,
+        },
+        cache_ttl_ms: route_cache_ttl_ms(&relative),
+        side_effecting_read: false,
+        write_async: false,
+        description: Some(format!("Polymarket route {route_path}")),
+        consent_summary: None,
+        required_caps: route_required_caps(&relative, writable),
+        sign_intent: None,
+        executable: false,
+    })
+}
+
+fn framework_lookup(ctx: &Ctx, route_path: &str, kind: RouteFileKind) -> Result<Entry, RouteError> {
+    let relative = route_relative(ctx, route_path);
+    let kind = match kind {
+        RouteFileKind::Dir => DispatchEntryKind::Dir,
+        RouteFileKind::File => DispatchEntryKind::File,
+        RouteFileKind::WritableFile => DispatchEntryKind::WritableFile,
+    };
+    Ok(route_entry(entry(entry_name(&relative), kind)))
+}
+
+fn framework_list(
+    ctx: &Ctx,
+    route_path: &str,
+    children: Vec<String>,
+) -> Result<Vec<Entry>, RouteError> {
+    let relative = route_relative(ctx, route_path);
+    Ok(children
+        .into_iter()
+        .filter(|name| is_safe_segment(name))
+        .filter_map(|name| {
+            let child = child_relative(&relative, &name);
+            path_kind(&child).map(|kind| route_entry(entry(&name, kind)))
+        })
+        .collect())
+}
+
+fn framework_fallible_list(
+    ctx: &Ctx,
+    route_path: &str,
+    children: Result<Vec<String>, DispatchResponse>,
+) -> Result<Vec<Entry>, RouteError> {
+    match children {
+        Ok(children) => framework_list(ctx, route_path, children),
+        Err(DispatchResponse::Error { code, message }) => Err(route_error(code, message)),
+        Err(_) => Err(RouteError::Backend(
+            "list returned non-list response".into(),
+        )),
+    }
+}
+
+fn framework_read(resp: DispatchResponse) -> Result<Vec<u8>, RouteError> {
+    match resp {
+        DispatchResponse::Read(bytes) => Ok(bytes),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend("read returned non-read response".into())),
+    }
+}
+
+fn route_relative(ctx: &Ctx, route_path: &str) -> String {
+    if ctx.path.is_empty() {
+        return template_relative(route_path);
+    }
+    metadata_path(&ctx.path)
+}
+
+fn template_relative(route_path: &str) -> String {
+    match route_path {
+        "$index" | "$list" => String::new(),
+        _ => route_path
+            .strip_suffix("/$index")
+            .or_else(|| route_path.strip_suffix("/$list"))
+            .unwrap_or(route_path)
+            .to_string(),
+    }
+}
+
+fn route_param<'a>(ctx: &'a Ctx, name: &str) -> Option<&'a str> {
+    ctx.params
+        .iter()
+        .find_map(|(key, value)| (key == name).then_some(value.as_str()))
+}
+
+fn route_segment<'a>(ctx: &'a Ctx, index: usize) -> Option<&'a str> {
+    split(&ctx.path).get(index).copied()
+}
+
+fn route_param_or_segment<'a>(ctx: &'a Ctx, name: &str, index: usize) -> Option<&'a str> {
+    route_param(ctx, name).or_else(|| route_segment(ctx, index))
+}
+
+fn route_invalid(message: impl Into<String>) -> DispatchResponse {
+    error(-3, message)
+}
+
 fn metadata_path(path: &str) -> String {
     match path {
         "$index" | "$list" => String::new(),
@@ -107,6 +281,73 @@ fn metadata_path(path: &str) -> String {
             .or_else(|| path.strip_suffix("/$list"))
             .unwrap_or(path)
             .to_string(),
+    }
+}
+
+fn route_metadata(ctx: &Ctx, route_path: &str) -> Result<RouteMeta, RouteError> {
+    let relative = metadata_path(&ctx.path);
+    let kind = match path_kind(&relative) {
+        Some(DispatchEntryKind::Dir) => EntryKind::Dir,
+        Some(DispatchEntryKind::File | DispatchEntryKind::WritableFile) => EntryKind::File,
+        None => return Err(RouteError::NotFound(ctx.path.clone())),
+    };
+    let writable = matches!(path_kind(&relative), Some(DispatchEntryKind::WritableFile));
+    Ok(RouteMeta {
+        kind,
+        mode: match kind {
+            EntryKind::Dir => 0o755,
+            EntryKind::File if writable => 0o644,
+            EntryKind::File => 0o444,
+            EntryKind::Symlink => 0o777,
+        },
+        cache_ttl_ms: route_cache_ttl_ms(&relative),
+        side_effecting_read: false,
+        write_async: false,
+        description: Some(format!("Polymarket route {route_path}")),
+        consent_summary: None,
+        required_caps: route_required_caps(&relative, writable),
+        sign_intent: None,
+        executable: false,
+    })
+}
+
+fn route_lookup(ctx: &Ctx, _route_path: &str) -> Result<Entry, RouteError> {
+    match lookup(&ctx.path) {
+        DispatchResponse::Lookup(entry) => Ok(route_entry(entry)),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend(
+            "lookup returned non-lookup response".into(),
+        )),
+    }
+}
+
+fn route_list(ctx: &Ctx, _route_path: &str) -> Result<Vec<Entry>, RouteError> {
+    match list(&ctx.path) {
+        DispatchResponse::List(entries) => Ok(entries.into_iter().map(route_entry).collect()),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend(
+            "list returned non-list response".into(),
+        )),
+    }
+}
+
+fn route_read(ctx: &Ctx, _route_path: &str) -> Result<Vec<u8>, RouteError> {
+    match read(&ctx.path) {
+        DispatchResponse::Read(bytes) => Ok(bytes),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend(
+            "read returned non-read response".into(),
+        )),
+    }
+}
+
+fn route_write(ctx: &Ctx, body: &[u8], _route_path: &str) -> Result<(), RouteError> {
+    match write(&ctx.path, body) {
+        DispatchResponse::Write => Ok(()),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend(
+            "write returned non-write response".into(),
+        )),
     }
 }
 

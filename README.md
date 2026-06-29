@@ -3,7 +3,9 @@
 This package implements the Polymarket app at `apps/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
-The route component source lives in `route/`. It performs
+The route component source lives in `route/`. Individual Bloom route files live
+under `route/files/` and are compiled independently by `xtask`. The shared
+route implementation performs
 Polymarket HTTP calls directly through the v2 HTTP import, persists petal-owned
 state through the v2 private store import, uses v2 signing intents for CLOB and
 relayer signatures, and reads mediated wallet/chain state through the host VFS
