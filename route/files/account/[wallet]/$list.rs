@@ -1,1 +1,4 @@
-crate::bloom_route_component!("account/[wallet]/$list");
+crate::bloom_dir_component!(
+    "account/[wallet]/$list",
+    crate::strings(&crate::ACCOUNT_FILES)
+);

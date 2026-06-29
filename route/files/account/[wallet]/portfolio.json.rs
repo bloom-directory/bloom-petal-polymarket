@@ -1,1 +1,6 @@
-crate::bloom_route_component!("account/[wallet]/portfolio.json");
+crate::bloom_read_component!("account/[wallet]/portfolio.json", |ctx: &crate::Ctx| {
+    let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
+        return crate::route_invalid("missing wallet");
+    };
+    crate::read_account(wallet, "portfolio.json")
+});

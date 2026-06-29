@@ -1,1 +1,1 @@
-crate::bloom_route_component!("trade/$index");
+crate::bloom_dir_component!("trade/$index", crate::vfs_wallets_or_store("trade/"));

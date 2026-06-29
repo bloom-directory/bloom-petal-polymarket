@@ -116,6 +116,36 @@ macro_rules! bloom_fallible_dir_component {
 }
 
 #[macro_export]
+macro_rules! bloom_ctx_dir_component {
+    ($route_path:literal, $children:expr) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::Dir)
+            }
+
+            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let children = $children;
+                $crate::framework_fallible_list(&ctx, $route_path, children(&ctx))
+            }
+
+            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                Err($crate::RouteError::Invalid("not a file".into()))
+            }
+
+            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                Err($crate::RouteError::Denied("path is not writable".into()))
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! bloom_read_component {
     ($route_path:literal, $read:expr) => {
         pub struct Route;
@@ -140,6 +170,37 @@ macro_rules! bloom_read_component {
 
             fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
                 Err($crate::RouteError::Denied("path is not writable".into()))
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! bloom_write_component {
+    ($route_path:literal, $read:expr, $write:expr) => {
+        pub struct Route;
+
+        impl $crate::Guest for Route {
+            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                $crate::framework_metadata(&ctx, $route_path, $crate::RouteFileKind::WritableFile)
+            }
+
+            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+                $crate::framework_lookup(&ctx, $route_path, $crate::RouteFileKind::WritableFile)
+            }
+
+            fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                Err($crate::RouteError::Invalid("not a directory".into()))
+            }
+
+            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+                let read = $read;
+                $crate::framework_read(read(&ctx))
+            }
+
+            fn write(ctx: $crate::Ctx, body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                let write = $write;
+                $crate::framework_write(write(&ctx, &body))
             }
         }
     };
@@ -234,6 +295,14 @@ fn framework_read(resp: DispatchResponse) -> Result<Vec<u8>, RouteError> {
         DispatchResponse::Read(bytes) => Ok(bytes),
         DispatchResponse::Error { code, message } => Err(route_error(code, message)),
         _ => Err(RouteError::Backend("read returned non-read response".into())),
+    }
+}
+
+fn framework_write(resp: DispatchResponse) -> Result<(), RouteError> {
+    match resp {
+        DispatchResponse::Write => Ok(()),
+        DispatchResponse::Error { code, message } => Err(route_error(code, message)),
+        _ => Err(RouteError::Backend("write returned non-write response".into())),
     }
 }
 

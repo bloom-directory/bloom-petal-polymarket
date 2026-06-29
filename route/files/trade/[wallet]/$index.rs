@@ -1,1 +1,4 @@
-crate::bloom_route_component!("trade/[wallet]/$index");
+crate::bloom_dir_component!(
+    "trade/[wallet]/$index",
+    vec!["new".into(), "drafts".into(), "receipts".into()]
+);
