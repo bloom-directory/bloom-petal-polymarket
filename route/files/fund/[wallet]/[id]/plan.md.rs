@@ -7,5 +7,9 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::read_fund(wallet, id, "plan.md")
+    let session = match crate::services::load_fund_session(wallet, id) {
+        Ok(session) => session,
+        Err(resp) => return resp,
+    };
+    crate::DispatchResponse::Read(crate::services::render_fund_plan(&session).into_bytes())
 });

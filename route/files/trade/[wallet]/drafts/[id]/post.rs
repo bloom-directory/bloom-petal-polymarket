@@ -8,7 +8,7 @@ crate::route_file!(spec: crate::write_spec(), read:
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::read_trade(wallet, "drafts", id, "post")
+        crate::services::trade::post_hint(wallet, id)
     },
     write: |ctx: &crate::Ctx, body: &[u8]| {
         let wallet = match crate::param(ctx, "wallet") {
@@ -19,6 +19,6 @@ crate::route_file!(spec: crate::write_spec(), read:
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::write_trade_post(wallet, id, body)
+        crate::services::trade::post(wallet, id, body)
     }
 );

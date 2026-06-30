@@ -7,5 +7,9 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::read_fund(wallet, id, "status.json")
+    let session = match crate::services::load_fund_session(wallet, id) {
+        Ok(session) => session,
+        Err(resp) => return resp,
+    };
+    crate::services::read_json_value(&session)
 });

@@ -21,7 +21,7 @@ mod selected_route {
 mod framework;
 mod host;
 mod polymarket;
-mod routes;
+pub(crate) mod services;
 
 pub(crate) use crate::bloom::route::types::EntryKind;
 pub(crate) use framework::*;
@@ -32,8 +32,6 @@ pub(crate) use polymarket::{
     PolymarketError, Result, eip712, order, order_store, signer, trade, types,
     validate_wallet_name, wallet,
 };
-#[allow(unused_imports)]
-pub(crate) use routes::*;
 
 #[cfg(not(test))]
 use selected_route::Route;

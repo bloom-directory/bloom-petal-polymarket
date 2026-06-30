@@ -3,5 +3,5 @@ crate::route_file!(spec: crate::static_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::read_onboard(wallet, "plan.md")
+    crate::services::onboard::plan_md(wallet)
 });

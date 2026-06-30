@@ -23,6 +23,16 @@ use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+pub(crate) mod account;
+pub(crate) mod fund;
+pub(crate) mod market;
+pub(crate) mod meta;
+pub(crate) mod onboard;
+pub(crate) mod position;
+pub(crate) mod search;
+pub(crate) mod trade;
+pub(crate) mod tree;
+
 const MAX_HTTP_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STORE_BYTES: usize = 1024 * 1024;
 const MAX_LIST_BYTES: usize = 256 * 1024;
@@ -42,7 +52,7 @@ const ONBOARD_POLL_TIMEOUT_SECS: u64 = 180;
 const ONBOARD_POLL_INTERVAL_SECS: u64 = 2;
 const BATCH_DEADLINE_SECS: u64 = 3600;
 
-pub(crate) const ROOT_DIRS: [&str; 8] = [
+const ROOT_DIRS: [&str; 8] = [
     "markets",
     "search",
     "positions",
@@ -53,12 +63,12 @@ pub(crate) const ROOT_DIRS: [&str; 8] = [
     "meta",
 ];
 const META_FILES: [&str; 1] = ["parity.json"];
-pub(crate) const MARKET_FILES: [&str; 3] = ["market.json", "book.json", "prices.json"];
-pub(crate) const POSITION_FILES: [&str; 3] = ["positions.json", "trades.json", "activity.json"];
-pub(crate) const ONBOARD_FILES: [&str; 3] = ["status.json", "plan.md", "approvals.json"];
-pub(crate) const ACCOUNT_FILES: [&str; 2] = ["portfolio.json", "orders.json"];
-pub(crate) const FUND_FILES: [&str; 3] = ["plan.md", "request.json", "status.json"];
-pub(crate) const DRAFT_FILES: [&str; 6] = [
+const MARKET_FILES: [&str; 3] = ["market.json", "book.json", "prices.json"];
+const POSITION_FILES: [&str; 3] = ["positions.json", "trades.json", "activity.json"];
+const ONBOARD_FILES: [&str; 3] = ["status.json", "plan.md", "approvals.json"];
+const ACCOUNT_FILES: [&str; 2] = ["portfolio.json", "orders.json"];
+const FUND_FILES: [&str; 3] = ["plan.md", "request.json", "status.json"];
+const DRAFT_FILES: [&str; 6] = [
     "plan.md",
     "order.json",
     "policy_check.json",
@@ -66,16 +76,16 @@ pub(crate) const DRAFT_FILES: [&str; 6] = [
     "review_intent.json",
     "post_attempt.json",
 ];
-pub(crate) const DRAFT_WRITABLE_FILES: [&str; 2] = ["revalidate", "post"];
-pub(crate) const RECEIPT_FILES: [&str; 1] = ["receipt.json"];
-pub(crate) const RECEIPT_WRITABLE_FILES: [&str; 1] = ["cancel"];
+const DRAFT_WRITABLE_FILES: [&str; 2] = ["revalidate", "post"];
+const RECEIPT_FILES: [&str; 1] = ["receipt.json"];
+const RECEIPT_WRITABLE_FILES: [&str; 1] = ["cancel"];
 
 const BEGIN_HINT: &str =
     "write anything here to mint or derive CLOB credentials with the daemon keystore\n";
-pub(crate) const TRADE_NEW_HINT: &str = r#"write JSON to create a reviewable draft, e.g.
+const TRADE_NEW_HINT: &str = r#"write JSON to create a reviewable draft, e.g.
 {"slug":"will-canada-win-the-2026-fifa-world-cup-755","outcome":"yes","amount":"1","max_price":"0.01"}
 "#;
-pub(crate) const FUND_NEW_HINT: &str = r#"write JSON to create a reviewable pUSD funding request, e.g.
+const FUND_NEW_HINT: &str = r#"write JSON to create a reviewable pUSD funding request, e.g.
 {"target_pusd":"10","max_spend":"100","from_token":"native","slippage_bps":50}
 "#;
 const TRADE_REVALIDATE_HINT: &str = r#"write {"revalidate":true} to revalidate this draft and stage the final review artifact. Revalidated drafts can then be posted by writing {"post":true} to post; resting GTC orders can be cancelled from their receipt.
@@ -85,9 +95,8 @@ const TRADE_POST_HINT: &str = r#"write {"post":true} to sign and post a revalida
 const TRADE_CANCEL_HINT: &str = r#"write {"cancel":true} to cancel the posted CLOB order recorded by this receipt. Cancelling uses CLOB DELETE /order and updates the private receipt/draft status.
 "#;
 
-pub(crate) fn read_meta(file: &str) -> DispatchResponse {
-    match file {
-        "parity.json" => read_json_value(&serde_json::json!({
+fn parity_json() -> DispatchResponse {
+    read_json_value(&serde_json::json!({
             "kind": "polymarket_v2_petal_parity",
             "mount": "apps/polymarket",
             "status": "v2_implementation",
@@ -175,67 +184,75 @@ pub(crate) fn read_meta(file: &str) -> DispatchResponse {
                 "public VFS reads contain no CLOB credential secret or raw signed order body",
                 "remaining blockers are either implemented or explicitly accepted before removing the legacy native polymarket surface"
             ]
-        })),
-        _ => error(-3, "not a meta file"),
+    }))
+}
+
+fn market_by_slug(slug: &str) -> Result<Market, DispatchResponse> {
+    get_json(&format!("{GAMMA}/markets/slug/{slug}"))
+}
+
+fn market_json(slug: &str) -> DispatchResponse {
+    match market_by_slug(slug) {
+        Ok(market) => read_json_value(&market),
+        Err(resp) => resp,
     }
 }
 
-pub(crate) fn read_market(slug: &str, file: &str) -> DispatchResponse {
-    let market: Market = match get_json(&format!("{GAMMA}/markets/slug/{slug}")) {
+fn market_book_json(slug: &str) -> DispatchResponse {
+    let market = match market_by_slug(slug) {
         Ok(market) => market,
         Err(resp) => return resp,
     };
-    match file {
-        "market.json" => read_json_value(&market),
-        "book.json" => {
-            let Some(token_id) = market.yes_token_id() else {
-                return error(-4, "market has no YES token id");
-            };
-            match get_json::<OrderBook>(&url_with_query(
-                &format!("{CLOB}/book"),
-                &[("token_id", token_id)],
-            )) {
-                Ok(book) => read_json_value(&book),
-                Err(resp) => resp,
-            }
-        }
-        "prices.json" => {
-            let Some(token_id) = market.yes_token_id() else {
-                return error(-4, "market has no YES token id");
-            };
-            let midpoint = match get_json::<serde_json::Value>(&url_with_query(
-                &format!("{CLOB}/midpoint"),
-                &[("token_id", token_id)],
-            )) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let spread = match get_json::<serde_json::Value>(&url_with_query(
-                &format!("{CLOB}/spread"),
-                &[("token_id", token_id)],
-            )) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let best_buy = match get_json::<serde_json::Value>(&url_with_query(
-                &format!("{CLOB}/price"),
-                &[("token_id", token_id), ("side", "BUY")],
-            )) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            read_json_value(&serde_json::json!({
-                "token_id": token_id,
-                "midpoint": midpoint,
-                "spread": spread,
-                "best_buy": best_buy,
-            }))
-        }
-        _ => error(-3, "not a market file"),
+    let Some(token_id) = market.yes_token_id() else {
+        return error(-4, "market has no YES token id");
+    };
+    match get_json::<OrderBook>(&url_with_query(
+        &format!("{CLOB}/book"),
+        &[("token_id", token_id)],
+    )) {
+        Ok(book) => read_json_value(&book),
+        Err(resp) => resp,
     }
 }
 
-pub(crate) fn read_search(query: &str) -> DispatchResponse {
+fn market_prices_json(slug: &str) -> DispatchResponse {
+    let market = match market_by_slug(slug) {
+        Ok(market) => market,
+        Err(resp) => return resp,
+    };
+    let Some(token_id) = market.yes_token_id() else {
+        return error(-4, "market has no YES token id");
+    };
+    let midpoint = match get_json::<serde_json::Value>(&url_with_query(
+        &format!("{CLOB}/midpoint"),
+        &[("token_id", token_id)],
+    )) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let spread = match get_json::<serde_json::Value>(&url_with_query(
+        &format!("{CLOB}/spread"),
+        &[("token_id", token_id)],
+    )) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let best_buy = match get_json::<serde_json::Value>(&url_with_query(
+        &format!("{CLOB}/price"),
+        &[("token_id", token_id), ("side", "BUY")],
+    )) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    read_json_value(&serde_json::json!({
+        "token_id": token_id,
+        "midpoint": midpoint,
+        "spread": spread,
+        "best_buy": best_buy,
+    }))
+}
+
+fn search_results(query: &str) -> DispatchResponse {
     let query = query.replace('+', " ");
     match get_json::<serde_json::Value>(&url_with_query(
         &format!("{GAMMA}/public-search"),
@@ -246,38 +263,7 @@ pub(crate) fn read_search(query: &str) -> DispatchResponse {
     }
 }
 
-pub(crate) fn read_positions(user: &str, file: &str) -> DispatchResponse {
-    let user = match resolve_position_user(user) {
-        Ok(user) => user,
-        Err(resp) => return resp,
-    };
-    match file {
-        "positions.json" => match get_json::<Vec<Position>>(&url_with_query(
-            &format!("{DATA}/positions"),
-            &[("user", &user)],
-        )) {
-            Ok(value) => read_json_value(&value),
-            Err(resp) => resp,
-        },
-        "trades.json" => match get_json::<Vec<Trade>>(&url_with_query(
-            &format!("{DATA}/trades"),
-            &[("user", &user)],
-        )) {
-            Ok(value) => read_json_value(&value),
-            Err(resp) => resp,
-        },
-        "activity.json" => match get_json::<serde_json::Value>(&url_with_query(
-            &format!("{DATA}/activity"),
-            &[("user", &user)],
-        )) {
-            Ok(value) => read_json_value(&value),
-            Err(resp) => resp,
-        },
-        _ => error(-3, "not a positions file"),
-    }
-}
-
-fn resolve_position_user(segment: &str) -> Result<String, DispatchResponse> {
+fn position_user(segment: &str) -> Result<String, DispatchResponse> {
     if (segment.starts_with("0x") || segment.starts_with("0X"))
         && let Ok(address) = segment.parse::<Address>()
     {
@@ -286,38 +272,90 @@ fn resolve_position_user(segment: &str) -> Result<String, DispatchResponse> {
     wallet_address(segment).map(|address| address.to_checksum(None))
 }
 
-pub(crate) fn read_onboard(wallet: &str, file: &str) -> DispatchResponse {
-    if let Err(e) = validate_wallet_name(wallet) {
-        return error(-3, e.to_string());
-    }
-    match file {
-        "begin" => DispatchResponse::Read(BEGIN_HINT.into()),
-        "status.json" => {
-            let status = match wallet_address(wallet) {
-                Ok(owner) => match local_status_for_wallet(wallet, owner) {
-                    Ok(status) => status,
-                    Err(resp) => return resp,
-                },
-                Err(_) => serde_json::json!({
-                    "wallet": wallet,
-                    "stage": "not_started",
-                    "running": false,
-                    "tradeable": false,
-                    "message": "write begin to mint or derive CLOB credentials"
-                }),
-            };
-            read_json_value(&status)
-        }
-        "plan.md" => DispatchResponse::Read(render_onboard_plan(wallet).into_bytes()),
-        "approvals.json" => match wallet_address(wallet) {
-            Ok(owner) => read_json_value(&approval_preview(wallet, owner)),
-            Err(resp) => resp,
-        },
-        _ => error(-3, "not an onboard file"),
+fn positions_json(user: &str) -> DispatchResponse {
+    let user = match position_user(user) {
+        Ok(user) => user,
+        Err(resp) => return resp,
+    };
+    match get_json::<Vec<Position>>(&url_with_query(
+        &format!("{DATA}/positions"),
+        &[("user", &user)],
+    )) {
+        Ok(value) => read_json_value(&value),
+        Err(resp) => resp,
     }
 }
 
-pub(crate) fn read_account(wallet: &str, file: &str) -> DispatchResponse {
+fn position_trades_json(user: &str) -> DispatchResponse {
+    let user = match position_user(user) {
+        Ok(user) => user,
+        Err(resp) => return resp,
+    };
+    match get_json::<Vec<Trade>>(&url_with_query(
+        &format!("{DATA}/trades"),
+        &[("user", &user)],
+    )) {
+        Ok(value) => read_json_value(&value),
+        Err(resp) => resp,
+    }
+}
+
+fn position_activity_json(user: &str) -> DispatchResponse {
+    let user = match position_user(user) {
+        Ok(user) => user,
+        Err(resp) => return resp,
+    };
+    match get_json::<serde_json::Value>(&url_with_query(
+        &format!("{DATA}/activity"),
+        &[("user", &user)],
+    )) {
+        Ok(value) => read_json_value(&value),
+        Err(resp) => resp,
+    }
+}
+
+fn onboard_begin_hint() -> DispatchResponse {
+    DispatchResponse::Read(BEGIN_HINT.into())
+}
+
+fn onboard_status_json(wallet: &str) -> DispatchResponse {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return error(-3, e.to_string());
+    }
+    let status = match wallet_address(wallet) {
+        Ok(owner) => match local_status_for_wallet(wallet, owner) {
+            Ok(status) => status,
+            Err(resp) => return resp,
+        },
+        Err(_) => serde_json::json!({
+            "wallet": wallet,
+            "stage": "not_started",
+            "running": false,
+            "tradeable": false,
+            "message": "write begin to mint or derive CLOB credentials"
+        }),
+    };
+    read_json_value(&status)
+}
+
+fn onboard_plan_md(wallet: &str) -> DispatchResponse {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return error(-3, e.to_string());
+    }
+    DispatchResponse::Read(render_onboard_plan(wallet).into_bytes())
+}
+
+fn onboard_approvals_json(wallet: &str) -> DispatchResponse {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return error(-3, e.to_string());
+    }
+    match wallet_address(wallet) {
+        Ok(owner) => read_json_value(&approval_preview(wallet, owner)),
+        Err(resp) => resp,
+    }
+}
+
+fn account_portfolio_json(wallet: &str) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -329,45 +367,56 @@ pub(crate) fn read_account(wallet: &str, file: &str) -> DispatchResponse {
         Ok(creds) => creds,
         Err(resp) => return resp,
     };
-    match file {
-        "portfolio.json" => match clob_l2_get_json(
-            owner,
-            &creds,
-            "/balance-allowance",
-            &[("asset_type", "COLLATERAL"), ("signature_type", "3")],
-        ) {
-            Ok(clob_balance_allowance) => {
-                let status = match local_status_for_wallet(wallet, owner) {
-                    Ok(status) => status,
-                    Err(resp) => return resp,
-                };
-                read_json_value(&serde_json::json!({
-                    "wallet": wallet,
-                    "owner": format!("{owner:#x}"),
-                    "credentials_present": true,
-                    "clob_balance_allowance": clob_balance_allowance,
-                    "deposit_wallet": status
-                        .get("deposit_wallet")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null),
-                    "onboarding_state": {
-                        "stage": status.get("stage").cloned().unwrap_or(serde_json::Value::Null),
-                        "creds_present": status.get("creds_present").cloned().unwrap_or(serde_json::Value::Bool(true)),
-                        "tradeable": status.get("tradeable").cloned().unwrap_or(serde_json::Value::Bool(false))
-                    }
-                }))
-            }
-            Err(resp) => resp,
-        },
-        "orders.json" => match clob_l2_get_json(owner, &creds, "/data/orders", &[]) {
-            Ok(orders) => read_json_value(&orders),
-            Err(resp) => resp,
-        },
-        _ => error(-3, "not an account file"),
+    match clob_l2_get_json(
+        owner,
+        &creds,
+        "/balance-allowance",
+        &[("asset_type", "COLLATERAL"), ("signature_type", "3")],
+    ) {
+        Ok(clob_balance_allowance) => {
+            let status = match local_status_for_wallet(wallet, owner) {
+                Ok(status) => status,
+                Err(resp) => return resp,
+            };
+            read_json_value(&serde_json::json!({
+                "wallet": wallet,
+                "owner": format!("{owner:#x}"),
+                "credentials_present": true,
+                "clob_balance_allowance": clob_balance_allowance,
+                "deposit_wallet": status
+                    .get("deposit_wallet")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                "onboarding_state": {
+                    "stage": status.get("stage").cloned().unwrap_or(serde_json::Value::Null),
+                    "creds_present": status.get("creds_present").cloned().unwrap_or(serde_json::Value::Bool(true)),
+                    "tradeable": status.get("tradeable").cloned().unwrap_or(serde_json::Value::Bool(false))
+                }
+            }))
+        }
+        Err(resp) => resp,
     }
 }
 
-pub(crate) fn write_onboard_begin(wallet: &str) -> DispatchResponse {
+fn account_orders_json(wallet: &str) -> DispatchResponse {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return error(-3, e.to_string());
+    }
+    let owner = match wallet_address(wallet) {
+        Ok(address) => address,
+        Err(resp) => return resp,
+    };
+    let creds = match load_creds(wallet) {
+        Ok(creds) => creds,
+        Err(resp) => return resp,
+    };
+    match clob_l2_get_json(owner, &creds, "/data/orders", &[]) {
+        Ok(orders) => read_json_value(&orders),
+        Err(resp) => resp,
+    }
+}
+
+fn write_onboard_begin(wallet: &str) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -1137,7 +1186,7 @@ fn approval_preview(wallet: &str, owner: Address) -> serde_json::Value {
     })
 }
 
-pub(crate) fn write_trade_new(wallet: &str, body: &[u8]) -> DispatchResponse {
+fn write_trade_new(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -2221,42 +2270,54 @@ fn parse_api_float_micro(value: f64, field: &str) -> Result<u64, DispatchRespons
     parse_micro(&format!("{value:.6}")).map_err(|e| error(-4, e.to_string()))
 }
 
-pub(crate) fn read_trade(wallet: &str, kind: &str, id: &str, file: &str) -> DispatchResponse {
-    if let Err(e) = validate_wallet_name(wallet) {
-        return error(-3, e.to_string());
-    }
-    match (kind, file) {
-        ("drafts", "plan.md") => {
-            let Some(bytes) = store_get(&format!("trade/{wallet}/drafts/{id}/order.json")) else {
-                return error(-1, "not found");
-            };
-            let draft: StoreTradeDraft = match serde_json::from_slice(&bytes) {
-                Ok(draft) => draft,
-                Err(e) => return error(-4, format!("corrupt draft: {e}")),
-            };
-            DispatchResponse::Read(render_trade_plan(&draft).into_bytes())
-        }
-        (
-            "drafts",
-            "order.json" | "policy_check.json" | "quote.json" | "review_intent.json"
-            | "post_attempt.json",
-        ) => read_store(&format!("trade/{wallet}/drafts/{id}/{file}")),
-        ("drafts", "revalidate") => DispatchResponse::Read(TRADE_REVALIDATE_HINT.into()),
-        ("drafts", "post") => DispatchResponse::Read(TRADE_POST_HINT.into()),
-        ("receipts", "receipt.json") => {
-            read_store(&format!("trade/{wallet}/receipts/{id}/receipt.json"))
-        }
-        ("receipts", "cancel") => DispatchResponse::Read(TRADE_CANCEL_HINT.into()),
-        _ => error(-3, "not a trade file"),
-    }
+pub(crate) fn trade_draft_base(wallet: &str, id: &str) -> String {
+    format!("trade/{wallet}/drafts/{id}")
 }
 
-fn load_trade_draft(
+pub(crate) fn trade_draft_order_key(wallet: &str, id: &str) -> String {
+    format!("{}/order.json", trade_draft_base(wallet, id))
+}
+
+pub(crate) fn trade_draft_policy_check_key(wallet: &str, id: &str) -> String {
+    format!("{}/policy_check.json", trade_draft_base(wallet, id))
+}
+
+pub(crate) fn trade_draft_quote_key(wallet: &str, id: &str) -> String {
+    format!("{}/quote.json", trade_draft_base(wallet, id))
+}
+
+pub(crate) fn trade_draft_review_intent_key(wallet: &str, id: &str) -> String {
+    format!("{}/review_intent.json", trade_draft_base(wallet, id))
+}
+
+pub(crate) fn trade_draft_post_attempt_key(wallet: &str, id: &str) -> String {
+    format!("{}/post_attempt.json", trade_draft_base(wallet, id))
+}
+
+pub(crate) fn trade_receipt_key(wallet: &str, id: &str) -> String {
+    format!("trade/{wallet}/receipts/{id}/receipt.json")
+}
+
+pub(crate) fn trade_revalidate_hint() -> DispatchResponse {
+    DispatchResponse::Read(TRADE_REVALIDATE_HINT.into())
+}
+
+pub(crate) fn trade_post_hint() -> DispatchResponse {
+    DispatchResponse::Read(TRADE_POST_HINT.into())
+}
+
+pub(crate) fn trade_cancel_hint() -> DispatchResponse {
+    DispatchResponse::Read(TRADE_CANCEL_HINT.into())
+}
+
+pub(crate) fn load_trade_draft(
     wallet: &str,
     id: &str,
-    base: &str,
 ) -> Result<StoreTradeDraft, DispatchResponse> {
-    let Some(bytes) = store_get(&format!("{base}/order.json")) else {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return Err(error(-3, e.to_string()));
+    }
+    let Some(bytes) = store_get(&trade_draft_order_key(wallet, id)) else {
         return Err(error(-1, "draft not found"));
     };
     let draft: StoreTradeDraft =
@@ -2267,7 +2328,7 @@ fn load_trade_draft(
     Ok(draft)
 }
 
-pub(crate) fn write_trade_revalidate(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+fn write_trade_revalidate(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -2281,12 +2342,12 @@ pub(crate) fn write_trade_revalidate(wallet: &str, id: &str, body: &[u8]) -> Dis
     if !req.revalidate {
         return error(-3, "revalidate must be true");
     }
-    let base = format!("trade/{wallet}/drafts/{id}");
+    let base = trade_draft_base(wallet, id);
     let _lock = match acquire_trade_lock(wallet, id) {
         Ok(lock) => lock,
         Err(resp) => return resp,
     };
-    let mut draft = match load_trade_draft(wallet, id, &base) {
+    let mut draft = match load_trade_draft(wallet, id) {
         Ok(draft) => draft,
         Err(resp) => return resp,
     };
@@ -2705,7 +2766,7 @@ fn review_intent_matches_draft(
     Ok(())
 }
 
-pub(crate) fn write_trade_post(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+fn write_trade_post(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -2719,12 +2780,12 @@ pub(crate) fn write_trade_post(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     if !req.post {
         return error(-3, "post must be true");
     }
-    let base = format!("trade/{wallet}/drafts/{id}");
+    let base = trade_draft_base(wallet, id);
     let _lock = match acquire_trade_lock(wallet, id) {
         Ok(lock) => lock,
         Err(resp) => return resp,
     };
-    let mut draft = match load_trade_draft(wallet, id, &base) {
+    let mut draft = match load_trade_draft(wallet, id) {
         Ok(draft) => draft,
         Err(resp) => return resp,
     };
@@ -3049,7 +3110,7 @@ pub(crate) fn write_trade_post(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     }
 }
 
-pub(crate) fn write_trade_cancel(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+fn write_trade_cancel(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -3148,7 +3209,7 @@ fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), DispatchResp
     Ok(())
 }
 
-pub(crate) fn write_fund_new(wallet: &str, body: &[u8]) -> DispatchResponse {
+fn write_fund_new(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -3192,25 +3253,24 @@ pub(crate) fn write_fund_new(wallet: &str, body: &[u8]) -> DispatchResponse {
     )
 }
 
-pub(crate) fn read_fund(wallet: &str, id: &str, file: &str) -> DispatchResponse {
-    if let Err(e) = validate_wallet_name(wallet) {
-        return error(-3, e.to_string());
-    }
-    let Some(bytes) = store_get(&format!("fund/{wallet}/requests/{id}.json")) else {
-        return error(-1, "not found");
-    };
-    let session: StoreFundSession = match serde_json::from_slice(&bytes) {
-        Ok(session) => session,
-        Err(e) => return error(-4, format!("corrupt fund request: {e}")),
-    };
-    match file {
-        "request.json" | "status.json" => read_json_value(&session),
-        "plan.md" => DispatchResponse::Read(render_fund_plan(&session).into_bytes()),
-        _ => error(-3, "not a fund file"),
-    }
+pub(crate) fn fund_request_key(wallet: &str, id: &str) -> String {
+    format!("fund/{wallet}/requests/{id}.json")
 }
 
-pub(crate) fn list_market_slugs() -> Result<Vec<String>, DispatchResponse> {
+pub(crate) fn load_fund_session(
+    wallet: &str,
+    id: &str,
+) -> Result<StoreFundSession, DispatchResponse> {
+    if let Err(e) = validate_wallet_name(wallet) {
+        return Err(error(-3, e.to_string()));
+    }
+    let Some(bytes) = store_get(&fund_request_key(wallet, id)) else {
+        return Err(error(-1, "not found"));
+    };
+    serde_json::from_slice(&bytes).map_err(|e| error(-4, format!("corrupt fund request: {e}")))
+}
+
+fn list_market_slugs() -> Result<Vec<String>, DispatchResponse> {
     let url = url_with_query(
         &format!("{GAMMA}/markets"),
         &[
@@ -3828,7 +3888,7 @@ fn http(
     .map_err(sdk_error)
 }
 
-fn read_store(key: &str) -> DispatchResponse {
+pub(crate) fn read_store(key: &str) -> DispatchResponse {
     match bloom_petal_sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(SdkError::Host(HostStatus::NotFound)) => error(-1, "not found"),
@@ -4283,7 +4343,7 @@ fn store_wallets(prefix: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn vfs_wallets_or_store(store_prefix: &str) -> Vec<String> {
+fn vfs_wallets_or_store(store_prefix: &str) -> Vec<String> {
     match bloom_petal_sdk::vfs_list("wallets", MAX_LIST_BYTES) {
         Ok(names) => safe_wallet_names(names),
         Err(_) if store_prefix.is_empty() => Vec::new(),
@@ -4303,7 +4363,7 @@ fn safe_wallet_names(names: Vec<String>) -> Vec<String> {
     out
 }
 
-pub(crate) fn store_ids(prefix: &str, suffix: &str) -> Vec<String> {
+fn store_ids(prefix: &str, suffix: &str) -> Vec<String> {
     let Ok(keys) = bloom_petal_sdk::store_list(prefix, MAX_LIST_BYTES) else {
         return Vec::new();
     };
@@ -4332,7 +4392,7 @@ fn next_id(prefix: &str, suffix: &str) -> String {
     format!("{next:04}")
 }
 
-fn read_json_value<T: Serialize>(value: &T) -> DispatchResponse {
+pub(crate) fn read_json_value<T: Serialize>(value: &T) -> DispatchResponse {
     match serde_json::to_vec_pretty(value) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(e) => error(-4, format!("json: {e}")),
@@ -4345,7 +4405,7 @@ fn render_onboard_plan(wallet: &str) -> String {
     )
 }
 
-fn render_trade_plan(draft: &StoreTradeDraft) -> String {
+pub(crate) fn render_trade_plan(draft: &StoreTradeDraft) -> String {
     format!(
         "# Polymarket order draft {}\n\nWallet: {}\nMarket: {}\nQuestion: {}\nOutcome: {}\nToken: {}\nSide: {:?}\nOrder type: {}\nAmount: {}\nPrice bound: {}\nLimit price: {}\nSize: {}\nStatus: {}\n\nThe draft is live-quoted from Gamma/CLOB and ready for review. Signing and posting are still pending.\n",
         draft.id,
@@ -4364,7 +4424,7 @@ fn render_trade_plan(draft: &StoreTradeDraft) -> String {
     )
 }
 
-fn render_fund_plan(session: &StoreFundSession) -> String {
+pub(crate) fn render_fund_plan(session: &StoreFundSession) -> String {
     format!(
         "# Polymarket funding request {}\n\nWallet: {}\nReceiver: {} ({})\nTarget pUSD: {}\nMax spend: {}\nFrom token: {}\nSlippage bps: {}\nStatus: {}\n",
         session.id,
@@ -4603,7 +4663,7 @@ struct TradeCancelRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoreTradeDraft {
+pub(crate) struct StoreTradeDraft {
     id: String,
     wallet: String,
     slug: String,
@@ -4714,7 +4774,7 @@ struct FundNewRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoreFundSession {
+pub(crate) struct StoreFundSession {
     id: String,
     wallet: String,
     target_pusd: String,
