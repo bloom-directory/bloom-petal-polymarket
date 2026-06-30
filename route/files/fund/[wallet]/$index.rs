@@ -1,4 +1,4 @@
-crate::bloom_ctx_dir_component!(crate::store_dir_spec(), |ctx: &crate::Ctx| {
+crate::route_file!(spec: crate::store_dir_spec(), ctx_list: |ctx: &crate::Ctx| {
     let wallet = crate::param(ctx, "wallet")?;
     let mut out = vec![crate::writable("new")];
     out.extend(crate::dirs(crate::store_ids(

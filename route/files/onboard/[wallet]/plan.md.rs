@@ -1,4 +1,4 @@
-crate::bloom_read_component!(crate::static_read_spec(), |ctx: &crate::Ctx| {
+crate::route_file!(spec: crate::static_read_spec(), read: |ctx: &crate::Ctx| {
     let wallet = match crate::param(ctx, "wallet") {
         Ok(value) => value,
         Err(resp) => return resp,

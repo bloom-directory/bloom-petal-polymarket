@@ -37,8 +37,8 @@ use selected_route::Route;
 export!(Route);
 
 #[macro_export]
-macro_rules! bloom_dir_component {
-    ($spec:expr, $children:expr) => {
+macro_rules! route_file {
+    (spec: $spec:expr, list: $children:expr $(,)?) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
@@ -64,11 +64,7 @@ macro_rules! bloom_dir_component {
             }
         }
     };
-}
-
-#[macro_export]
-macro_rules! bloom_fallible_dir_component {
-    ($spec:expr, $children:expr) => {
+    (spec: $spec:expr, fallible_list: $children:expr $(,)?) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
@@ -94,11 +90,7 @@ macro_rules! bloom_fallible_dir_component {
             }
         }
     };
-}
-
-#[macro_export]
-macro_rules! bloom_ctx_dir_component {
-    ($spec:expr, $children:expr) => {
+    (spec: $spec:expr, ctx_list: $children:expr $(,)?) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
@@ -124,11 +116,7 @@ macro_rules! bloom_ctx_dir_component {
             }
         }
     };
-}
-
-#[macro_export]
-macro_rules! bloom_read_component {
-    ($spec:expr, $read:expr) => {
+    (spec: $spec:expr, read: $read:expr $(,)?) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
@@ -154,11 +142,7 @@ macro_rules! bloom_read_component {
             }
         }
     };
-}
-
-#[macro_export]
-macro_rules! bloom_write_component {
-    ($spec:expr, $read:expr, $write:expr) => {
+    (spec: $spec:expr, read: $read:expr, write: $write:expr $(,)?) => {
         pub struct Route;
 
         impl $crate::Guest for Route {

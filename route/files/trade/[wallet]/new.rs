@@ -1,7 +1,6 @@
-crate::bloom_write_component!(
-    crate::write_spec(),
+crate::route_file!(spec: crate::write_spec(), read:
     |_ctx: &crate::Ctx| crate::DispatchResponse::Read(crate::TRADE_NEW_HINT.into()),
-    |ctx: &crate::Ctx, body: &[u8]| {
+    write: |ctx: &crate::Ctx, body: &[u8]| {
         let wallet = match crate::param(ctx, "wallet") {
             Ok(value) => value,
             Err(resp) => return resp,

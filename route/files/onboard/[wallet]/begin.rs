@@ -1,5 +1,4 @@
-crate::bloom_write_component!(
-    crate::write_spec(),
+crate::route_file!(spec: crate::write_spec(), read:
     |ctx: &crate::Ctx| {
         let wallet = match crate::param(ctx, "wallet") {
             Ok(value) => value,
@@ -7,7 +6,7 @@ crate::bloom_write_component!(
         };
         crate::read_onboard(wallet, "begin")
     },
-    |ctx: &crate::Ctx, _body: &[u8]| {
+    write: |ctx: &crate::Ctx, _body: &[u8]| {
         let wallet = match crate::param(ctx, "wallet") {
             Ok(value) => value,
             Err(resp) => return resp,
