@@ -5,9 +5,16 @@
 - The route component owns the Polymarket behavior. It may use v2 HTTP, store,
   signing, and mediated wallet/chain VFS imports, but it must not delegate to
   the legacy native `polymarket/...` VFS handler.
-- After changing `route/src/lib.rs` or the route list, run
-  `scripts/build.sh` to regenerate local route
-  artifacts for validation. Do not commit generated `.wasm` artifacts.
+- `petal/` is the local framework crate. It owns route WIT, route macros/specs,
+  metadata and param helpers, response/error conversion, and Bloom host SDK
+  wrappers. Keep it generic; it must not know Polymarket route semantics.
+- `route/files/` contains route controllers. Each route file builds as a
+  focused WASM component. Directory endpoints use `$index.rs`; do not add
+  `$list.rs`.
+- After changing `petal/`, `route/files/`, `route/src/`, or `xtask/`, run
+  `cargo test --manifest-path route/Cargo.toml` and `scripts/build.sh`.
+- Do not commit generated `.wasm` artifacts, `target/` directories, or
+  `petal/target/`.
 
 ## Route/controller/module shape
 
