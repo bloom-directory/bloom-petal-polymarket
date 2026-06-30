@@ -10,6 +10,7 @@ pub(crate) mod wallet;
 
 pub use builder_creds::BuilderCredentials;
 pub use eip712::derive_deposit_wallet_address;
+#[allow(unused_imports)]
 pub use types::{Credentials, Market, OrderBook, Position, Side, Trade};
 
 pub const POLYGON: u64 = 137;

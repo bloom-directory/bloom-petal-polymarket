@@ -6,7 +6,6 @@ use crate::polymarket::{
     Credentials, POLYGON, Result, derive_deposit_wallet_address, validate_wallet_name,
 };
 use crate::signer::{POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_TIMESTAMP};
-use crate::wallet::{V2_APPROVAL_LABELS, v2_approval_calls};
 use alloy::primitives::{Address, U256};
 pub(crate) fn begin_onboarding(wallet: &str) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
@@ -727,64 +726,4 @@ pub(crate) fn fundable_deposit_wallet_from_status(status: &serde_json::Value) ->
         return None;
     }
     deposit.parse::<Address>().ok()
-}
-
-pub(crate) fn approval_preview(wallet: &str, owner: Address) -> serde_json::Value {
-    let status = stored_status_for_wallet(wallet, owner).ok();
-    let deposit = status
-        .as_ref()
-        .and_then(|status| {
-            status
-                .get("deposit_wallet")
-                .and_then(|value| value.get("address"))
-                .and_then(serde_json::Value::as_str)
-        })
-        .and_then(|address| address.parse::<Address>().ok())
-        .unwrap_or_else(|| derive_deposit_wallet_address(&owner, POLYGON));
-    let deposit_source = status
-        .as_ref()
-        .and_then(|status| {
-            status
-                .get("deposit_wallet")
-                .and_then(|value| value.get("source"))
-                .and_then(serde_json::Value::as_str)
-        })
-        .unwrap_or("local_estimate_unverified");
-    let raw_deposit_fundable = status
-        .as_ref()
-        .and_then(|status| {
-            status
-                .get("deposit_wallet")
-                .and_then(|value| value.get("fundable"))
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false);
-    let deposit_fundable = raw_deposit_fundable && deposit_source == "live_factory_resolved";
-    let calls: Vec<serde_json::Value> = v2_approval_calls()
-        .iter()
-        .zip(V2_APPROVAL_LABELS)
-        .map(|(call, label)| {
-            serde_json::json!({
-                "label": label,
-                "target": format!("{:#x}", call.target),
-                "value": call.value.to_string(),
-                "data": format!("0x{}", hex::encode(call.data.as_ref())),
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "wallet": wallet,
-        "owner": format!("{owner:#x}"),
-        "deposit_wallet": deposit.to_checksum(None),
-        "deposit_wallet_source": deposit_source,
-        "deposit_wallet_fundable": deposit_fundable,
-        "warning": if deposit_fundable {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String("do not fund this locally derived estimate; full onboarding must resolve the live factory address before funding or approvals".into())
-        },
-        "chain_id": POLYGON,
-        "calls": calls,
-        "signing": "preview_only"
-    })
 }

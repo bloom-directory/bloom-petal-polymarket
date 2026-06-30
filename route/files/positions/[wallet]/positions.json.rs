@@ -3,5 +3,15 @@ crate::route_file!(spec: crate::wallet_http_read_spec(10_000), read: |ctx: &crat
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::positions_json(wallet)
+    let user = match crate::position_user(wallet) {
+        Ok(user) => user,
+        Err(resp) => return resp,
+    };
+    match crate::get_json::<Vec<crate::polymarket::Position>>(&crate::url_with_query(
+        &format!("{}{}", crate::DATA, "/positions"),
+        &[("user", &user)],
+    )) {
+        Ok(value) => crate::read_json_value(&value),
+        Err(resp) => resp,
+    }
 });

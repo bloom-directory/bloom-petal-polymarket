@@ -11,5 +11,19 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(session) => session,
         Err(resp) => return resp,
     };
-    crate::DispatchResponse::Read(crate::render_fund_plan(&session).into_bytes())
+    crate::DispatchResponse::Read(
+        format!(
+            "# Polymarket funding request {}\n\nWallet: {}\nReceiver: {} ({})\nTarget pUSD: {}\nMax spend: {}\nFrom token: {}\nSlippage bps: {}\nStatus: {}\n",
+            session.id,
+            session.wallet,
+            session.deposit_wallet,
+            session.deposit_wallet_source,
+            session.target_pusd,
+            session.max_spend,
+            session.from_token,
+            session.slippage_bps,
+            session.status
+        )
+        .into_bytes(),
+    )
 });

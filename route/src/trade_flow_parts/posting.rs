@@ -21,7 +21,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     if !req.post {
         return error(-3, "post must be true");
     }
-    let base = trade_draft_base(wallet, id);
+    let base = format!("trade/{wallet}/drafts/{id}");
     let _lock = match acquire_trade_lock(wallet, id) {
         Ok(lock) => lock,
         Err(resp) => return resp,

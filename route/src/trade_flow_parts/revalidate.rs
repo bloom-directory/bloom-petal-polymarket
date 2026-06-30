@@ -19,7 +19,7 @@ pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> Dis
     if !req.revalidate {
         return error(-3, "revalidate must be true");
     }
-    let base = trade_draft_base(wallet, id);
+    let base = format!("trade/{wallet}/drafts/{id}");
     let _lock = match acquire_trade_lock(wallet, id) {
         Ok(lock) => lock,
         Err(resp) => return resp,

@@ -19,6 +19,10 @@
 - Keep simple business behavior in the route file: static hints, static child
   lists, one-off store keys, direct store reads, small JSON/text responses, and
   straightforward calls to Bloom host wrappers.
+- Route-local facts belong in the route file. The exact backing store key for an
+  endpoint, static read hint, static child list, and one-off
+  `read_store(format!(...))` call should be visible in `route/files/**`, not
+  hidden behind a shared helper whose name mirrors the route.
 - Add a Rust module only when it contains substantial reusable logic or a clear
   domain boundary. Good module candidates are protocol code, typed DTOs, policy
   evaluation, trade/fund/onboarding workflows, relayer orchestration,
@@ -35,11 +39,23 @@
 - Avoid stringly typed dispatch. Do not add generic helpers like
   `read_trade(kind, file)`, `read_fund(file)`, `read_market(file)`, or facades
   that only pass route/file names into a central dispatcher.
+- Do not add route-facing helpers that only format endpoint paths or wrap static
+  responses. Avoid helpers such as `trade_draft_policy_check_key(wallet, id)`,
+  `trade_post_hint()`, or `account_orders_json(wallet)` when the route can
+  directly express the path, hint, or small response.
+- Do not extract single-endpoint render helpers. If only
+  `route/files/trade/[wallet]/drafts/[id]/plan.md.rs` needs a Markdown body,
+  the `format!(...)` for that body belongs in that route file, not in
+  `render_trade_plan(draft)`. Extract rendering only when multiple routes share
+  the same non-trivial representation or the renderer is a domain formatter with
+  independent tests.
 - Do not pass arbitrary context labels such as `"trade plan"` through helper
   APIs. Error/context text should be owned by the function that creates the
   error.
-- File names may appear at the storage/path boundary, but prefer named constants,
-  typed enums, or explicit key-builder helpers when the same file name is reused.
+- File names may appear at the storage/path boundary. Prefer inline route-local
+  paths for one-off endpoint reads. Use named constants, typed enums, or
+  key-builder helpers only for real shared invariants inside multi-step
+  workflows, not to make route files thinner.
 - Do not introduce route-param convenience wrappers unless they remove real
   duplication across complex controllers. Straightforward `crate::param(ctx,
   "...")` extraction in a route file is fine.

@@ -47,10 +47,6 @@ pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse
     )
 }
 
-pub(crate) fn fund_request_key(wallet: &str, id: &str) -> String {
-    format!("fund/{wallet}/requests/{id}.json")
-}
-
 pub(crate) fn load_fund_session(
     wallet: &str,
     id: &str,
@@ -58,7 +54,7 @@ pub(crate) fn load_fund_session(
     if let Err(e) = validate_wallet_name(wallet) {
         return Err(error(-3, e.to_string()));
     }
-    let Some(bytes) = store_get(&fund_request_key(wallet, id)) else {
+    let Some(bytes) = store_get(&format!("fund/{wallet}/requests/{id}.json")) else {
         return Err(error(-1, "not found"));
     };
     serde_json::from_slice(&bytes).map_err(|e| error(-4, format!("corrupt fund request: {e}")))

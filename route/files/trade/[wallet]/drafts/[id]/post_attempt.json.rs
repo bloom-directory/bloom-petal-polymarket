@@ -7,5 +7,5 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::read_store(&crate::trade_draft_post_attempt_key(wallet, id))
+    crate::read_store(&format!("trade/{wallet}/drafts/{id}/post_attempt.json"))
 });
