@@ -1,6 +1,6 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::order::{OrderType, parse_micro};
+use crate::polymarket::order::{OrderType, parse_micro};
 use crate::polymarket::{Credentials, Result, Side};
 use alloy::primitives::Address;
 pub(crate) fn clob_response_status(raw: &serde_json::Value) -> String {

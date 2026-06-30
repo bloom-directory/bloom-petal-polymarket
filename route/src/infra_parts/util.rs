@@ -1,6 +1,6 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HostStatus, SdkError};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::{PolymarketError, Result};
 use url::Url;
 pub(crate) fn validate_relative_path(relative: &str) -> Result<&str, String> {
@@ -24,11 +24,11 @@ pub(crate) fn url_with_query(base: &str, pairs: &[(&str, &str)]) -> String {
 }
 
 pub(crate) fn now_secs() -> u64 {
-    bloom_petal_sdk::now_ms() / 1000
+    petal::sdk::now_ms() / 1000
 }
 
 pub(crate) fn now_millis() -> u128 {
-    u128::from(bloom_petal_sdk::now_ms())
+    u128::from(petal::sdk::now_ms())
 }
 
 pub(crate) fn sdk_error(e: SdkError) -> DispatchResponse {

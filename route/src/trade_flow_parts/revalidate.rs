@@ -1,7 +1,7 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HostStatus, SdkError};
-use crate::order::{OrderType, format_micro};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
+use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
 use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
@@ -164,7 +164,7 @@ pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> Dis
         {
             return error(-4, "failed to store policy check");
         }
-        match bloom_petal_sdk::store_del(&format!("{base}/review_intent.json")) {
+        match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
             Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
             Err(_) => return error(-4, "failed to clear stale review intent"),
         }
@@ -193,7 +193,7 @@ pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> Dis
                 Some(preflight)
             }
             Err(resp) => {
-                match bloom_petal_sdk::store_del(&format!("{base}/review_intent.json")) {
+                match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
                     Err(_) => return error(-4, "failed to clear stale review intent"),
                 }
@@ -350,7 +350,7 @@ pub(crate) fn refresh_trade_post_inputs(
         {
             return Err(error(-4, "failed to store policy check"));
         }
-        match bloom_petal_sdk::store_del(&format!("{base}/review_intent.json")) {
+        match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
             Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
             Err(_) => return Err(error(-4, "failed to clear stale review intent")),
         }

@@ -30,10 +30,10 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::sol_types::SolStruct;
 use serde::{Deserialize, Serialize};
 
-use crate::eip712::{CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
-use crate::signer::KeystoreSigner;
-use crate::types::Side;
-use crate::{PolymarketError, Result};
+use crate::polymarket::eip712::{CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
+use crate::polymarket::signer::KeystoreSigner;
+use crate::polymarket::types::Side;
+use crate::polymarket::{PolymarketError, Result};
 
 // Inside a module so `sol!` emits the Solidity type name `Order` without
 // clashing with anything else; the typehash depends on that exact name.

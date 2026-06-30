@@ -1,31 +1,31 @@
-crate::route_file!(spec: crate::account_read_spec(), read: |ctx: &crate::Ctx| {
-    let wallet = match crate::param(ctx, "wallet") {
+petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
+    let wallet = match petal::param(ctx, "wallet") {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    if let Err(e) = crate::validate_wallet_name(wallet) {
-        return crate::error(-3, e.to_string());
+    if let Err(e) = crate::polymarket::validate_wallet_name(wallet) {
+        return petal::error(-3, e.to_string());
     }
-    let owner = match crate::wallet_address(wallet) {
+    let owner = match crate::infra_parts::host_calls::wallet_address(wallet) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
-    let creds = match crate::load_creds(wallet) {
+    let creds = match crate::infra_parts::credentials::load_creds(wallet) {
         Ok(creds) => creds,
         Err(resp) => return resp,
     };
-    match crate::clob_l2_get_json(
+    match crate::infra_parts::clob_l2::clob_l2_get_json(
         owner,
         &creds,
         "/balance-allowance",
         &[("asset_type", "COLLATERAL"), ("signature_type", "3")],
     ) {
         Ok(clob_balance_allowance) => {
-            let status = match crate::local_status_for_wallet(wallet, owner) {
+            let status = match crate::onboarding::local_status_for_wallet(wallet, owner) {
                 Ok(status) => status,
                 Err(resp) => return resp,
             };
-            crate::read_json_value(&serde_json::json!({
+            petal::read_json_value(&serde_json::json!({
                 "wallet": wallet,
                 "owner": format!("{owner:#x}"),
                 "credentials_present": true,

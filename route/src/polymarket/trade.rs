@@ -8,12 +8,12 @@
 use crate::clob::ClobClient;
 #[cfg(feature = "native-client")]
 use crate::gamma::GammaClient;
-use crate::order::{self, LimitQuote, OrderType};
-use crate::order_store::{DraftStatus, OrderDraft};
+use crate::polymarket::order::{self, LimitQuote, OrderType};
+use crate::polymarket::order_model::{DraftStatus, OrderDraft};
 #[cfg(feature = "native-client")]
-use crate::types::BookLevel;
-use crate::types::{Market, Side};
-use crate::{PolymarketError, Result};
+use crate::polymarket::types::BookLevel;
+use crate::polymarket::types::{Market, Side};
+use crate::polymarket::{PolymarketError, Result};
 
 /// Live market view used at both draft and confirm time.
 #[derive(Debug, Clone)]

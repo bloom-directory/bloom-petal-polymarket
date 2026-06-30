@@ -1,5 +1,5 @@
-crate::route_file!(spec: crate::static_dir_spec(), list:
-    crate::dir_names(&[
+petal::route_file!(spec: petal::static_dir_spec(), list:
+    petal::dir_names(&[
         "markets",
         "search",
         "positions",
@@ -7,6 +7,5 @@ crate::route_file!(spec: crate::static_dir_spec(), list:
         "account",
         "trade",
         "fund",
-        "meta",
     ])
 );

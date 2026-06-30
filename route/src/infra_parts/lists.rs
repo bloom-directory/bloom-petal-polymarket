@@ -1,7 +1,7 @@
-use crate::*;
+use crate::prelude::*;
 
 pub(crate) fn store_wallets(prefix: &str) -> Vec<String> {
-    let Ok(keys) = bloom_petal_sdk::store_list(prefix, MAX_LIST_BYTES) else {
+    let Ok(keys) = petal::sdk::store_list(prefix, MAX_LIST_BYTES) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -19,7 +19,7 @@ pub(crate) fn store_wallets(prefix: &str) -> Vec<String> {
 }
 
 pub(crate) fn vfs_wallets_or_store(store_prefix: &str) -> Vec<String> {
-    match bloom_petal_sdk::vfs_list("wallets", MAX_LIST_BYTES) {
+    match petal::sdk::vfs_list("wallets", MAX_LIST_BYTES) {
         Ok(names) => safe_wallet_names(names),
         Err(_) if store_prefix.is_empty() => Vec::new(),
         Err(_) => store_wallets(store_prefix),
@@ -39,7 +39,7 @@ pub(crate) fn safe_wallet_names(names: Vec<String>) -> Vec<String> {
 }
 
 pub(crate) fn store_ids(prefix: &str, suffix: &str) -> Vec<String> {
-    let Ok(keys) = bloom_petal_sdk::store_list(prefix, MAX_LIST_BYTES) else {
+    let Ok(keys) = petal::sdk::store_list(prefix, MAX_LIST_BYTES) else {
         return Vec::new();
     };
     let mut out = Vec::new();

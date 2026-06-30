@@ -20,7 +20,7 @@ use base64::prelude::{BASE64_URL_SAFE, Engine as _};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::{PolymarketError, Result, eip712};
+use crate::polymarket::{PolymarketError, Result, eip712};
 
 // CLOB auth header names (shared L1/L2 where applicable).
 pub const POLY_ADDRESS: &str = "POLY_ADDRESS";

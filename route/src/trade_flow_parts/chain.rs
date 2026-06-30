@@ -1,7 +1,7 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::DispatchResponse;
-use crate::eip712::{
+use petal::sdk::DispatchResponse;
+use crate::polymarket::eip712::{
     CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE_V2, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
     NEG_RISK_EXCHANGE_V2, PUSD,
 };
@@ -61,7 +61,7 @@ pub(crate) fn read_chain_deposit_wallet_deployed(
         "chains/polygon/contracts/{}/proxy/implementation",
         address.to_checksum(None)
     );
-    let bytes = bloom_petal_sdk::vfs_read(&path, MAX_CHAIN_READ_BYTES)
+    let bytes = petal::sdk::vfs_read(&path, MAX_CHAIN_READ_BYTES)
         .map_err(|e| sdk_error_with_context("read deposit wallet proxy implementation", e))?;
     let text = core::str::from_utf8(&bytes)
         .map_err(|_| error(-4, "chain proxy implementation response is not UTF-8"))?;
@@ -225,15 +225,15 @@ pub(crate) fn read_chain_method(
     );
     let bytes =
         serde_json::to_vec(body).map_err(|e| error(-4, format!("chain method body: {e}")))?;
-    bloom_petal_sdk::vfs_write(&path, &bytes)
+    petal::sdk::vfs_write(&path, &bytes)
         .map_err(|e| sdk_error_with_context("stage chain method read", e))?;
-    let response = bloom_petal_sdk::vfs_read(&path, MAX_CHAIN_METHOD_BYTES)
+    let response = petal::sdk::vfs_read(&path, MAX_CHAIN_METHOD_BYTES)
         .map_err(|e| sdk_error_with_context("read chain method result", e))?;
     serde_json::from_slice(&response).map_err(|e| error(-4, format!("chain method JSON: {e}")))
 }
 
 pub(crate) fn chain_method_nonce() -> String {
-    let bytes = bloom_petal_sdk::random_bytes(16).unwrap_or_else(|_| {
+    let bytes = petal::sdk::random_bytes(16).unwrap_or_else(|_| {
         let mut fallback = [0u8; 16];
         fallback[..8].copy_from_slice(&now_millis().to_be_bytes());
         fallback.to_vec()

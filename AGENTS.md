@@ -28,11 +28,14 @@
   evaluation, trade/fund/onboarding workflows, relayer orchestration,
   HTTP/store/signing infrastructure, and other multi-step behavior reused by
   more than one route.
-- Keep framework code generic in `route/src/framework.rs`: route specs, entry
-  metadata, param lookup, route macros, and response/error conversion. Framework
-  helpers must not know Polymarket route semantics.
-- Keep host import wrappers in `route/src/host.rs`; route files and domain
-  modules should use the local wrappers instead of WIT bindings directly.
+- Keep foundational petal framework and SDK code in the local `petal` crate:
+  route specs, entry metadata, param lookup, route macros, WIT bindings, host
+  SDK wrappers, and response/error conversion. Framework helpers must not know
+  Polymarket route semantics.
+- Route files should use `petal::route_file!`, `petal::Ctx`, `petal::param`,
+  `petal::files`, `petal::dirs`, `petal::read_json_value`, and related generic
+  framework helpers directly. Domain modules should use `petal::sdk` for Bloom
+  host imports instead of WIT bindings directly.
 - Keep Polymarket protocol/domain helpers in `route/src/polymarket/`: order
   construction, signing, typed API structs, wallet calls, EIP-712, and credential
   types.
@@ -57,7 +60,7 @@
   key-builder helpers only for real shared invariants inside multi-step
   workflows, not to make route files thinner.
 - Do not introduce route-param convenience wrappers unless they remove real
-  duplication across complex controllers. Straightforward `crate::param(ctx,
+  duplication across complex controllers. Straightforward `petal::param(ctx,
   "...")` extraction in a route file is fine.
 - A good boundary is: route controllers compose endpoint-specific behavior;
   focused modules implement reusable workflows or infrastructure; Polymarket

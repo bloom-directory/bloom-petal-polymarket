@@ -1,10 +1,10 @@
-use crate::*;
+use crate::prelude::*;
 use std::time::Duration;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HttpRequest, SignRequest};
-use crate::eip712::{Batch, FACTORY, batch_signing_hash};
+use petal::sdk::{DispatchResponse, HttpRequest, SignRequest};
+use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash};
 use crate::polymarket::{BuilderCredentials, Credentials, POLYGON, Result};
-use crate::wallet::v2_approval_calls;
+use crate::polymarket::wallet::v2_approval_calls;
 use alloy::primitives::{Address, B256, U256};
 pub(crate) struct LocalRelayerTx {
     pub(crate) id: String,
@@ -66,7 +66,7 @@ pub(crate) fn relayer_submit(
         .map(|(name, value)| (name.to_string(), value))
         .collect();
     headers.push(("content-type".into(), "application/json".into()));
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "POST".into(),
             url: format!("{RELAYER}/submit"),
@@ -145,7 +145,7 @@ pub(crate) fn relayer_transaction(id: &str) -> Result<LocalRelayerTx, DispatchRe
 }
 
 pub(crate) fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchResponse> {
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
             url: url.into(),
@@ -213,7 +213,7 @@ pub(crate) fn sign_hash_hex(
     purpose: &str,
     hash: B256,
 ) -> Result<String, DispatchResponse> {
-    match bloom_petal_sdk::sign_hash(&SignRequest {
+    match petal::sdk::sign_hash(&SignRequest {
         wallet: wallet.into(),
         hash32: hash.into(),
         purpose: purpose.into(),

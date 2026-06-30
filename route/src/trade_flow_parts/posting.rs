@@ -1,7 +1,7 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HostStatus, SdkError, SignRequest};
-use crate::order::{
+use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignRequest};
+use crate::polymarket::order::{
     LimitQuote, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
     poly1271_digest, wrap_poly1271_signature,
 };
@@ -59,7 +59,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             Err(resp) => return resp,
         };
     let review_intent_bytes =
-        match bloom_petal_sdk::store_get(&format!("{base}/review_intent.json"), MAX_STORE_BYTES) {
+        match petal::sdk::store_get(&format!("{base}/review_intent.json"), MAX_STORE_BYTES) {
             Ok(bytes) => bytes,
             Err(SdkError::Host(HostStatus::NotFound)) => {
                 return error(-3, "missing final review intent; write revalidate first");
@@ -147,7 +147,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match bloom_petal_sdk::sign_hash(&SignRequest {
+    let inner_sig = match petal::sdk::sign_hash(&SignRequest {
         wallet: wallet.into(),
         hash32: digest.into(),
         purpose: "polymarket.order.poly1271".into(),

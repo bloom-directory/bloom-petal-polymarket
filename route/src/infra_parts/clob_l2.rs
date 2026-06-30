@@ -1,8 +1,8 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HttpRequest};
+use petal::sdk::{DispatchResponse, HttpRequest};
 use crate::polymarket::{Credentials, Result};
-use crate::signer::l2_headers;
+use crate::polymarket::signer::l2_headers;
 use alloy::primitives::Address;
 pub(crate) fn clob_l2_get_json(
     owner: Address,
@@ -23,7 +23,7 @@ pub(crate) fn clob_l2_get_json(
     )
     .map_err(|e| error(-4, e.to_string()))?;
     let url = url_with_query(&format!("{CLOB}{path}"), query);
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
             url,
@@ -70,7 +70,7 @@ pub(crate) fn clob_l2_post_json(
         body,
     )
     .map_err(|e| error(-4, e.to_string()))?;
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "POST".into(),
             url: format!("{CLOB}{path}"),
@@ -113,7 +113,7 @@ pub(crate) fn clob_l2_delete_json(
         body,
     )
     .map_err(|e| error(-4, e.to_string()))?;
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "DELETE".into(),
             url: format!("{CLOB}{path}"),

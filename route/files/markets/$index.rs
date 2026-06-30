@@ -1,16 +1,16 @@
-crate::route_file!(spec: crate::http_dir_spec(), fallible_list:
+petal::route_file!(spec: petal::http_dir_spec(), fallible_list:
     {
-        let url = crate::url_with_query(
-            &format!("{}{}", crate::GAMMA, "/markets"),
+        let url = crate::infra_parts::util::url_with_query(
+            &format!("{}{}", crate::constants::GAMMA, "/markets"),
             &[
                 ("closed", "false"),
-                ("limit", &crate::MARKETS_LIST_LIMIT.to_string()),
+                ("limit", &crate::constants::MARKETS_LIST_LIMIT.to_string()),
                 ("order", "volumeNum"),
                 ("ascending", "false"),
             ],
         );
-        match crate::get_json::<Vec<crate::polymarket::Market>>(&url) {
-            Ok(markets) => Ok(crate::dirs(
+        match crate::infra_parts::http::get_json::<Vec<crate::polymarket::Market>>(&url) {
+            Ok(markets) => Ok(petal::dirs(
                 markets
                     .into_iter()
                     .filter_map(|market| (!market.slug.is_empty()).then_some(market.slug))

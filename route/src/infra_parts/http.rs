@@ -1,6 +1,6 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HttpRequest};
+use petal::sdk::{DispatchResponse, HttpRequest};
 use crate::polymarket::{Credentials, Result};
 pub(crate) fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, DispatchResponse> {
     let resp = http("GET", url, &[], Vec::new())?;
@@ -22,7 +22,7 @@ pub(crate) fn clob_auth_request(
     path: &str,
     headers: &[(&str, String)],
 ) -> Result<Credentials, DispatchResponse> {
-    let resp = bloom_petal_sdk::http_fetch(
+    let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: method.into(),
             url: format!("{CLOB}{path}"),

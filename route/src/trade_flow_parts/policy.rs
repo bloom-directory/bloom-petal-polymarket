@@ -1,9 +1,9 @@
-use crate::*;
+use crate::prelude::*;
 use std::collections::BTreeSet;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HostStatus, SdkError};
-use crate::eip712::{CTF, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
-use crate::order::{format_micro, parse_micro};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
+use crate::polymarket::eip712::{CTF, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
+use crate::polymarket::order::{format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 
@@ -17,7 +17,7 @@ pub(crate) fn enable_trade_posting(policy_check: &mut serde_json::Value, reason:
 
 pub(crate) fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchResponse> {
     let bytes =
-        bloom_petal_sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
+        petal::sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
             .map_err(sdk_error)?;
     let raw = core::str::from_utf8(&bytes)
         .map_err(|e| error(-4, format!("wallet policy is not utf-8: {e}")))?;
@@ -26,7 +26,7 @@ pub(crate) fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchR
 
 pub(crate) fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
     let prefix = format!("trade/{wallet}/receipts/");
-    let keys = match bloom_petal_sdk::store_list(&prefix, MAX_LIST_BYTES) {
+    let keys = match petal::sdk::store_list(&prefix, MAX_LIST_BYTES) {
         Ok(keys) => keys,
         Err(_) => return (false, None),
     };
@@ -76,7 +76,7 @@ pub(crate) fn audited_receipt_ids_since(
     cutoff_ms: u128,
 ) -> Result<Vec<String>, SdkError> {
     let key = format!("trade/{wallet}/audit.jsonl");
-    let bytes = match bloom_petal_sdk::store_get(&key, MAX_STORE_BYTES) {
+    let bytes = match petal::sdk::store_get(&key, MAX_STORE_BYTES) {
         Ok(bytes) => bytes,
         Err(SdkError::Host(HostStatus::NotFound)) => return Ok(Vec::new()),
         Err(e) => return Err(e),

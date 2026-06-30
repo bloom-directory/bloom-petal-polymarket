@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
-use crate::order::{OrderType, parse_micro};
+use crate::polymarket::order::{OrderType, parse_micro};
 use crate::polymarket::{Market, Side};
-use crate::trade as shared_trade;
+use crate::polymarket::trade as shared_trade;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct TradeNewRequest {

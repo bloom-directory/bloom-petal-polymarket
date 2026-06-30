@@ -1,10 +1,10 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::DispatchResponse;
-use crate::order::{LimitQuote, OrderType, parse_micro};
+use petal::sdk::DispatchResponse;
+use crate::polymarket::order::{LimitQuote, OrderType, parse_micro};
 use crate::polymarket::{Market, OrderBook, Result, Side};
-use crate::trade as shared_trade;
-use crate::types::BookLevel;
+use crate::polymarket::trade as shared_trade;
+use crate::polymarket::types::BookLevel;
 pub(crate) fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, DispatchResponse> {
     let market: Market = get_json(&format!("{GAMMA}/markets/slug/{slug}"))?;
     if !market.is_binary() {

@@ -1,3 +1,3 @@
-crate::route_file!(spec: crate::store_dir_spec(), list:
-    crate::dirs(crate::vfs_wallets_or_store("trade/"))
+petal::route_file!(spec: petal::store_dir_spec(), list:
+    petal::dirs(crate::infra_parts::lists::vfs_wallets_or_store("trade/"))
 );

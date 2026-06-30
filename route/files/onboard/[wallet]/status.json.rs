@@ -1,13 +1,13 @@
-crate::route_file!(spec: crate::chain_read_spec(), read: |ctx: &crate::Ctx| {
-    let wallet = match crate::param(ctx, "wallet") {
+petal::route_file!(spec: petal::chain_read_spec(), read: |ctx: &petal::Ctx| {
+    let wallet = match petal::param(ctx, "wallet") {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    if let Err(e) = crate::validate_wallet_name(wallet) {
-        return crate::error(-3, e.to_string());
+    if let Err(e) = crate::polymarket::validate_wallet_name(wallet) {
+        return petal::error(-3, e.to_string());
     }
-    let status = match crate::wallet_address(wallet) {
-        Ok(owner) => match crate::local_status_for_wallet(wallet, owner) {
+    let status = match crate::infra_parts::host_calls::wallet_address(wallet) {
+        Ok(owner) => match crate::onboarding::local_status_for_wallet(wallet, owner) {
             Ok(status) => status,
             Err(resp) => return resp,
         },
@@ -19,5 +19,5 @@ crate::route_file!(spec: crate::chain_read_spec(), read: |ctx: &crate::Ctx| {
             "message": "write begin to mint or derive CLOB credentials"
         }),
     };
-    crate::read_json_value(&status)
+    petal::read_json_value(&status)
 });

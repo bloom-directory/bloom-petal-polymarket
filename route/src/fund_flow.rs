@@ -1,7 +1,7 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::DispatchResponse;
-use crate::order::parse_micro;
+use petal::sdk::DispatchResponse;
+use crate::polymarket::order::parse_micro;
 use crate::polymarket::{Result, validate_wallet_name};
 pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {

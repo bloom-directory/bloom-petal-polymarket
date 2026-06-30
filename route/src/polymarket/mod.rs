@@ -2,6 +2,8 @@ pub(crate) mod builder_creds;
 pub(crate) mod creds;
 pub(crate) mod eip712;
 pub(crate) mod order;
+pub(crate) mod order_model;
+#[cfg(test)]
 pub(crate) mod order_store;
 pub(crate) mod signer;
 pub(crate) mod trade;

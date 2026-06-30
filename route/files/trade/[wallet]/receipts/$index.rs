@@ -1,6 +1,6 @@
-crate::route_file!(spec: crate::store_dir_spec(), ctx_list: |ctx: &crate::Ctx| {
-    let wallet = crate::param(ctx, "wallet")?;
-    Ok(crate::dirs(crate::store_ids(
+petal::route_file!(spec: petal::store_dir_spec(), ctx_list: |ctx: &petal::Ctx| {
+    let wallet = petal::param(ctx, "wallet")?;
+    Ok(petal::dirs(crate::infra_parts::lists::store_ids(
         &format!("trade/{wallet}/receipts/"),
         "/receipt.json",
     )))

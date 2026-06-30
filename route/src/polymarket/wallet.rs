@@ -10,7 +10,7 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::sol;
 use alloy::sol_types::SolCall;
 
-use crate::eip712::{
+use crate::polymarket::eip712::{
     CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE_V2, Call, NEG_RISK_CTF_COLLATERAL_ADAPTER,
     NEG_RISK_EXCHANGE_V2, PUSD,
 };

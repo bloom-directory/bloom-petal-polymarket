@@ -1,11 +1,11 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HttpRequest};
+use petal::sdk::{DispatchResponse, HttpRequest};
 use crate::polymarket::Result;
 use alloy::primitives::Address;
 pub(crate) fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
     let path = format!("wallets/{wallet}/address");
-    let bytes = bloom_petal_sdk::vfs_read(&path, 128).map_err(sdk_error)?;
+    let bytes = petal::sdk::vfs_read(&path, 128).map_err(sdk_error)?;
     let raw = core::str::from_utf8(&bytes)
         .map_err(|e| error(-4, format!("wallet address is not utf-8: {e}")))?
         .trim();
@@ -18,8 +18,8 @@ pub(crate) fn http(
     url: &str,
     headers: &[(&str, &str)],
     body: Vec<u8>,
-) -> Result<bloom_petal_sdk::HttpResponse, DispatchResponse> {
-    bloom_petal_sdk::http_fetch(
+) -> Result<petal::sdk::HttpResponse, DispatchResponse> {
+    petal::sdk::http_fetch(
         &HttpRequest {
             method: method.into(),
             url: url.into(),

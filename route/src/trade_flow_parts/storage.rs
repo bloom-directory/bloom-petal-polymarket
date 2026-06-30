@@ -1,5 +1,6 @@
-use crate::*;
+use crate::prelude::*;
 
+use petal::sdk::DispatchResponse;
 use crate::polymarket::{Result, validate_wallet_name};
 
 pub(crate) fn load_trade_draft(

@@ -1,6 +1,6 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::DispatchResponse;
+use petal::sdk::DispatchResponse;
 use crate::polymarket::{Market, Result};
 use alloy::primitives::Address;
 pub(crate) fn market_by_slug(slug: &str) -> Result<Market, DispatchResponse> {

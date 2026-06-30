@@ -1,10 +1,10 @@
-use crate::*;
+use crate::prelude::*;
 
-use crate::bloom_petal_sdk::{DispatchResponse, HostStatus, SdkError};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::Result;
 use serde::Serialize;
 pub(crate) fn read_store(key: &str) -> DispatchResponse {
-    match bloom_petal_sdk::store_get(key, MAX_STORE_BYTES) {
+    match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(SdkError::Host(HostStatus::NotFound)) => error(-1, "not found"),
         Err(e) => sdk_error(e),
@@ -18,7 +18,7 @@ pub(crate) fn acquire_trade_lock(
     let key = format!("trade/{wallet}/.lock");
     for attempt in 0..2 {
         let bytes = trade_lock_body(wallet, draft_id)?;
-        match bloom_petal_sdk::store_put_new(&key, &bytes, false) {
+        match petal::sdk::store_put_new(&key, &bytes, false) {
             Ok(()) => {
                 return Ok(StoreTradeLock {
                     key,
@@ -32,7 +32,7 @@ pub(crate) fn acquire_trade_lock(
                         format!("another trade operation holds the lock for wallet '{wallet}'"),
                     ));
                 };
-                match bloom_petal_sdk::store_del_if_value(&key, &stale_bytes) {
+                match petal::sdk::store_del_if_value(&key, &stale_bytes) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => continue,
                     Err(SdkError::Host(HostStatus::Denied)) => {
                         return Err(error(
@@ -62,7 +62,7 @@ pub(crate) fn acquire_trade_lock(
 
 pub(crate) fn trade_lock_body(wallet: &str, draft_id: &str) -> Result<Vec<u8>, DispatchResponse> {
     let mut token = [0u8; 16];
-    let random = bloom_petal_sdk::random_bytes(token.len())
+    let random = petal::sdk::random_bytes(token.len())
         .map_err(|e| error(-4, format!("trade lock random token: {}", e.message())))?;
     token.copy_from_slice(&random);
     let body = serde_json::json!({
@@ -75,7 +75,7 @@ pub(crate) fn trade_lock_body(wallet: &str, draft_id: &str) -> Result<Vec<u8>, D
 }
 
 pub(crate) fn trade_lock_stale_bytes(key: &str) -> Option<Vec<u8>> {
-    match bloom_petal_sdk::store_get(key, MAX_STORE_BYTES) {
+    match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => {
             let stale = serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()
@@ -95,12 +95,12 @@ pub(crate) struct StoreTradeLock {
 
 impl Drop for StoreTradeLock {
     fn drop(&mut self) {
-        let _ = bloom_petal_sdk::store_del_if_value(&self.key, &self.expected);
+        let _ = petal::sdk::store_del_if_value(&self.key, &self.expected);
     }
 }
 
 pub(crate) fn store_get(key: &str) -> Option<Vec<u8>> {
-    bloom_petal_sdk::store_get(key, MAX_STORE_BYTES).ok()
+    petal::sdk::store_get(key, MAX_STORE_BYTES).ok()
 }
 
 pub(crate) fn store_put_json<T: Serialize>(key: &str, value: &T, secret: bool) -> DispatchResponse {
@@ -108,7 +108,7 @@ pub(crate) fn store_put_json<T: Serialize>(key: &str, value: &T, secret: bool) -
         Ok(bytes) => bytes,
         Err(e) => return error(-4, format!("json: {e}")),
     };
-    match bloom_petal_sdk::store_put(key, &bytes, secret) {
+    match petal::sdk::store_put(key, &bytes, secret) {
         Ok(()) => DispatchResponse::Write,
         Err(e) => sdk_error(e),
     }
@@ -144,7 +144,7 @@ pub(crate) fn append_trade_audit(
     details: serde_json::Value,
 ) -> DispatchResponse {
     let key = format!("trade/{wallet}/audit.jsonl");
-    let mut text = match bloom_petal_sdk::store_get(&key, MAX_STORE_BYTES) {
+    let mut text = match petal::sdk::store_get(&key, MAX_STORE_BYTES) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(SdkError::Host(HostStatus::NotFound)) => String::new(),
         Err(e) => return sdk_error(e),
@@ -156,7 +156,7 @@ pub(crate) fn append_trade_audit(
     });
     text.push_str(&line.to_string());
     text.push('\n');
-    match bloom_petal_sdk::store_put(&key, text.as_bytes(), false) {
+    match petal::sdk::store_put(&key, text.as_bytes(), false) {
         Ok(()) => DispatchResponse::Write,
         Err(e) => sdk_error(e),
     }

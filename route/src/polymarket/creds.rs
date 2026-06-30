@@ -8,8 +8,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::types::Credentials;
-use crate::{PolymarketError, Result};
+use crate::polymarket::types::Credentials;
+use crate::polymarket::{PolymarketError, Result};
 
 /// File-backed store for per-wallet CLOB credentials.
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ impl CredentialStore {
 
     /// Persist `creds` for `wallet` at mode `0o600` (dir `0o700`).
     pub fn save(&self, wallet: &str, creds: &Credentials) -> Result<()> {
-        crate::validate_wallet_name(wallet)?;
+        crate::polymarket::validate_wallet_name(wallet)?;
         let dir = self.wallet_dir(wallet);
         fs::create_dir_all(&dir)?;
         #[cfg(unix)]
@@ -52,7 +52,7 @@ impl CredentialStore {
 
     /// Load `wallet`'s credentials, or `None` if not yet stored.
     pub fn load(&self, wallet: &str) -> Result<Option<Credentials>> {
-        crate::validate_wallet_name(wallet)?;
+        crate::polymarket::validate_wallet_name(wallet)?;
         let path = self.creds_path(wallet);
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
@@ -65,7 +65,7 @@ impl CredentialStore {
     /// have stored credentials (and must not escape the store dir), so it reads
     /// as `false` rather than touching the filesystem with an unchecked path.
     pub fn exists(&self, wallet: &str) -> bool {
-        if crate::validate_wallet_name(wallet).is_err() {
+        if crate::polymarket::validate_wallet_name(wallet).is_err() {
             return false;
         }
         Path::new(&self.creds_path(wallet)).exists()

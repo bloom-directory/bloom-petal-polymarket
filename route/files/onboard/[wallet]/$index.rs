@@ -1,5 +1,5 @@
-crate::route_file!(spec: crate::static_dir_spec(), list: {
-    let mut out = crate::files(&["status.json", "plan.md", "approvals.json"]);
-    out.push(crate::writable("begin"));
+petal::route_file!(spec: petal::static_dir_spec(), list: {
+    let mut out = petal::files(&["status.json", "plan.md", "approvals.json"]);
+    out.push(petal::writable("begin"));
     out
 });
