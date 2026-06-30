@@ -3,5 +3,5 @@ crate::route_file!(spec: crate::wallet_http_read_spec(10_000), read: |ctx: &crat
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::services::position::positions_json(wallet)
+    crate::positions_json(wallet)
 });

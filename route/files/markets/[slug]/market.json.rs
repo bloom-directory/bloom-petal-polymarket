@@ -3,5 +3,5 @@ crate::route_file!(spec: crate::http_read_spec(30_000), read: |ctx: &crate::Ctx|
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::services::market::market_json(slug)
+    crate::market_json(slug)
 });

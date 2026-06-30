@@ -1,3 +1,12 @@
 crate::route_file!(spec: crate::static_dir_spec(), list:
-    crate::services::tree::root()
+    crate::dir_names(&[
+        "markets",
+        "search",
+        "positions",
+        "onboard",
+        "account",
+        "trade",
+        "fund",
+        "meta",
+    ])
 );

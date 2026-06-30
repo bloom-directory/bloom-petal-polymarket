@@ -3,5 +3,5 @@ crate::route_file!(spec: crate::chain_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::services::onboard::status_json(wallet)
+    crate::onboard_status_json(wallet)
 });

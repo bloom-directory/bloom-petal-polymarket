@@ -3,5 +3,5 @@ crate::route_file!(spec: crate::account_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::services::account::portfolio_json(wallet)
+    crate::account_portfolio_json(wallet)
 });

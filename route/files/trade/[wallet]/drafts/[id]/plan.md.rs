@@ -7,9 +7,9 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    let draft = match crate::services::load_trade_draft(wallet, id) {
+    let draft = match crate::load_trade_draft(wallet, id) {
         Ok(draft) => draft,
         Err(resp) => return resp,
     };
-    crate::DispatchResponse::Read(crate::services::render_trade_plan(&draft).into_bytes())
+    crate::DispatchResponse::Read(crate::render_trade_plan(&draft).into_bytes())
 });

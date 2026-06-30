@@ -7,5 +7,5 @@ crate::route_file!(spec: crate::store_read_spec(), read: |ctx: &crate::Ctx| {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    crate::services::read_store(&crate::services::trade_draft_policy_check_key(wallet, id))
+    crate::read_store(&crate::trade_draft_policy_check_key(wallet, id))
 });

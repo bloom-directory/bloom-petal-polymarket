@@ -9,29 +9,32 @@
   `scripts/build.sh` to regenerate local route
   artifacts for validation. Do not commit generated `.wasm` artifacts.
 
-## Route/controller/service shape
+## Route/controller/module shape
 
 - Treat `route/files/**/*.rs` as the route controllers. A route file should own
   the endpoint-level composition: route params, list/read/write selection, small
-  response assembly, and the call into lower-level helpers or services.
-- Do not hide simple endpoint reads behind one-line service wrappers. If an
-  endpoint just reads a stored artifact, loads one object, or renders one small
-  response, keep that composition in the route file.
-- Put reusable business workflows in `route/src/services/`: creating drafts,
-  revalidating/posting/cancelling trades, onboarding, funding, relayer flows,
-  policy evaluation, HTTP/store/chain orchestration, and other multi-step
-  behavior.
+  response assembly, and any simple endpoint behavior.
+- There is no service layer. Do not add `route/src/services/`, `route/src/app.rs`,
+  or another catch-all module that centralizes route behavior under a new name.
+- Keep simple business behavior in the route file: static hints, static child
+  lists, one-off store keys, direct store reads, small JSON/text responses, and
+  straightforward calls to Bloom host wrappers.
+- Add a Rust module only when it contains substantial reusable logic or a clear
+  domain boundary. Good module candidates are protocol code, typed DTOs, policy
+  evaluation, trade/fund/onboarding workflows, relayer orchestration,
+  HTTP/store/signing infrastructure, and other multi-step behavior reused by
+  more than one route.
 - Keep framework code generic in `route/src/framework.rs`: route specs, entry
   metadata, param lookup, route macros, and response/error conversion. Framework
   helpers must not know Polymarket route semantics.
-- Keep host import wrappers in `route/src/host.rs`; route files and services
-  should use the local wrappers instead of WIT bindings directly.
+- Keep host import wrappers in `route/src/host.rs`; route files and domain
+  modules should use the local wrappers instead of WIT bindings directly.
 - Keep Polymarket protocol/domain helpers in `route/src/polymarket/`: order
   construction, signing, typed API structs, wallet calls, EIP-712, and credential
   types.
 - Avoid stringly typed dispatch. Do not add generic helpers like
-  `read_trade(kind, file)`, `read_fund(file)`, `read_market(file)`, or service
-  facades that only pass route/file names into a central dispatcher.
+  `read_trade(kind, file)`, `read_fund(file)`, `read_market(file)`, or facades
+  that only pass route/file names into a central dispatcher.
 - Do not pass arbitrary context labels such as `"trade plan"` through helper
   APIs. Error/context text should be owned by the function that creates the
   error.
@@ -40,6 +43,7 @@
 - Do not introduce route-param convenience wrappers unless they remove real
   duplication across complex controllers. Straightforward `crate::param(ctx,
   "...")` extraction in a route file is fine.
-- A good service boundary is: controllers compose endpoint-specific behavior;
-  services implement reusable workflows; storage/path helpers build keys and
-  perform low-level reads/writes; Polymarket modules implement protocol details.
+- A good boundary is: route controllers compose endpoint-specific behavior;
+  focused modules implement reusable workflows or infrastructure; Polymarket
+  modules implement protocol details. If a module starts looking like an index
+  of route handlers, move that behavior back into the corresponding route files.

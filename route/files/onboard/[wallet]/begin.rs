@@ -1,16 +1,12 @@
 crate::route_file!(spec: crate::write_spec(), read:
-    |ctx: &crate::Ctx| {
-        let wallet = match crate::param(ctx, "wallet") {
-            Ok(value) => value,
-            Err(resp) => return resp,
-        };
-        crate::services::onboard::begin_read(wallet)
+    |_ctx: &crate::Ctx| {
+        crate::DispatchResponse::Read(b"write anything here to mint or derive CLOB credentials with the daemon keystore\n".to_vec())
     },
     write: |ctx: &crate::Ctx, _body: &[u8]| {
         let wallet = match crate::param(ctx, "wallet") {
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::services::onboard::begin_write(wallet)
+        crate::begin_onboarding(wallet)
     }
 );
