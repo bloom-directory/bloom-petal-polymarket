@@ -230,7 +230,7 @@ const fn hex_nibble(c: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::POLYGON;
+    use crate::polymarket::POLYGON;
     use std::str::FromStr;
 
     #[test]

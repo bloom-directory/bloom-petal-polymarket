@@ -759,10 +759,10 @@ mod tests {
             signature_type: SIG_TYPE_POLY_1271,
         };
         let o = build_order(&p);
-        let normal = signing_hash(&o, crate::POLYGON, false);
-        let neg = signing_hash(&o, crate::POLYGON, true);
+        let normal = signing_hash(&o, crate::polymarket::POLYGON, false);
+        let neg = signing_hash(&o, crate::polymarket::POLYGON, true);
         assert_ne!(normal, neg, "verifying contract must separate the domains");
-        let d = ctf_exchange_domain(crate::POLYGON, true);
+        let d = ctf_exchange_domain(crate::polymarket::POLYGON, true);
         assert_eq!(d.name.as_deref(), Some("Polymarket CTF Exchange"));
         assert_eq!(d.version.as_deref(), Some("2"));
     }
@@ -821,7 +821,7 @@ mod tests {
         };
 
         // Normal CTF Exchange V2 domain.
-        let hash = signing_hash(&order, crate::POLYGON, false);
+        let hash = signing_hash(&order, crate::polymarket::POLYGON, false);
         assert_eq!(
             hash,
             b256!("e517dd3eb96dd4bb53991b43d62e69f7c5d10ee4b510e5e87e93bbb0535358ba"),
@@ -837,7 +837,7 @@ mod tests {
         );
 
         // Neg-risk exchange: same name/version, different verifying contract.
-        let hash = signing_hash(&order, crate::POLYGON, true);
+        let hash = signing_hash(&order, crate::polymarket::POLYGON, true);
         assert_eq!(
             hash,
             b256!("5fd553ee8185fd4d9ab80f4bfbe4508e8e1168fed2b436928848c2d4d175c3a4"),
@@ -899,28 +899,29 @@ mod tests {
             b256!("7dd531d9dd2f514b6cacf11d1ab1dc143297015de23ffea8d9cdb0616d5cf7cf"),
         );
         assert_eq!(
-            poly1271_digest(&order, crate::POLYGON, false),
+            poly1271_digest(&order, crate::polymarket::POLYGON, false),
             b256!("ef5ec6a9a480c3a4f7bdf0b8a5dbf06c9fa11d7ad6a7b3273901528378fc0c36"),
         );
         assert_eq!(
-            poly1271_digest(&order, crate::POLYGON, true),
+            poly1271_digest(&order, crate::polymarket::POLYGON, true),
             b256!("3f23a9ec3d94ca14672fa676310a174d8c1e2d43828754173c9c992d8ae3593e"),
         );
 
         const EXPECTED_NORMAL: &str = "0xa0e112ede36cedabec052439dd784df883fef0600a4c8c4a3133225fa2d7f44c66dd24dda1ba13ac69e1f567d482fd37f05458c30c3576b19550bfb41350e0e61c3264e159346253e26a64e00b69032db0e7d32f94628de3e6eecb50304d7af3d27dd531d9dd2f514b6cacf11d1ab1dc143297015de23ffea8d9cdb0616d5cf7cf4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba";
         const EXPECTED_NEG_RISK: &str = "0x660b58b44156c18d48f061979bec4f2500915dbd157adc483debe59634494a6b7dfe15e28101097f8e6f3dd271e394349eca19035a265eab3683b6b3847683e71c9b858f53327b0bd13af8ec14cfb35234fb9eb7b0504d1a4e61f433840d30e81a7dd531d9dd2f514b6cacf11d1ab1dc143297015de23ffea8d9cdb0616d5cf7cf4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba";
 
-        let wrapped = sign_order_poly1271(&order, &signer, crate::POLYGON, false)
+        let wrapped = sign_order_poly1271(&order, &signer, crate::polymarket::POLYGON, false)
             .await
             .unwrap();
         assert_eq!(wrapped, EXPECTED_NORMAL);
-        let digest = poly1271_digest(&order, crate::POLYGON, false);
+        let digest = poly1271_digest(&order, crate::polymarket::POLYGON, false);
         let inner = signer.sign_eip712_hash(&digest).await.unwrap();
         let wrapped_from_inner =
-            wrap_poly1271_signature(&order, &inner.as_bytes(), crate::POLYGON, false).unwrap();
+            wrap_poly1271_signature(&order, &inner.as_bytes(), crate::polymarket::POLYGON, false)
+                .unwrap();
         assert_eq!(wrapped_from_inner, EXPECTED_NORMAL);
 
-        let wrapped = sign_order_poly1271(&order, &signer, crate::POLYGON, true)
+        let wrapped = sign_order_poly1271(&order, &signer, crate::polymarket::POLYGON, true)
             .await
             .unwrap();
         assert_eq!(wrapped, EXPECTED_NEG_RISK);
@@ -937,12 +938,16 @@ mod tests {
         let mut wrong = order.clone();
         wrong.signatureType = 0;
         assert!(
-            sign_order_poly1271(&wrong, &signer, crate::POLYGON, false)
+            sign_order_poly1271(&wrong, &signer, crate::polymarket::POLYGON, false)
                 .await
                 .is_err()
         );
-        assert!(wrap_poly1271_signature(&wrong, &[7u8; 65], crate::POLYGON, false).is_err());
-        assert!(wrap_poly1271_signature(&order, &[7u8; 64], crate::POLYGON, false).is_err());
+        assert!(
+            wrap_poly1271_signature(&wrong, &[7u8; 65], crate::polymarket::POLYGON, false).is_err()
+        );
+        assert!(
+            wrap_poly1271_signature(&order, &[7u8; 64], crate::polymarket::POLYGON, false).is_err()
+        );
     }
 
     #[test]

@@ -134,7 +134,7 @@ pub fn l2_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AMOY;
+    use crate::polymarket::AMOY;
     use std::str::FromStr;
 
     // Publicly-known dev key (anvil account 0), from the SDK test vectors.
