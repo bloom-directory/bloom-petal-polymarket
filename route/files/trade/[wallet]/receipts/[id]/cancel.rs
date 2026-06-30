@@ -1,19 +1,24 @@
 crate::bloom_write_component!(
-|ctx: &crate::Ctx| {
-        let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
-            return crate::route_invalid("missing wallet");
+    crate::write_spec(),
+    |ctx: &crate::Ctx| {
+        let wallet = match crate::param(ctx, "wallet") {
+            Ok(value) => value,
+            Err(resp) => return resp,
         };
-        let Some(id) = crate::route_param_or_segment(ctx, "id", 3) else {
-            return crate::route_invalid("missing id");
+        let id = match crate::param(ctx, "id") {
+            Ok(value) => value,
+            Err(resp) => return resp,
         };
         crate::read_trade(wallet, "receipts", id, "cancel")
     },
     |ctx: &crate::Ctx, body: &[u8]| {
-        let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
-            return crate::route_invalid("missing wallet");
+        let wallet = match crate::param(ctx, "wallet") {
+            Ok(value) => value,
+            Err(resp) => return resp,
         };
-        let Some(id) = crate::route_param_or_segment(ctx, "id", 3) else {
-            return crate::route_invalid("missing id");
+        let id = match crate::param(ctx, "id") {
+            Ok(value) => value,
+            Err(resp) => return resp,
         };
         crate::write_trade_cancel(wallet, id, body)
     }

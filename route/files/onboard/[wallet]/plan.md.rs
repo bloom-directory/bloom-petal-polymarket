@@ -1,6 +1,7 @@
-crate::bloom_read_component!(|ctx: &crate::Ctx| {
-    let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
-        return crate::route_invalid("missing wallet");
+crate::bloom_read_component!(crate::static_read_spec(), |ctx: &crate::Ctx| {
+    let wallet = match crate::param(ctx, "wallet") {
+        Ok(value) => value,
+        Err(resp) => return resp,
     };
     crate::read_onboard(wallet, "plan.md")
 });

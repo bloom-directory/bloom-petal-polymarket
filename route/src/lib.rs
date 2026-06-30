@@ -38,16 +38,16 @@ export!(Route);
 
 #[macro_export]
 macro_rules! bloom_dir_component {
-    ($children:expr) => {
+    ($spec:expr, $children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $spec)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $spec)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -68,16 +68,16 @@ macro_rules! bloom_dir_component {
 
 #[macro_export]
 macro_rules! bloom_fallible_dir_component {
-    ($children:expr) => {
+    ($spec:expr, $children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $spec)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $spec)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -98,16 +98,16 @@ macro_rules! bloom_fallible_dir_component {
 
 #[macro_export]
 macro_rules! bloom_ctx_dir_component {
-    ($children:expr) => {
+    ($spec:expr, $children:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_metadata(&ctx, $spec)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $crate::RouteFileKind::Dir)
+                $crate::framework_lookup(&ctx, $spec)
             }
 
             fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -128,16 +128,16 @@ macro_rules! bloom_ctx_dir_component {
 
 #[macro_export]
 macro_rules! bloom_read_component {
-    ($read:expr) => {
+    ($spec:expr, $read:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $crate::RouteFileKind::File)
+                $crate::framework_metadata(&ctx, $spec)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $crate::RouteFileKind::File)
+                $crate::framework_lookup(&ctx, $spec)
             }
 
             fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -158,16 +158,16 @@ macro_rules! bloom_read_component {
 
 #[macro_export]
 macro_rules! bloom_write_component {
-    ($read:expr, $write:expr) => {
+    ($spec:expr, $read:expr, $write:expr) => {
         pub struct Route;
 
         impl $crate::Guest for Route {
             fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
-                $crate::framework_metadata(&ctx, $crate::RouteFileKind::WritableFile)
+                $crate::framework_metadata(&ctx, $spec)
             }
 
             fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
-                $crate::framework_lookup(&ctx, $crate::RouteFileKind::WritableFile)
+                $crate::framework_lookup(&ctx, $spec)
             }
 
             fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
@@ -256,6 +256,115 @@ enum RouteFileKind {
     WritableFile,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RouteSpec {
+    kind: RouteFileKind,
+    cache_ttl_ms: Option<u64>,
+    side_effecting_read: bool,
+    write_async: bool,
+    required_caps: &'static [&'static str],
+}
+
+impl RouteSpec {
+    const fn dir() -> Self {
+        Self::new(RouteFileKind::Dir)
+    }
+
+    const fn file() -> Self {
+        Self::new(RouteFileKind::File)
+    }
+
+    const fn writable() -> Self {
+        Self::new(RouteFileKind::WritableFile)
+    }
+
+    const fn new(kind: RouteFileKind) -> Self {
+        Self {
+            kind,
+            cache_ttl_ms: Some(30_000),
+            side_effecting_read: false,
+            write_async: false,
+            required_caps: CAPS_NONE,
+        }
+    }
+
+    const fn caps(mut self, caps: &'static [&'static str]) -> Self {
+        self.required_caps = caps;
+        self
+    }
+
+    const fn ttl(mut self, ttl: Option<u64>) -> Self {
+        self.cache_ttl_ms = ttl;
+        self
+    }
+
+    const fn side_effecting_read(mut self, value: bool) -> Self {
+        self.side_effecting_read = value;
+        self
+    }
+}
+
+const CAPS_NONE: &[&str] = &[];
+const CAPS_HTTP: &[&str] = &["bloom:http"];
+const CAPS_STORE: &[&str] = &["bloom:store"];
+const CAPS_STORE_VFS_READ: &[&str] = &["bloom:store", "bloom:vfs.read"];
+const CAPS_HTTP_VFS_READ: &[&str] = &["bloom:http", "bloom:vfs.read"];
+const CAPS_HTTP_STORE_VFS_READ: &[&str] = &["bloom:http", "bloom:store", "bloom:vfs.read"];
+const CAPS_HTTP_STORE_SIGN_VFS: &[&str] = &[
+    "bloom:http",
+    "bloom:store",
+    "bloom:sign",
+    "bloom:vfs.read",
+    "bloom:vfs.write",
+];
+
+fn static_dir_spec() -> RouteSpec {
+    RouteSpec::dir()
+}
+
+fn store_dir_spec() -> RouteSpec {
+    RouteSpec::dir().caps(CAPS_STORE_VFS_READ)
+}
+
+fn http_dir_spec() -> RouteSpec {
+    RouteSpec::dir().caps(CAPS_HTTP)
+}
+
+fn static_read_spec() -> RouteSpec {
+    RouteSpec::file()
+}
+
+fn http_read_spec(ttl_ms: u64) -> RouteSpec {
+    RouteSpec::file().caps(CAPS_HTTP).ttl(Some(ttl_ms))
+}
+
+fn store_read_spec() -> RouteSpec {
+    RouteSpec::file().caps(CAPS_STORE)
+}
+
+fn wallet_http_read_spec(ttl_ms: u64) -> RouteSpec {
+    RouteSpec::file().caps(CAPS_HTTP_VFS_READ).ttl(Some(ttl_ms))
+}
+
+fn account_read_spec() -> RouteSpec {
+    RouteSpec::file()
+        .caps(CAPS_HTTP_STORE_VFS_READ)
+        .ttl(Some(5_000))
+}
+
+fn chain_read_spec() -> RouteSpec {
+    RouteSpec::file()
+        .caps(CAPS_HTTP_STORE_SIGN_VFS)
+        .ttl(None)
+        .side_effecting_read(true)
+}
+
+fn write_spec() -> RouteSpec {
+    RouteSpec::writable()
+        .caps(CAPS_HTTP_STORE_SIGN_VFS)
+        .ttl(None)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RouteChild {
     name: String,
@@ -270,33 +379,35 @@ fn current_route_canonical_path() -> &'static str {
     env!("BLOOM_ROUTE_CANONICAL_PATH")
 }
 
-fn framework_metadata(ctx: &Ctx, kind: RouteFileKind) -> Result<RouteMeta, RouteError> {
-    let relative = route_relative(ctx);
-    let writable = kind == RouteFileKind::WritableFile;
+fn framework_metadata(_ctx: &Ctx, spec: RouteSpec) -> Result<RouteMeta, RouteError> {
     Ok(RouteMeta {
-        kind: match kind {
+        kind: match spec.kind {
             RouteFileKind::Dir => EntryKind::Dir,
             RouteFileKind::File | RouteFileKind::WritableFile => EntryKind::File,
         },
-        mode: match kind {
+        mode: match spec.kind {
             RouteFileKind::Dir => 0o755,
             RouteFileKind::File => 0o444,
             RouteFileKind::WritableFile => 0o644,
         },
-        cache_ttl_ms: route_cache_ttl_ms(&relative),
-        side_effecting_read: false,
-        write_async: false,
+        cache_ttl_ms: spec.cache_ttl_ms,
+        side_effecting_read: spec.side_effecting_read,
+        write_async: spec.write_async,
         description: Some(format!("Polymarket route {}", current_route_path())),
         consent_summary: None,
-        required_caps: route_required_caps(&relative, writable),
+        required_caps: spec
+            .required_caps
+            .iter()
+            .map(|cap| (*cap).to_string())
+            .collect(),
         sign_intent: None,
         executable: false,
     })
 }
 
-fn framework_lookup(ctx: &Ctx, kind: RouteFileKind) -> Result<Entry, RouteError> {
+fn framework_lookup(ctx: &Ctx, spec: RouteSpec) -> Result<Entry, RouteError> {
     let relative = route_relative(ctx);
-    Ok(framework_entry(entry_name(&relative), kind))
+    Ok(framework_entry(entry_name(&relative), spec.kind))
 }
 
 fn framework_list(_ctx: &Ctx, children: Vec<RouteChild>) -> Result<Vec<Entry>, RouteError> {
@@ -357,8 +468,26 @@ fn route_segment<'a>(ctx: &'a Ctx, index: usize) -> Option<&'a str> {
     split(&ctx.path).get(index).copied()
 }
 
-fn route_param_or_segment<'a>(ctx: &'a Ctx, name: &str, index: usize) -> Option<&'a str> {
-    route_param(ctx, name).or_else(|| route_segment(ctx, index))
+fn param<'a>(ctx: &'a Ctx, name: &str) -> Result<&'a str, DispatchResponse> {
+    route_param(ctx, name)
+        .or_else(|| route_generated_param(ctx, name))
+        .ok_or_else(|| route_invalid(format!("missing {name}")))
+}
+
+fn route_generated_param<'a>(ctx: &'a Ctx, name: &str) -> Option<&'a str> {
+    for pair in env!("BLOOM_ROUTE_PARAMS").split(',') {
+        let Some((candidate, index)) = pair.split_once(':') else {
+            continue;
+        };
+        if candidate != name {
+            continue;
+        }
+        let Ok(index) = index.parse::<usize>() else {
+            continue;
+        };
+        return route_segment(ctx, index);
+    }
+    None
 }
 
 fn route_invalid(message: impl Into<String>) -> DispatchResponse {
@@ -426,37 +555,6 @@ fn metadata_path(path: &str) -> String {
         "$index" => String::new(),
         _ => path.strip_suffix("/$index").unwrap_or(path).to_string(),
     }
-}
-
-fn route_cache_ttl_ms(path: &str) -> Option<u64> {
-    let segs = split(path);
-    match segs.first().copied() {
-        Some("onboard") => None,
-        Some("account") => Some(5_000),
-        Some("markets")
-            if matches!(
-                segs.get(2).copied(),
-                Some("book.json") | Some("prices.json")
-            ) =>
-        {
-            Some(2_000)
-        }
-        Some("positions") => Some(10_000),
-        _ => Some(30_000),
-    }
-}
-
-fn route_required_caps(path: &str, writable: bool) -> Vec<String> {
-    let mut caps = vec![
-        "bloom:http".to_string(),
-        "bloom:store".to_string(),
-        "bloom:vfs.read".to_string(),
-    ];
-    if writable || path.starts_with("onboard/") || path.starts_with("trade/") {
-        caps.push("bloom:sign".to_string());
-        caps.push("bloom:vfs.write".to_string());
-    }
-    caps
 }
 
 fn route_error(code: i32, message: String) -> RouteError {

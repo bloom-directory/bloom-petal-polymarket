@@ -21,6 +21,7 @@ fn run() -> Result<(), String> {
     let route_files = route_dir.join("files");
     let out_dir = app.join("app/polymarket");
     let tmp_dir = root.join("target/polymarket-v2-routes");
+    let staging_dir = tmp_dir.join("staging/app/polymarket");
 
     require_tool("cargo")?;
     require_tool("wasm-tools")?;
@@ -33,19 +34,20 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    if out_dir.exists() {
-        fs::remove_dir_all(&out_dir)
-            .map_err(|err| format!("remove {}: {err}", out_dir.display()))?;
+    if staging_dir.exists() {
+        fs::remove_dir_all(&staging_dir)
+            .map_err(|err| format!("remove {}: {err}", staging_dir.display()))?;
     }
-    fs::create_dir_all(&out_dir).map_err(|err| format!("create {}: {err}", out_dir.display()))?;
     fs::create_dir_all(&tmp_dir).map_err(|err| format!("create {}: {err}", tmp_dir.display()))?;
+    fs::create_dir_all(&staging_dir)
+        .map_err(|err| format!("create {}: {err}", staging_dir.display()))?;
 
     for (route_path, source) in &routes {
         let route_id = route_id(route_path);
         let target_dir = tmp_dir.join("target");
         let core = target_dir.join("wasm32-unknown-unknown/release/bloom_polymarket_v2_route.wasm");
         let route_core = tmp_dir.join(format!("{route_id}.core.wasm"));
-        let output = out_dir.join(format!("{route_path}.wasm"));
+        let output = staging_dir.join(format!("{route_path}.wasm"));
 
         run_command(
             Command::new("cargo")
@@ -63,6 +65,7 @@ fn run() -> Result<(), String> {
                     "BLOOM_ROUTE_CANONICAL_PATH",
                     canonical_route_path(route_path),
                 )
+                .env("BLOOM_ROUTE_PARAMS", route_params(route_path))
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit()),
         )?;
@@ -92,6 +95,23 @@ fn run() -> Result<(), String> {
                 .stderr(Stdio::inherit()),
         )?;
     }
+
+    if out_dir.exists() {
+        fs::remove_dir_all(&out_dir)
+            .map_err(|err| format!("remove {}: {err}", out_dir.display()))?;
+    }
+    let out_parent = out_dir
+        .parent()
+        .ok_or_else(|| format!("output dir has no parent: {}", out_dir.display()))?;
+    fs::create_dir_all(out_parent)
+        .map_err(|err| format!("create {}: {err}", out_parent.display()))?;
+    fs::rename(&staging_dir, &out_dir).map_err(|err| {
+        format!(
+            "replace {} with {}: {err}",
+            out_dir.display(),
+            staging_dir.display()
+        )
+    })?;
 
     println!(
         "wrote {} route components under {}",
@@ -184,6 +204,20 @@ fn canonical_route_path(route_path: &str) -> String {
             .unwrap_or(route_path)
             .to_string(),
     }
+}
+
+fn route_params(route_path: &str) -> String {
+    route_path
+        .split('/')
+        .enumerate()
+        .filter_map(|(index, segment)| {
+            segment
+                .strip_prefix('[')
+                .and_then(|name| name.strip_suffix(']'))
+                .map(|name| format!("{name}:{index}"))
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn require_tool(tool: &str) -> Result<(), String> {

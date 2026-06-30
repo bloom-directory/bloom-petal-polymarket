@@ -1,6 +1,7 @@
-crate::bloom_read_component!(|ctx: &crate::Ctx| {
-    let Some(slug) = crate::route_param_or_segment(ctx, "slug", 1) else {
-        return crate::route_invalid("missing slug");
+crate::bloom_read_component!(crate::http_read_spec(2_000), |ctx: &crate::Ctx| {
+    let slug = match crate::param(ctx, "slug") {
+        Ok(value) => value,
+        Err(resp) => return resp,
     };
     crate::read_market(slug, "prices.json")
 });

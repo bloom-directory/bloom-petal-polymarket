@@ -1,11 +1,11 @@
-crate::bloom_read_component!(
-    |ctx: &crate::Ctx| {
-        let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
-            return crate::route_invalid("missing wallet");
-        };
-        let Some(id) = crate::route_param_or_segment(ctx, "id", 3) else {
-            return crate::route_invalid("missing id");
-        };
-        crate::read_trade(wallet, "drafts", id, "post_attempt.json")
-    }
-);
+crate::bloom_read_component!(crate::store_read_spec(), |ctx: &crate::Ctx| {
+    let wallet = match crate::param(ctx, "wallet") {
+        Ok(value) => value,
+        Err(resp) => return resp,
+    };
+    let id = match crate::param(ctx, "id") {
+        Ok(value) => value,
+        Err(resp) => return resp,
+    };
+    crate::read_trade(wallet, "drafts", id, "post_attempt.json")
+});

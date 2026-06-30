@@ -1,7 +1,5 @@
-crate::bloom_ctx_dir_component!(|ctx: &crate::Ctx| {
-    let Some(wallet) = crate::route_param_or_segment(ctx, "wallet", 1) else {
-        return Err(crate::route_invalid("missing wallet"));
-    };
+crate::bloom_ctx_dir_component!(crate::store_dir_spec(), |ctx: &crate::Ctx| {
+    let wallet = crate::param(ctx, "wallet")?;
     Ok(crate::dirs(crate::store_ids(
         &format!("trade/{wallet}/drafts/"),
         "/order.json",

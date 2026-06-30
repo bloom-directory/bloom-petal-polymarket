@@ -1,1 +1,1 @@
-crate::bloom_dir_component!(crate::files(&crate::FUND_FILES));
+crate::bloom_dir_component!(crate::static_dir_spec(), crate::files(&crate::FUND_FILES));
