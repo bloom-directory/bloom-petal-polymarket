@@ -857,6 +857,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64",
+ "blake3",
  "hex",
  "hmac",
  "rand 0.8.6",

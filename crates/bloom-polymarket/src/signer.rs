@@ -30,6 +30,27 @@ pub const POLY_TIMESTAMP: &str = "POLY_TIMESTAMP";
 pub const POLY_API_KEY: &str = "POLY_API_KEY";
 pub const POLY_PASSPHRASE: &str = "POLY_PASSPHRASE";
 
+/// Owner-signing operations required by the onboarding flow.
+///
+/// A direct signer uses the local key. A sealed signer can implement this
+/// trait by routing hash signing through its host approval boundary.
+#[async_trait::async_trait(?Send)]
+pub trait OnboardSigner: Send + Sync {
+    fn address(&self) -> Address;
+
+    async fn sign_eip712_hash(
+        &self,
+        hash: &alloy::primitives::B256,
+    ) -> Result<alloy::primitives::Signature>;
+
+    async fn clob_auth_headers(
+        &self,
+        chain_id: u64,
+        timestamp: u64,
+        nonce: u32,
+    ) -> Result<Vec<(String, String)>>;
+}
+
 /// A non-custodial signer: holds only a pure-alloy `PrivateKeySigner` handed in
 /// by the caller. Knows nothing about the bloom keystore.
 #[derive(Clone)]
@@ -55,11 +76,15 @@ impl KeystoreSigner {
     pub fn private_key_signer(&self) -> Arc<PrivateKeySigner> {
         self.signer.clone()
     }
+}
 
-    /// Sign a precomputed EIP-712 signing hash (plain 65-byte ECDSA). Used for
-    /// the relayer `Batch` (`eip712::batch_signing_hash`). Non-custodial: the
-    /// key never leaves the wrapped signer.
-    pub async fn sign_eip712_hash(
+#[async_trait::async_trait(?Send)]
+impl OnboardSigner for KeystoreSigner {
+    fn address(&self) -> Address {
+        self.address
+    }
+
+    async fn sign_eip712_hash(
         &self,
         hash: &alloy::primitives::B256,
     ) -> Result<alloy::primitives::Signature> {
@@ -69,22 +94,20 @@ impl KeystoreSigner {
             .map_err(|e| PolymarketError::signing(e.to_string()))
     }
 
-    /// Build the L1 (`POLY_*`) headers for credential mint/derive: EIP-712-sign
-    /// `ClobAuth(address, timestamp, nonce, message)` under `ClobAuthDomain`.
-    pub async fn clob_auth_headers(
+    async fn clob_auth_headers(
         &self,
         chain_id: u64,
         timestamp: u64,
         nonce: u32,
-    ) -> Result<Vec<(&'static str, String)>> {
+    ) -> Result<Vec<(String, String)>> {
         let hash = eip712::clob_auth_signing_hash(self.address, timestamp, nonce, chain_id);
         let sig = self.sign_eip712_hash(&hash).await?;
         Ok(vec![
             // L1 uses the lowercase 0x-address form (SDK: encode_hex_with_prefix).
-            (POLY_ADDRESS, format!("{:#x}", self.address)),
-            (POLY_NONCE, nonce.to_string()),
-            (POLY_SIGNATURE, sig.to_string()),
-            (POLY_TIMESTAMP, timestamp.to_string()),
+            (POLY_ADDRESS.to_string(), format!("{:#x}", self.address)),
+            (POLY_NONCE.to_string(), nonce.to_string()),
+            (POLY_SIGNATURE.to_string(), sig.to_string()),
+            (POLY_TIMESTAMP.to_string(), timestamp.to_string()),
         ])
     }
 }

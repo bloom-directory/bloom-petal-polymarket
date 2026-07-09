@@ -529,6 +529,13 @@ pub fn render_plan_md(d: &OrderDraft) -> String {
     use crate::order::format_micro;
     let mut s = String::new();
     s.push_str(&format!("# Polymarket order draft {}\n\n", d.id));
+    // Make the durable safety state explicit for both humans and automation.
+    s.push_str(
+        "Status:    DRAFT — value_moved=false order_posted=false persistent_staged_action=true\n",
+    );
+    s.push_str(
+        "           nothing moved yet; review, then `bloom polymarket confirm <wallet> <draft-id>` to sign+post.\n",
+    );
     s.push_str(&format!("Wallet:    {} ({})\n", d.wallet, d.owner));
     s.push_str(&format!(
         "Maker:     {} (signatureType {}{})\n",

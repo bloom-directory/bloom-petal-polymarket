@@ -33,7 +33,7 @@ use crate::eip712::{
     NEG_RISK_EXCHANGE_V2, PUSD, derive_deposit_wallet_address,
 };
 use crate::relayer::RelayerClient;
-use crate::signer::KeystoreSigner;
+use crate::signer::OnboardSigner;
 use crate::wallet::v2_approval_calls;
 use crate::{PolymarketError, Result};
 
@@ -265,23 +265,9 @@ impl OnboardStore {
     }
 }
 
-/// Reject wallet names that could escape the per-wallet directory. The VFS
-/// additionally requires the name to resolve in the keystore; this guard makes
-/// the stores safe even for direct library callers.
+/// Reject wallet names that the Bloom keystore cannot resolve.
 pub fn validate_wallet_name(name: &str) -> Result<()> {
-    let ok = !name.is_empty()
-        && name.len() <= 128
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if ok {
-        Ok(())
-    } else {
-        Err(PolymarketError::invalid(format!(
-            "invalid wallet name {name:?}: must be 1-128 chars of [A-Za-z0-9._-], not starting with '.'"
-        )))
-    }
+    crate::validate_wallet_name(name)
 }
 
 /// A side effect worth auditing, reported as it happens. Carries identifiers
@@ -421,11 +407,11 @@ impl Onboarder {
     /// `AutoBuilder` this ensures CLOB creds exist (pure L1 signing), then
     /// loads — or, after the disclosure event, creates and persists — the
     /// builder API key.
-    async fn relayer_for(
+    pub async fn relayer_for(
         &self,
         wallet: &str,
         owner: Address,
-        signer: &KeystoreSigner,
+        signer: &dyn OnboardSigner,
         on_event: &OnEvent,
     ) -> Result<RelayerClient> {
         match &self.auth_mode {
@@ -471,7 +457,7 @@ impl Onboarder {
         err: &PolymarketError,
         wallet: &str,
         owner: Address,
-        _signer: &KeystoreSigner,
+        _signer: &dyn OnboardSigner,
         on_event: &OnEvent,
     ) -> Result<Option<RelayerClient>> {
         if !matches!(self.auth_mode, RelayerAuthMode::AutoBuilder) {
@@ -604,7 +590,7 @@ impl Onboarder {
     pub async fn run(
         &self,
         wallet: &str,
-        signer: &KeystoreSigner,
+        signer: &dyn OnboardSigner,
         on_event: &OnEvent,
     ) -> Result<OnboardState> {
         let owner = signer.address();
@@ -647,7 +633,7 @@ impl Onboarder {
         &self,
         st: &mut OnboardState,
         wallet: &str,
-        signer: &KeystoreSigner,
+        signer: &dyn OnboardSigner,
         on_event: &OnEvent,
     ) -> Result<()> {
         let owner = signer.address();
@@ -865,6 +851,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KeystoreSigner;
     use crate::testutil::{Rule, ScriptedServer};
     use std::collections::HashMap;
     use std::str::FromStr;
@@ -1041,22 +1028,24 @@ mod tests {
             "a/b",
             "a\\b",
             ".hidden",
+            "alice.prod",
+            "alice prod",
             "a/../b",
-            &"x".repeat(129),
+            &"x".repeat(65),
         ] {
             assert!(
                 validate_wallet_name(bad).is_err(),
                 "{bad:?} must be rejected"
             );
         }
-        for good in ["alice", "my-wallet_2", "a.b"] {
+        for good in ["alice", "my-wallet_2"] {
             validate_wallet_name(good).unwrap();
         }
     }
 
     #[test]
     fn legacy_account_json_without_in_flight_field_deserializes() {
-        // A pre-existing account.json (e.g. minnow-passkey) predates
+        // A pre-existing account.json (e.g. an older passkey wallet) predates
         // `in_flight_deadline_ms`. `#[serde(default)]` must let it load as None.
         let legacy = r#"{
             "wallet":"minnow","owner":"0x2000000000000000000000000000000000000002",

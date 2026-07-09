@@ -14,8 +14,6 @@
 //!   deploy → fund → approve → creds → sync) over the hand-rolled relayer
 //!   client ([`RelayerClient`]), the V2 approval-call builders ([`wallet`]),
 //!   and the 0600 CLOB credential store ([`CredentialStore`]);
-//! - the fail-closed [`GeoblockClient`] refuse-line.
-//!
 //! - **orders** ([`order`]): V2 EIP-712 order building/signing for the
 //!   deposit-wallet path (signatureType 3 / POLY_1271) with integer micro-unit
 //!   amount math, verified by known-answer tests against independent EIP-712
@@ -38,15 +36,18 @@ pub mod eip712;
 #[cfg(feature = "native-client")]
 pub mod gamma;
 #[cfg(feature = "native-client")]
-pub mod geoblock;
-#[cfg(feature = "native-client")]
 pub mod onboard;
 pub mod order;
 pub mod order_store;
 #[cfg(feature = "native-client")]
 pub mod relayer;
 pub mod signer;
-#[cfg(test)]
+/// Pure `(action, hash)` builders and signature encoders for sealed approval.
+/// This module builds the bytes the user is asked to approve and converts
+/// host-side raw signatures into the wire format each call site needs. It has
+/// no keystore access or I/O.
+pub mod signing;
+#[cfg(all(test, feature = "native-client"))]
 pub(crate) mod testutil;
 pub mod trade;
 pub mod types;
@@ -62,15 +63,18 @@ pub use eip712::{deposit_wallet_implementation, derive_deposit_wallet_address};
 #[cfg(feature = "native-client")]
 pub use gamma::GammaClient;
 #[cfg(feature = "native-client")]
-pub use geoblock::{GeoblockClient, GeoblockStatus};
-#[cfg(feature = "native-client")]
 pub use onboard::{
     ChainReader, OnboardEvent, OnboardMode, OnboardState, OnboardStore, Onboarder, Stage,
 };
 pub use order_store::{DraftStatus, OrderDraft, OrderLock, OrderReceipt, OrderStore};
 #[cfg(feature = "native-client")]
 pub use relayer::{RelayerClient, RelayerTx};
-pub use signer::KeystoreSigner;
+pub use signer::{KeystoreSigner, OnboardSigner};
+pub use signing::{
+    CallView, ClobAuthAction, L1HeaderView, OrderAction, WalletBatchAction, action_id_for,
+    clob_auth_action_and_hash, order_action_and_hash, poly1271_signature_from_raw,
+    signature_string_from_raw, wallet_batch_action_and_hash,
+};
 pub use types::{BookLevel, Credentials, Market, OrderBook, Position, Side, TokenMarket, Trade};
 pub use wallet_name::validate_wallet_name;
 
@@ -79,14 +83,13 @@ mod wallet_name {
 
     pub fn validate_wallet_name(name: &str) -> Result<()> {
         if name.is_empty()
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains('\0')
-            || name == "."
-            || name == ".."
+            || name.len() > 64
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err(PolymarketError::invalid(format!(
-                "invalid wallet name '{name}'"
+                "invalid wallet name {name:?}: must be 1-64 chars of [A-Za-z0-9_-]"
             )));
         }
         Ok(())
@@ -97,6 +100,9 @@ mod wallet_name {
 pub const POLYGON: u64 = 137;
 /// Polygon Amoy testnet chain id (used by the SDK's known-answer vectors).
 pub const AMOY: u64 = 80_002;
+
+/// Number of BLAKE3 digest hex characters retained in action IDs.
+pub const ACTION_ID_HEX_PREFIX: usize = 16;
 
 /// Default public base URLs for the three Polymarket APIs.
 pub const DEFAULT_GAMMA_URL: &str = "https://gamma-api.polymarket.com";
