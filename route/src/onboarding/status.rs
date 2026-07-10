@@ -1,9 +1,9 @@
 use crate::prelude::*;
 
-use petal::sdk::DispatchResponse;
 use crate::polymarket::eip712::PUSD;
 use crate::polymarket::{POLYGON, Result, derive_deposit_wallet_address};
 use alloy::primitives::{Address, U256};
+use petal::sdk::DispatchResponse;
 
 pub(crate) fn local_onboard_status(
     wallet: &str,

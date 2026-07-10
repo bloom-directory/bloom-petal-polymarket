@@ -1,9 +1,9 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HttpRequest};
-use crate::polymarket::{Credentials, Result};
 use crate::polymarket::signer::l2_headers;
+use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
+use petal::sdk::{DispatchResponse, HttpRequest};
 pub(crate) fn clob_l2_get_json(
     owner: Address,
     creds: &Credentials,

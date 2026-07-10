@@ -1,9 +1,9 @@
 use crate::prelude::*;
 
-use petal::sdk::DispatchResponse;
 use crate::polymarket::eip712::{FACTORY, PUSD};
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
+use petal::sdk::DispatchResponse;
 
 pub(crate) fn run_onboard_stages(
     wallet: &str,
@@ -29,32 +29,37 @@ pub(crate) fn run_onboard_stages(
         });
 
     if !read_chain_deposit_wallet_deployed(deposit)? {
-        let _builder = ensure_builder_credentials(wallet, owner, creds)?;
-        let tx = relayer_submit_with_builder_repair(
-            wallet,
-            owner,
-            creds,
-            serde_json::json!({
-                "type": "WALLET-CREATE",
-                "from": owner.to_checksum(None),
-                "to": FACTORY.to_checksum(None),
-            }),
-        )?;
-        deploy_tx_id = Some(tx.id.clone());
-        persist_onboard_status(
-            wallet,
-            owner,
-            deposit,
-            true,
-            OnboardStatusExtra {
-                stage: Some("deploy"),
-                deploy_tx_id: deploy_tx_id.clone(),
-                approve_tx_id: approve_tx_id.clone(),
-                in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                relayer_auth: Some("builder_key_auto"),
-                last_error: None,
-            },
-        )?;
+        let tx = if let Some(id) = deploy_tx_id.as_deref() {
+            relayer_transaction(id)?
+        } else {
+            let _builder = ensure_builder_credentials(wallet, owner, creds)?;
+            let tx = relayer_submit_with_builder_repair(
+                wallet,
+                owner,
+                creds,
+                serde_json::json!({
+                    "type": "WALLET-CREATE",
+                    "from": owner.to_checksum(None),
+                    "to": FACTORY.to_checksum(None),
+                }),
+            )?;
+            deploy_tx_id = Some(tx.id.clone());
+            persist_onboard_status(
+                wallet,
+                owner,
+                deposit,
+                true,
+                OnboardStatusExtra {
+                    stage: Some("deploy"),
+                    deploy_tx_id: deploy_tx_id.clone(),
+                    approve_tx_id: approve_tx_id.clone(),
+                    in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
+                    relayer_auth: Some("builder_key_auto"),
+                    last_error: None,
+                },
+            )?;
+            tx
+        };
         let confirmed = match relayer_poll_confirmed(&tx) {
             Ok(done) => done,
             Err(resp) => {
@@ -68,7 +73,7 @@ pub(crate) fn run_onboard_stages(
                         stage: Some("deploy"),
                         deploy_tx_id,
                         approve_tx_id,
-                        in_flight_deadline_ms: None,
+                        in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
                         relayer_auth: Some("builder_key_auto"),
                         last_error: Some(msg),
                     },
@@ -116,30 +121,35 @@ pub(crate) fn run_onboard_stages(
     }
 
     if !read_chain_v2_approvals(deposit)? {
-        let _builder = ensure_builder_credentials(wallet, owner, creds)?;
-        let nonce = relayer_wallet_nonce(owner)?;
-        let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-        let tx = relayer_submit_with_builder_repair(
-            wallet,
-            owner,
-            creds,
-            relayer_batch_body(wallet, owner, deposit, nonce, deadline)?,
-        )?;
-        approve_tx_id = Some(tx.id.clone());
-        persist_onboard_status(
-            wallet,
-            owner,
-            deposit,
-            true,
-            OnboardStatusExtra {
-                stage: Some("approve"),
-                deploy_tx_id: deploy_tx_id.clone(),
-                approve_tx_id: approve_tx_id.clone(),
-                in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                relayer_auth: Some("builder_key_auto"),
-                last_error: None,
-            },
-        )?;
+        let tx = if let Some(id) = approve_tx_id.as_deref() {
+            relayer_transaction(id)?
+        } else {
+            let _builder = ensure_builder_credentials(wallet, owner, creds)?;
+            let nonce = relayer_wallet_nonce(owner)?;
+            let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
+            let tx = relayer_submit_with_builder_repair(
+                wallet,
+                owner,
+                creds,
+                relayer_batch_body(wallet, owner, deposit, nonce, deadline)?,
+            )?;
+            approve_tx_id = Some(tx.id.clone());
+            persist_onboard_status(
+                wallet,
+                owner,
+                deposit,
+                true,
+                OnboardStatusExtra {
+                    stage: Some("approve"),
+                    deploy_tx_id: deploy_tx_id.clone(),
+                    approve_tx_id: approve_tx_id.clone(),
+                    in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
+                    relayer_auth: Some("builder_key_auto"),
+                    last_error: None,
+                },
+            )?;
+            tx
+        };
         let confirmed = match relayer_poll_confirmed(&tx) {
             Ok(done) => done,
             Err(resp) => {
@@ -153,7 +163,7 @@ pub(crate) fn run_onboard_stages(
                         stage: Some("approve"),
                         deploy_tx_id,
                         approve_tx_id,
-                        in_flight_deadline_ms: None,
+                        in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
                         relayer_auth: Some("builder_key_auto"),
                         last_error: Some(msg),
                     },
@@ -162,6 +172,8 @@ pub(crate) fn run_onboard_stages(
             }
         };
         approve_tx_id = Some(confirmed.id);
+        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
+        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/approval.json"));
         if !read_chain_v2_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
             persist_onboard_status(

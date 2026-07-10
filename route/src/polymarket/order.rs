@@ -419,6 +419,14 @@ pub fn signing_hash(order: &Order, chain_id: u64, neg_risk: bool) -> B256 {
     order.eip712_signing_hash(&ctf_exchange_domain(chain_id, neg_risk))
 }
 
+pub fn signing_hash_contents(order: &Order) -> B256 {
+    order.eip712_hash_struct()
+}
+
+pub fn order_type_string() -> &'static str {
+    ORDER_TYPE_STRING
+}
+
 // ── POLY_1271 (deposit wallet, signatureType 3) ──────────────────────────────
 
 /// ERC-7739 `TypedDataSign` type string, verbatim from the official SDK

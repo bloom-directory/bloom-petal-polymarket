@@ -9,7 +9,8 @@ pub mod bindings {
         with: {
             "bloom:http/fetch@0.1.0": generate,
             "bloom:store/kv@0.1.0": generate,
-            "bloom:sign/signing@0.1.0": generate,
+            "bloom:sign/signing@0.2.0": generate,
+            "bloom:tx/outbox@0.1.0": generate,
             "bloom:chain/read@0.1.0": generate,
             "bloom:vfs/readwrite@0.1.0": generate,
             "bloom:env/runtime@0.1.0": generate,
@@ -58,6 +59,50 @@ pub struct SignRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignHashOutcome {
+    Signature(Vec<u8>),
+    ApprovalRequired {
+        action_id: String,
+        ceremony_url: String,
+        expires_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvmTransaction {
+    pub wallet: String,
+    pub chain: String,
+    pub to: String,
+    pub value_wei: String,
+    pub data_hex: String,
+    pub nonce: Option<u64>,
+    pub max_fee_per_gas: Option<String>,
+    pub max_priority_fee_per_gas: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboxApproval {
+    pub action_id: String,
+    pub ceremony_url: String,
+    pub expires_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedTransaction {
+    pub outbox_id: String,
+    pub plan_md: String,
+    pub approval: Option<OutboxApproval>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboxInspection {
+    pub outbox_id: String,
+    pub state: String,
+    pub tx_hash: Option<String>,
+    pub receipt_json: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostStatus {
     NotFound,
     Denied,
@@ -88,11 +133,16 @@ impl SdkError {
 }
 
 pub mod sdk {
-    pub use super::{DispatchResponse, HostStatus, HttpRequest, HttpResponse, SdkError, SignRequest};
+    pub use super::{
+        DispatchResponse, EvmTransaction, HostStatus, HttpRequest, HttpResponse, OutboxApproval,
+        OutboxInspection, SdkError, SignHashOutcome, SignRequest, StagedTransaction,
+    };
+    use crate::bindings::bloom::chain::read as chain;
     use crate::bindings::bloom::env::runtime as env;
     use crate::bindings::bloom::http::fetch as http;
     use crate::bindings::bloom::sign::signing as sign;
     use crate::bindings::bloom::store::kv as store;
+    use crate::bindings::bloom::tx::outbox as tx;
     use crate::bindings::bloom::vfs::readwrite as vfs;
 
     const STATE_NS: &str = "state";
@@ -118,8 +168,70 @@ pub mod sdk {
         })
     }
 
-    pub fn sign_hash(req: &SignRequest) -> Result<Vec<u8>, SdkError> {
-        sign::sign_hash(&req.wallet, &req.hash32, &req.purpose).map_err(host_err)
+    pub fn sign_hash(req: &SignRequest) -> Result<SignHashOutcome, SdkError> {
+        match sign::sign_hash(&req.wallet, &req.hash32, &req.purpose).map_err(host_err)? {
+            sign::SignResult::Signature(signature) => Ok(SignHashOutcome::Signature(signature)),
+            sign::SignResult::ApprovalRequired(approval) => Ok(SignHashOutcome::ApprovalRequired {
+                action_id: approval.action_id,
+                ceremony_url: approval.ceremony_url,
+                expires_ms: approval.expires_ms,
+            }),
+        }
+    }
+
+    pub fn tx_stage(req: &EvmTransaction) -> Result<StagedTransaction, SdkError> {
+        tx::stage(&tx::EvmTransaction {
+            wallet: req.wallet.clone(),
+            chain: req.chain.clone(),
+            to: req.to.clone(),
+            value_wei: req.value_wei.clone(),
+            data_hex: req.data_hex.clone(),
+            nonce: req.nonce,
+            max_fee_per_gas: req.max_fee_per_gas.clone(),
+            max_priority_fee_per_gas: req.max_priority_fee_per_gas.clone(),
+        })
+        .map(staged_transaction)
+        .map_err(host_err)
+    }
+
+    pub fn tx_confirm(
+        wallet: &str,
+        chain_name: &str,
+        outbox_id: &str,
+        acknowledge_warnings: bool,
+    ) -> Result<StagedTransaction, SdkError> {
+        tx::confirm(wallet, chain_name, outbox_id, acknowledge_warnings)
+            .map(staged_transaction)
+            .map_err(host_err)
+    }
+
+    pub fn tx_inspect(
+        wallet: &str,
+        chain_name: &str,
+        outbox_id: &str,
+    ) -> Result<OutboxInspection, SdkError> {
+        tx::inspect(wallet, chain_name, outbox_id)
+            .map(|inspection| OutboxInspection {
+                outbox_id: inspection.outbox_id,
+                state: inspection.state,
+                tx_hash: inspection.tx_hash,
+                receipt_json: inspection.receipt_json,
+            })
+            .map_err(host_err)
+    }
+
+    pub fn chain_read(
+        chain_name: &str,
+        method: &str,
+        params_json: &str,
+    ) -> Result<String, SdkError> {
+        chain::call(&chain::Request {
+            chain: chain_name.into(),
+            method: method.into(),
+            params_json: params_json.into(),
+        })
+        .map(|response| response.result_json)
+        .map_err(host_err)
     }
 
     pub fn store_get(key: &str, max_bytes: usize) -> Result<Vec<u8>, SdkError> {
@@ -196,6 +308,18 @@ pub mod sdk {
     pub fn random_bytes(len: usize) -> Result<Vec<u8>, SdkError> {
         let len = u32::try_from(len).map_err(|_| SdkError::Host(HostStatus::Invalid))?;
         env::random_bytes(len).map_err(host_err)
+    }
+
+    fn staged_transaction(staged: tx::StagedTransaction) -> StagedTransaction {
+        StagedTransaction {
+            outbox_id: staged.outbox_id,
+            plan_md: staged.plan_md,
+            approval: staged.approval.map(|approval| OutboxApproval {
+                action_id: approval.action_id,
+                ceremony_url: approval.ceremony_url,
+                expires_ms: approval.expires_ms,
+            }),
+        }
     }
 
     fn namespace_for_key(key: &str, secret: bool) -> &'static str {
@@ -420,6 +544,8 @@ const CAPS_HTTP_STORE_SIGN_VFS: &[&str] = &[
     "bloom:http",
     "bloom:store",
     "bloom:sign",
+    "bloom:tx.outbox",
+    "bloom:chain",
     "bloom:vfs.read",
     "bloom:vfs.write",
 ];
@@ -708,5 +834,13 @@ pub fn read_json_value<T: serde::Serialize>(value: &T) -> DispatchResponse {
     match serde_json::to_vec_pretty(value) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(e) => error(-4, e.to_string()),
+    }
+}
+
+pub fn read_store(key: &str, max_bytes: usize) -> DispatchResponse {
+    match sdk::store_get(key, max_bytes) {
+        Ok(bytes) => DispatchResponse::Read(bytes),
+        Err(SdkError::Host(HostStatus::NotFound)) => error(-1, "not found"),
+        Err(err) => error(-4, err.message()),
     }
 }

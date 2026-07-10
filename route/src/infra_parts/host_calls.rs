@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HttpRequest};
 use crate::polymarket::Result;
 use alloy::primitives::Address;
+use petal::sdk::{DispatchResponse, HttpRequest};
 pub(crate) fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
     let path = format!("wallets/{wallet}/address");
     let bytes = petal::sdk::vfs_read(&path, 128).map_err(sdk_error)?;

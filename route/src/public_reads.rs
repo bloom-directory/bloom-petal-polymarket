@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
-use petal::sdk::DispatchResponse;
 use crate::polymarket::{Market, Result};
 use alloy::primitives::Address;
+use petal::sdk::DispatchResponse;
 pub(crate) fn market_by_slug(slug: &str) -> Result<Market, DispatchResponse> {
     get_json(&format!("{GAMMA}/markets/slug/{slug}"))
 }

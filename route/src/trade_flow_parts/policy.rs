@@ -1,11 +1,11 @@
 use crate::prelude::*;
 use std::collections::BTreeSet;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::eip712::{CTF, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
 use crate::polymarket::order::{format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
 pub(crate) fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
     if let Some(map) = policy_check.as_object_mut() {
@@ -16,9 +16,8 @@ pub(crate) fn enable_trade_posting(policy_check: &mut serde_json::Value, reason:
 }
 
 pub(crate) fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchResponse> {
-    let bytes =
-        petal::sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
-            .map_err(sdk_error)?;
+    let bytes = petal::sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
+        .map_err(sdk_error)?;
     let raw = core::str::from_utf8(&bytes)
         .map_err(|e| error(-4, format!("wallet policy is not utf-8: {e}")))?;
     toml::from_str(raw).map_err(|e| error(-4, format!("wallet policy parse: {e}")))

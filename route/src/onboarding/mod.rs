@@ -1,20 +1,16 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, SignRequest};
-use crate::polymarket::eip712::clob_auth_signing_hash;
-use crate::polymarket::{POLYGON, validate_wallet_name};
 use crate::polymarket::signer::{POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_TIMESTAMP};
+use crate::polymarket::signing::clob_auth_action_and_hash;
+use crate::polymarket::{POLYGON, validate_wallet_name};
+use petal::sdk::DispatchResponse;
 
 mod flow;
-mod geoblock;
 mod persistence;
 mod status;
 
 pub(crate) use flow::run_onboard_stages;
-pub(crate) use geoblock::check_geoblock;
-pub(crate) use persistence::{
-    OnboardStatusExtra, persist_onboard_failure, persist_onboard_status,
-};
+pub(crate) use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
 pub(crate) use status::{
     LiveOnboardStatus, fundable_deposit_wallet, fundable_deposit_wallet_from_status,
     local_onboard_status, local_onboard_status_with_live_deposit, local_status_for_wallet,
@@ -30,23 +26,78 @@ pub(crate) fn begin_onboarding(wallet: &str) -> DispatchResponse {
         Ok(address) => address,
         Err(resp) => return resp,
     };
-    if let Err(resp) = check_geoblock() {
-        return resp;
-    }
     let deposit = match predict_deposit_wallet(owner) {
         Ok(deposit) => deposit,
         Err(resp) => return resp,
     };
-    let timestamp = now_secs();
-    let hash = clob_auth_signing_hash(owner, timestamp, CLOB_AUTH_NONCE, POLYGON);
-    let signature = match petal::sdk::sign_hash(&SignRequest {
-        wallet: wallet.into(),
-        hash32: hash.into(),
-        purpose: "polymarket.clob_auth".into(),
-    }) {
-        Ok(sig) if sig.len() == 65 => format!("0x{}", hex::encode(sig)),
-        Ok(sig) => return error(-4, format!("sign_hash returned {} bytes", sig.len())),
-        Err(e) => return sdk_error(e),
+    let prepared_key = format!("onboard/{wallet}/prepared_clob_auth.json");
+    let approval_key = format!("onboard/{wallet}/approval.json");
+    let review_key = format!("onboard/{wallet}/review_intent.json");
+    let prepared = match load_prepared_signing(&prepared_key) {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => {
+            let timestamp = match clob_server_time() {
+                Ok(timestamp) => timestamp,
+                Err(resp) => return resp,
+            };
+            let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, POLYGON);
+            let review = serde_json::json!({
+                "operation": "clob_auth",
+                "owner": owner.to_checksum(None),
+                "chain_id": POLYGON,
+                "timestamp": action.timestamp,
+                "nonce": action.nonce,
+                "message": action.message,
+                "signing_hash": format!("{:#x}", action.signing_hash),
+            });
+            let review_hash = match store_review_intent(&review_key, &review) {
+                Ok(hash) => hash,
+                Err(resp) => return resp,
+            };
+            let prepared = PreparedSigning::new(
+                "clob_auth",
+                "polymarket.clob_auth",
+                owner,
+                action.signing_hash,
+                serde_json::json!({
+                    "timestamp": action.timestamp,
+                    "nonce": action.nonce,
+                    "chain_id": POLYGON,
+                    "review_intent_hash": review_hash,
+                }),
+            );
+            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
+                return resp;
+            }
+            prepared
+        }
+        Err(resp) => return resp,
+    };
+    if prepared.operation != "clob_auth" || prepared.owner != owner.to_checksum(None) {
+        return error(-4, "prepared CLOB auth does not match wallet");
+    }
+    let timestamp = match prepared
+        .preimage
+        .get("timestamp")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(timestamp) => timestamp,
+        None => return error(-4, "prepared CLOB auth is missing timestamp"),
+    };
+    let review_hash = match prepared
+        .preimage
+        .get("review_intent_hash")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(hash) => hash,
+        None => return error(-4, "prepared CLOB auth is missing review intent hash"),
+    };
+    if let Err(resp) = verify_review_intent(&review_key, review_hash) {
+        return resp;
+    }
+    let signature = match sign_prepared(wallet, &prepared, &approval_key) {
+        Ok(signature) => format!("0x{}", hex::encode(signature)),
+        Err(resp) => return resp,
     };
     let headers = [
         (POLY_ADDRESS, format!("{owner:#x}")),
@@ -69,6 +120,8 @@ pub(crate) fn begin_onboarding(wallet: &str) -> DispatchResponse {
     {
         return error(-4, "failed to store CLOB credentials");
     }
+    let _ = petal::sdk::store_del(&prepared_key);
+    let _ = petal::sdk::store_del(&approval_key);
     match run_onboard_stages(wallet, owner, deposit, &creds) {
         Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
         Err(resp) => {

@@ -1,11 +1,9 @@
-use crate::prelude::*;
-use std::time::Duration;
-
-use petal::sdk::{DispatchResponse, HttpRequest, SignRequest};
 use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash};
-use crate::polymarket::{BuilderCredentials, Credentials, POLYGON, Result};
 use crate::polymarket::wallet::v2_approval_calls;
+use crate::polymarket::{BuilderCredentials, Credentials, POLYGON, Result};
+use crate::prelude::*;
 use alloy::primitives::{Address, B256, U256};
+use petal::sdk::{DispatchResponse, HttpRequest};
 pub(crate) struct LocalRelayerTx {
     pub(crate) id: String,
     pub(crate) state: String,
@@ -34,6 +32,22 @@ pub(crate) fn relayer_submit_with_builder_repair(
         Err(RelayerHttpError {
             status: 401 | 403, ..
         }) => {
+            let listed = clob_l2_get_json(owner, clob_creds, "/auth/builder-api-key", &[])?;
+            let entries = listed
+                .as_array()
+                .or_else(|| listed.get("data").and_then(serde_json::Value::as_array))
+                .or_else(|| listed.get("keys").and_then(serde_json::Value::as_array));
+            let stored_is_active = entries
+                .into_iter()
+                .flatten()
+                .filter_map(crate::polymarket::builder_creds::BuilderApiKeyInfo::from_value)
+                .any(|info| info.key == builder.key && info.revoked_at.is_none());
+            if stored_is_active {
+                return Err(error(
+                    -4,
+                    "relayer rejected an active builder key; refusing destructive rotation",
+                ));
+            }
             delete_builder_credentials(wallet)?;
             builder = ensure_builder_credentials(wallet, owner, clob_creds)?;
             relayer_submit(&builder, &body).map_err(relayer_http_error)
@@ -114,25 +128,22 @@ pub(crate) fn relayer_wallet_nonce(owner: Address) -> Result<u64, DispatchRespon
 pub(crate) fn relayer_poll_confirmed(
     tx: &LocalRelayerTx,
 ) -> Result<LocalRelayerTx, DispatchResponse> {
-    let deadline = now_secs().saturating_add(ONBOARD_POLL_TIMEOUT_SECS);
-    loop {
-        let cur = relayer_transaction(&tx.id)?;
-        if cur.is_confirmed() {
-            return Ok(cur);
-        }
-        if cur.is_failed() {
-            return Err(error(-4, format!("relayer tx {} {}", cur.id, cur.state)));
-        }
-        if now_secs() >= deadline {
-            return Err(error(
-                -4,
-                format!(
-                    "relayer tx {} not confirmed before timeout (last: {})",
-                    cur.id, cur.state
-                ),
-            ));
-        }
-        std::thread::sleep(Duration::from_secs(ONBOARD_POLL_INTERVAL_SECS));
+    let current = relayer_transaction(&tx.id)?;
+    if current.is_confirmed() {
+        Ok(current)
+    } else if current.is_failed() {
+        Err(error(
+            -4,
+            format!("relayer tx {} {}", current.id, current.state),
+        ))
+    } else {
+        Err(error(
+            -2,
+            format!(
+                "relayer tx {} is {}; retry this write to poll again",
+                current.id, current.state
+            ),
+        ))
     }
 }
 
@@ -175,34 +186,95 @@ pub(crate) fn relayer_batch_body(
     nonce: u64,
     deadline: u64,
 ) -> Result<serde_json::Value, DispatchResponse> {
-    let calls = v2_approval_calls();
-    let batch = Batch {
-        wallet: deposit,
-        nonce: U256::from(nonce),
-        deadline: U256::from(deadline),
-        calls: calls.clone(),
+    let prepared_key = format!("onboard/{wallet}/prepared_relayer_batch.json");
+    let review_key = format!("onboard/{wallet}/review_intent.json");
+    let approval_key = format!("onboard/{wallet}/approval.json");
+    let prepared = match load_prepared_signing(&prepared_key)? {
+        Some(prepared) => prepared,
+        None => {
+            let calls = v2_approval_calls();
+            let batch = Batch {
+                wallet: deposit,
+                nonce: U256::from(nonce),
+                deadline: U256::from(deadline),
+                calls: calls.clone(),
+            };
+            let hash = batch_signing_hash(&batch, POLYGON, deposit);
+            let calls_json: Vec<serde_json::Value> = calls
+                .iter()
+                .map(|call| {
+                    serde_json::json!({
+                        "target": call.target.to_checksum(None),
+                        "value": call.value.to_string(),
+                        "data": format!("0x{}", hex::encode(call.data.as_ref())),
+                    })
+                })
+                .collect();
+            let review = serde_json::json!({
+                "operation": "onboard_approvals",
+                "owner": owner.to_checksum(None),
+                "deposit_wallet": deposit.to_checksum(None),
+                "chain_id": POLYGON,
+                "nonce": nonce,
+                "deadline": deadline,
+                "calls": calls_json,
+                "signing_hash": format!("{hash:#x}"),
+            });
+            let review_hash = store_review_intent(&review_key, &review)?;
+            let prepared = PreparedSigning::new(
+                "onboard_approvals",
+                "polymarket.relayer_batch",
+                owner,
+                hash,
+                serde_json::json!({
+                    "deposit_wallet": deposit.to_checksum(None),
+                    "nonce": nonce,
+                    "deadline": deadline,
+                    "calls": calls_json,
+                    "review_intent_hash": review_hash,
+                }),
+            );
+            store_prepared_signing(&prepared_key, &prepared)?;
+            prepared
+        }
     };
-    let hash = batch_signing_hash(&batch, POLYGON, deposit);
-    let signature = sign_hash_hex(wallet, "polymarket.relayer_batch", hash)?;
-    let calls_json: Vec<serde_json::Value> = calls
-        .iter()
-        .map(|call| {
-            serde_json::json!({
-                "target": call.target.to_checksum(None),
-                "value": call.value.to_string(),
-                "data": format!("0x{}", hex::encode(call.data.as_ref())),
-            })
-        })
-        .collect();
+    if prepared.operation != "onboard_approvals" || prepared.owner != owner.to_checksum(None) {
+        return Err(error(-4, "prepared onboarding batch identity mismatch"));
+    }
+    let review_hash = prepared
+        .preimage
+        .get("review_intent_hash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing review hash"))?;
+    verify_review_intent(&review_key, review_hash)?;
+    let prepared_nonce = prepared
+        .preimage
+        .get("nonce")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
+    let prepared_deadline = prepared
+        .preimage
+        .get("deadline")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
+    let calls_json = prepared
+        .preimage
+        .get("calls")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing calls"))?;
+    let signature = format!(
+        "0x{}",
+        hex::encode(sign_prepared(wallet, &prepared, &approval_key)?)
+    );
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
         "to": FACTORY.to_checksum(None),
-        "nonce": nonce.to_string(),
+        "nonce": prepared_nonce.to_string(),
         "signature": signature,
         "depositWalletParams": {
             "depositWallet": deposit.to_checksum(None),
-            "deadline": deadline.to_string(),
+            "deadline": prepared_deadline.to_string(),
             "calls": calls_json,
         },
     }))
@@ -213,15 +285,20 @@ pub(crate) fn sign_hash_hex(
     purpose: &str,
     hash: B256,
 ) -> Result<String, DispatchResponse> {
-    match petal::sdk::sign_hash(&SignRequest {
-        wallet: wallet.into(),
-        hash32: hash.into(),
-        purpose: purpose.into(),
-    }) {
-        Ok(sig) if sig.len() == 65 => Ok(format!("0x{}", hex::encode(sig))),
-        Ok(sig) => Err(error(-4, format!("sign_hash returned {} bytes", sig.len()))),
-        Err(e) => Err(sdk_error(e)),
-    }
+    let owner = wallet_address(wallet)?;
+    let prepared = PreparedSigning::new(
+        "relayer_batch",
+        purpose,
+        owner,
+        hash,
+        serde_json::json!({"signing_hash": format!("{hash:#x}")}),
+    );
+    sign_prepared(
+        wallet,
+        &prepared,
+        &format!("onboard/{wallet}/approval.json"),
+    )
+    .map(|signature| format!("0x{}", hex::encode(signature)))
 }
 
 pub(crate) fn builder_headers(

@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use alloy::primitives::Address;
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub(crate) fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> {
     let Some(bytes) = store_get(&format!("creds/{wallet}/clob.json")) else {
         return Err(error(

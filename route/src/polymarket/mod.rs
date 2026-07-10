@@ -6,6 +6,7 @@ pub(crate) mod order_model;
 #[cfg(test)]
 pub(crate) mod order_store;
 pub(crate) mod signer;
+pub(crate) mod signing;
 pub(crate) mod trade;
 pub(crate) mod types;
 pub(crate) mod wallet;
@@ -17,6 +18,7 @@ pub use types::{Credentials, Market, OrderBook, Position, Side, Trade};
 
 pub const POLYGON: u64 = 137;
 pub const AMOY: u64 = 80_002;
+pub const ACTION_ID_HEX_PREFIX: usize = 16;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolymarketError {
@@ -48,14 +50,13 @@ pub type Result<T, E = PolymarketError> = std::result::Result<T, E>;
 
 pub fn validate_wallet_name(name: &str) -> Result<()> {
     if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-        || name == "."
-        || name == ".."
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(PolymarketError::invalid(format!(
-            "invalid wallet name '{name}'"
+            "invalid wallet name {name:?}: must be 1-64 chars of [A-Za-z0-9_-]"
         )));
     }
     Ok(())

@@ -1,12 +1,12 @@
 use crate::prelude::*;
 
-use petal::sdk::DispatchResponse;
 use crate::polymarket::eip712::{
     CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE_V2, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
     NEG_RISK_EXCHANGE_V2, PUSD,
 };
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::{Address, U256};
+use petal::sdk::DispatchResponse;
 pub(crate) fn read_chain_ctf_balance(
     deposit: Address,
     token_id: &str,

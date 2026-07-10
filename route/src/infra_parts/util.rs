@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::{PolymarketError, Result};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use url::Url;
 pub(crate) fn validate_relative_path(relative: &str) -> Result<&str, String> {
     if relative.is_empty() {

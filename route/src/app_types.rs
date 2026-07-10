@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::polymarket::order::{OrderType, parse_micro};
-use crate::polymarket::{Market, Side};
 use crate::polymarket::trade as shared_trade;
+use crate::polymarket::{Market, Side};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct TradeNewRequest {
@@ -19,16 +19,6 @@ pub(crate) struct TradeNewRequest {
     pub(crate) limit_price: Option<String>,
     #[serde(default)]
     pub(crate) order_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct GeoblockStatus {
-    #[serde(default)]
-    pub(crate) blocked: bool,
-    #[serde(default)]
-    pub(crate) country: String,
-    #[serde(default)]
-    pub(crate) region: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -291,6 +281,42 @@ pub(crate) struct StoreFundSession {
     #[serde(default)]
     pub(crate) deposit_wallet_source: String,
     pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) prepared_funding: Option<PreparedFunding>,
+    #[serde(default)]
+    pub(crate) review_intent: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) outbox_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) outbox_inspections: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) next_transaction: usize,
+    #[serde(default)]
+    pub(crate) plan_md: Option<String>,
+    #[serde(default)]
+    pub(crate) approval: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PreparedEvmTransaction {
+    pub(crate) purpose: String,
+    pub(crate) to: String,
+    pub(crate) value_wei: String,
+    pub(crate) data_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PreparedFunding {
+    pub(crate) review_intent: serde_json::Value,
+    pub(crate) transactions: Vec<PreparedEvmTransaction>,
+}
+
+impl PreparedFunding {
+    pub(crate) fn digest(&self) -> String {
+        blake3::hash(&serde_json::to_vec(self).expect("prepared funding serializes"))
+            .to_hex()
+            .to_string()
+    }
 }
 
 pub(crate) fn default_slippage_bps() -> u16 {

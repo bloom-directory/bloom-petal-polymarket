@@ -1,12 +1,12 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignRequest};
 use crate::polymarket::order::{
-    LimitQuote, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
+    LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
     poly1271_digest, wrap_poly1271_signature,
 };
 use crate::polymarket::{POLYGON, Result, validate_wallet_name};
-use alloy::primitives::U256;
+use alloy::primitives::{Address, B256, U256};
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
@@ -30,7 +30,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
         Ok(draft) => draft,
         Err(resp) => return resp,
     };
-    if draft.status != "revalidated" {
+    if draft.status != "revalidated" && draft.status != "signing_prepared" {
         return error(
             -3,
             format!(
@@ -41,9 +41,6 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     }
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");
-    }
-    if let Err(resp) = check_geoblock() {
-        return resp;
     }
     let owner = match wallet_address(wallet) {
         Ok(address) => address,
@@ -103,19 +100,70 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
         Ok(token_id) => token_id,
         Err(e) => return error(-4, format!("token id parse: {e}")),
     };
-    let order = build_order(&OrderParams {
-        token_id,
-        maker: funder,
-        quote: LimitQuote {
-            side: draft.side,
-            price_micro: draft.limit_price_micro,
-            size_micro: draft.size_micro,
-            maker_micro: draft.maker_micro,
-            taker_micro: draft.taker_micro,
-        },
-        builder_code: None,
-        signature_type: SIG_TYPE_POLY_1271,
-    });
+    let prepared_key = format!("{base}/prepared_signing.json");
+    let approval_key = format!("{base}/approval.json");
+    let (order, prepared) = match load_prepared_signing(&prepared_key) {
+        Ok(Some(prepared)) => {
+            if prepared.operation != "order" || prepared.owner != owner.to_checksum(None) {
+                return error(-4, "prepared order does not match wallet");
+            }
+            let order = match order_from_prepared(&prepared.preimage) {
+                Ok(order) => order,
+                Err(resp) => return resp,
+            };
+            (order, prepared)
+        }
+        Ok(None) => {
+            let order = build_order(&OrderParams {
+                token_id,
+                maker: funder,
+                quote: LimitQuote {
+                    side: draft.side,
+                    price_micro: draft.limit_price_micro,
+                    size_micro: draft.size_micro,
+                    maker_micro: draft.maker_micro,
+                    taker_micro: draft.taker_micro,
+                },
+                builder_code: None,
+                signature_type: SIG_TYPE_POLY_1271,
+            });
+            let digest = poly1271_digest(&order, POLYGON, draft.neg_risk);
+            let prepared = PreparedSigning::new(
+                "order",
+                "polymarket.order.poly1271",
+                owner,
+                digest,
+                serde_json::json!({
+                    "draft_id": id,
+                    "owner": owner.to_checksum(None),
+                    "funder": funder.to_checksum(None),
+                    "token_id": order.tokenId.to_string(),
+                    "salt": order.salt.to_string(),
+                    "maker_amount": order.makerAmount.to_string(),
+                    "taker_amount": order.takerAmount.to_string(),
+                    "side": order.side,
+                    "signature_type": order.signatureType,
+                    "timestamp_ms": order.timestamp.to_string(),
+                    "neg_risk": draft.neg_risk,
+                    "chain_id": POLYGON,
+                    "review_intent_hash": review_intent_hash,
+                }),
+            );
+            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
+                return resp;
+            }
+            (order, prepared)
+        }
+        Err(resp) => return resp,
+    };
+    if prepared
+        .preimage
+        .get("review_intent_hash")
+        .and_then(serde_json::Value::as_str)
+        != Some(review_intent_hash.as_str())
+    {
+        return error(-4, "prepared order does not match final review intent");
+    }
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -147,14 +195,9 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match petal::sdk::sign_hash(&SignRequest {
-        wallet: wallet.into(),
-        hash32: digest.into(),
-        purpose: "polymarket.order.poly1271".into(),
-    }) {
-        Ok(sig) if sig.len() == 65 => sig,
-        Ok(sig) => return error(-4, format!("sign_hash returned {} bytes", sig.len())),
-        Err(e) => return sdk_error(e),
+    let inner_sig = match sign_prepared(wallet, &prepared, &approval_key) {
+        Ok(signature) => signature,
+        Err(resp) => return resp,
     };
     let signature = match wrap_poly1271_signature(&order, &inner_sig, POLYGON, draft.neg_risk) {
         Ok(signature) => signature,
@@ -226,6 +269,8 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to store receipt");
             }
+            let _ = petal::sdk::store_del(&prepared_key);
+            let _ = petal::sdk::store_del(&approval_key);
             draft.status =
                 if clob_status_excluded_from_daily_cap(status.as_str(), Some(draft.order_type)) {
                     "rejected".into()
@@ -351,6 +396,44 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
     }
 }
 
+fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
+    let string = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| error(-4, format!("prepared order is missing {name}")))
+    };
+    let parse_u256 = |name: &str| {
+        string(name)?
+            .parse::<U256>()
+            .map_err(|err| error(-4, format!("prepared order {name} is invalid: {err}")))
+    };
+    let funder = string("funder")?
+        .parse::<Address>()
+        .map_err(|err| error(-4, format!("prepared order funder is invalid: {err}")))?;
+    Ok(Order {
+        salt: parse_u256("salt")?,
+        maker: funder,
+        signer: funder,
+        tokenId: parse_u256("token_id")?,
+        makerAmount: parse_u256("maker_amount")?,
+        takerAmount: parse_u256("taker_amount")?,
+        side: value
+            .get("side")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|side| u8::try_from(side).ok())
+            .ok_or_else(|| error(-4, "prepared order side is invalid"))?,
+        signatureType: value
+            .get("signature_type")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|kind| u8::try_from(kind).ok())
+            .ok_or_else(|| error(-4, "prepared order signature type is invalid"))?,
+        timestamp: parse_u256("timestamp_ms")?,
+        metadata: B256::ZERO,
+        builder: B256::ZERO,
+    })
+}
+
 pub(crate) fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
@@ -448,4 +531,88 @@ pub(crate) fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), D
         }
     }
     Ok(())
+}
+
+pub(crate) fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchResponse> {
+    if let Err(err) = validate_wallet_name(wallet) {
+        return Err(error(-3, err.to_string()));
+    }
+    let owner = wallet_address(wallet)?;
+    let creds = load_creds(wallet)?;
+    let orders = clob_l2_get_json(owner, &creds, "/data/orders", &[])?;
+    let rows = orders
+        .as_array()
+        .or_else(|| orders.get("data").and_then(serde_json::Value::as_array))
+        .or_else(|| orders.get("orders").and_then(serde_json::Value::as_array));
+    let mut ids: Vec<_> = rows
+        .into_iter()
+        .flatten()
+        .filter_map(clob_response_order_id)
+        .filter(|id| petal::is_safe_segment(id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+pub(crate) fn cancel_discovered_order(
+    wallet: &str,
+    order_id: &str,
+    body: &[u8],
+) -> DispatchResponse {
+    if !petal::is_safe_segment(order_id) {
+        return error(-3, "invalid CLOB order id");
+    }
+    let text = match core::str::from_utf8(body) {
+        Ok(text) => text.trim(),
+        Err(_) => return error(-3, "cancel body must be UTF-8"),
+    };
+    let confirmed = matches!(text.to_ascii_lowercase().as_str(), "confirm" | "y" | "yes")
+        || serde_json::from_str::<TradeCancelRequest>(text).is_ok_and(|request| request.cancel);
+    if !confirmed {
+        return error(-3, "cancel must be explicitly confirmed");
+    }
+    let _lock = match acquire_trade_lock(wallet, order_id) {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
+    let owner = match wallet_address(wallet) {
+        Ok(owner) => owner,
+        Err(resp) => return resp,
+    };
+    let creds = match load_creds(wallet) {
+        Ok(creds) => creds,
+        Err(resp) => return resp,
+    };
+    let orders = match clob_l2_get_json(owner, &creds, "/data/orders", &[]) {
+        Ok(orders) => orders,
+        Err(resp) => return resp,
+    };
+    let discoverable = orders
+        .as_array()
+        .or_else(|| orders.get("data").and_then(serde_json::Value::as_array))
+        .or_else(|| orders.get("orders").and_then(serde_json::Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(clob_response_order_id)
+        .any(|id| id == order_id);
+    if !discoverable {
+        return error(
+            -3,
+            "order is not discoverable from account orders; refusing cancellation",
+        );
+    }
+    let request = serde_json::json!({"orderID": order_id}).to_string();
+    let raw = match clob_l2_delete_json(owner, &creds, "/order", &request) {
+        Ok(raw) => raw,
+        Err(resp) => return resp,
+    };
+    if !clob_cancel_confirmed(&raw, order_id) {
+        return error(-4, "CLOB response did not confirm cancellation");
+    }
+    append_trade_audit(
+        wallet,
+        "discovered_order_cancelled",
+        serde_json::json!({"clob_order_id": order_id}),
+    )
 }

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::Result;
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use serde::Serialize;
 pub(crate) fn read_store(key: &str) -> DispatchResponse {
     match petal::sdk::store_get(key, MAX_STORE_BYTES) {

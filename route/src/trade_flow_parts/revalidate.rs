@@ -1,10 +1,10 @@
 use crate::prelude::*;
 
-use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
 use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
+use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
@@ -36,9 +36,6 @@ pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> Dis
     }
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");
-    }
-    if let Err(resp) = check_geoblock() {
-        return resp;
     }
 
     let snapshot = match trade_snapshot(&draft.slug, &draft.outcome) {

@@ -29,7 +29,7 @@ jobs:
       - name: Test route crate
         run: cargo test --manifest-path route/Cargo.toml --locked
       - name: Clippy route crate
-        run: cargo clippy --manifest-path route/Cargo.toml --locked -- -D warnings
+        run: cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Build source package
@@ -42,16 +42,42 @@ jobs:
           path: bloom
       - name: Build Bloom CLI
         run: |
-          cargo build --manifest-path bloom/Cargo.toml -p bloom --bin bloom
-          cp bloom/target/debug/bloom "$RUNNER_TEMP/bloom"
+          cargo build --release --manifest-path bloom/Cargo.toml -p bloom --bin bloom
+          cp bloom/target/release/bloom "$RUNNER_TEMP/bloom"
           rm -rf bloom
-      - name: Validate package with Bloom
-        run: |
-          "$RUNNER_TEMP/bloom" petal app build "$GITHUB_WORKSPACE"
       - name: Smoke install and dispatch
         shell: bash
         run: |
           set -euo pipefail
           home="$(mktemp -d)"
           "$RUNNER_TEMP/bloom" --home "$home" petal install "$GITHUB_WORKSPACE"
-          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /apps/polymarket/meta/parity.json | grep -q 'polymarket_v2_petal_parity'
+          contract="$RUNNER_TEMP/route-contract.json"
+          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /apps/polymarket/meta/route-contract.json > "$contract"
+          for required in \
+            'bloom.polymarket.petal-route-contract.v1' \
+            'settings/enso-api-key' \
+            'fund/<wallet>/<id>/confirm' \
+            'trade/<wallet>/orders/<clob-order-id>/cancel' \
+            'redeem/<wallet>/<slug>/confirm' \
+            'revoke-approvals/<wallet>/request/confirm' \
+            'withdraw/<wallet>/pusd/confirm' \
+            'obligations/<wallet>.json' \
+            'bloom:sign/signing@0.2.0' \
+            'bloom:tx/outbox@0.1.0' \
+            'bloom:chain/read@0.1.0'; do
+            grep -Fq "$required" "$contract"
+          done
+          ! rg -n 'vfs_(read|write).*polymarket/' route/src
+      - name: Validate GitHub source install
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_url="https://github.com/${GITHUB_REPOSITORY}"
+          source_ref="$GITHUB_SHA"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            source_url="$(jq -r '.pull_request.head.repo.html_url' "$GITHUB_EVENT_PATH")"
+            source_ref="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+          fi
+          home="$(mktemp -d)"
+          "$RUNNER_TEMP/bloom" --home "$home" petal install "$source_url" --ref "$source_ref"
+          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /apps/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'

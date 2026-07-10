@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
-use petal::sdk::DispatchResponse;
 use crate::polymarket::order::{OrderType, format_micro, parse_micro};
 use crate::polymarket::{Side, validate_wallet_name};
+use petal::sdk::DispatchResponse;
 pub(crate) fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());

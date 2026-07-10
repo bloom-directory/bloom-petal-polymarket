@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments)]
+#![allow(dead_code, clippy::upper_case_acronyms)]
 
 //! Local Polymarket handler petal.
 //!
@@ -11,7 +12,9 @@ mod selected_route {
     include!(env!("BLOOM_ROUTE_RS"));
 }
 
+pub(crate) mod account_views;
 pub(crate) mod app_types;
+pub(crate) mod approval;
 pub(crate) mod constants;
 pub(crate) mod fund_flow;
 pub(crate) mod infra_parts {
@@ -29,6 +32,7 @@ pub(crate) mod onboarding;
 pub(crate) mod polymarket;
 pub(crate) mod prelude;
 pub(crate) mod public_reads;
+pub(crate) mod relayer_actions;
 pub(crate) mod trade_flow_parts {
     pub(crate) mod chain;
     pub(crate) mod draft;

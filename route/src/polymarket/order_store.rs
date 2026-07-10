@@ -481,8 +481,8 @@ pub fn render_plan_md(d: &OrderDraft) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::polymarket::order_model::DraftStatus;
     use crate::polymarket::order::OrderType;
+    use crate::polymarket::order_model::DraftStatus;
     use tempfile::TempDir;
 
     fn draft(wallet: &str) -> OrderDraft {

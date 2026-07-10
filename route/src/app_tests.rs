@@ -158,12 +158,22 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 47);
+        assert_eq!(routes.len(), 93);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
                 .iter()
                 .any(|path| path.ends_with("trade/[wallet]/receipts/[id]/cancel.rs"))
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|path| path.ends_with("meta/route-contract.json.rs"))
+        );
+        assert!(
+            !routes
+                .iter()
+                .any(|path| path.ends_with("meta/parity.json.rs"))
         );
     }
 
@@ -175,9 +185,32 @@ mod tests {
         assert!(clob_manifest_allows("get", "/balance-allowance"));
         assert!(clob_manifest_allows("delete", "/order"));
 
-        assert!(!clob_manifest_allows("get", "/auth/builder-api-key"));
+        assert!(clob_manifest_allows("get", "/auth/builder-api-key"));
+        assert!(clob_manifest_allows("delete", "/auth/builder-api-key"));
+        assert!(clob_manifest_allows("get", "/time"));
         assert!(!clob_manifest_allows("post", "/data/orders"));
         assert!(!clob_manifest_allows("delete", "/balance-allowance/update"));
+    }
+
+    #[test]
+    fn runtime_contract_uses_structured_signing_and_outbox_without_parity_marker() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        let wit = std::fs::read_to_string(root.join("petal/wit/route.wit")).expect("route WIT");
+        assert!(wit.contains("package bloom:route@0.1.0"));
+        assert!(wit.contains("bloom:sign/signing@0.2.0"));
+        assert!(wit.contains("bloom:tx/outbox@0.1.0"));
+        assert!(!root.join("route/files/meta/parity.json.rs").exists());
+    }
+
+    #[test]
+    fn wasm_relayer_paths_do_not_use_blocking_sleep() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/infra_parts/relayer.rs"),
+        )
+        .expect("relayer source");
+        assert!(!source.contains("thread::sleep"));
     }
 
     #[test]
