@@ -13,7 +13,7 @@ outputs = ["app/polymarket"]
 summary = "Expose Polymarket market reads, onboarding, account views, funding drafts, and trade draft/post/cancel flows as a v2 Petal app."
 
 [caps]
-allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read", "bloom:vfs.write"]
+allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:vfs.write"]
 
 [[net.allow]]
 host = "gamma-api.polymarket.com"
@@ -30,6 +30,7 @@ host = "clob.polymarket.com"
 methods = ["get"]
 paths = [
   "/auth/derive-api-key",
+  "/auth/builder-api-key",
   "/balance-allowance",
   "/balance-allowance/update",
   "/book",
@@ -38,6 +39,7 @@ paths = [
   "/orders",
   "/price",
   "/spread",
+  "/time",
 ]
 
 [[net.allow]]
@@ -53,12 +55,12 @@ paths = [
 [[net.allow]]
 host = "clob.polymarket.com"
 methods = ["delete"]
-paths = ["/order"]
+paths = ["/order", "/auth/builder-api-key"]
 
 [[net.allow]]
-host = "polymarket.com"
+host = "api.enso.finance"
 methods = ["get"]
-paths = ["/api/geoblock"]
+paths = ["/api/v1/shortcuts/quote", "/api/v1/shortcuts/route"]
 
 [[net.allow]]
 host = "relayer-v2.polymarket.com"
@@ -67,7 +69,7 @@ paths = ["/nonce", "/submit", "/transaction"]
 
 [sign]
 allowed_intents = [
-  "polymarket.clob_auth",
+  "polymarket.onboard",
   "polymarket.order.poly1271",
   "polymarket.relayer_batch",
 ]

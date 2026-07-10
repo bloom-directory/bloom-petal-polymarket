@@ -1,0 +1,25 @@
+use std::env;
+use std::path::PathBuf;
+
+fn main() {
+    println!("cargo:rerun-if-env-changed=BLOOM_ROUTE_RS");
+    println!("cargo:rerun-if-env-changed=BLOOM_ROUTE_PATH");
+    println!("cargo:rerun-if-env-changed=BLOOM_ROUTE_CANONICAL_PATH");
+    println!("cargo:rerun-if-env-changed=BLOOM_ROUTE_PARAMS");
+    println!("cargo:rerun-if-changed=files");
+
+    if env::var_os("BLOOM_ROUTE_RS").is_none() {
+        let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+        let default_route = manifest_dir.join("files/$index.rs");
+        println!("cargo:rustc-env=BLOOM_ROUTE_RS={}", default_route.display());
+    }
+    if env::var_os("BLOOM_ROUTE_PATH").is_none() {
+        println!("cargo:rustc-env=BLOOM_ROUTE_PATH=$index");
+    }
+    if env::var_os("BLOOM_ROUTE_CANONICAL_PATH").is_none() {
+        println!("cargo:rustc-env=BLOOM_ROUTE_CANONICAL_PATH=");
+    }
+    if env::var_os("BLOOM_ROUTE_PARAMS").is_none() {
+        println!("cargo:rustc-env=BLOOM_ROUTE_PARAMS=");
+    }
+}
