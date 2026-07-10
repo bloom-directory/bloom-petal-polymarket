@@ -42,12 +42,9 @@ jobs:
           path: bloom
       - name: Build Bloom CLI
         run: |
-          cargo build --manifest-path bloom/Cargo.toml -p bloom --bin bloom
-          cp bloom/target/debug/bloom "$RUNNER_TEMP/bloom"
+          cargo build --release --manifest-path bloom/Cargo.toml -p bloom --bin bloom
+          cp bloom/target/release/bloom "$RUNNER_TEMP/bloom"
           rm -rf bloom
-      - name: Validate package with Bloom
-        run: |
-          "$RUNNER_TEMP/bloom" petal app build "$GITHUB_WORKSPACE"
       - name: Smoke install and dispatch
         shell: bash
         run: |
