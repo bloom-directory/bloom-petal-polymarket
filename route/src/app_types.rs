@@ -150,6 +150,8 @@ pub(crate) struct TradeRevalidateRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct TradePostRequest {
     pub(crate) post: bool,
+    #[serde(default)]
+    pub(crate) acknowledge_warnings: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -295,6 +297,19 @@ pub(crate) struct StoreFundSession {
     pub(crate) plan_md: Option<String>,
     #[serde(default)]
     pub(crate) approval: Option<serde_json::Value>,
+    /// Set before calling the outbox stage host function and cleared only after
+    /// its returned id is durable. A surviving marker means the call may have
+    /// reached the host, so retries must fail closed instead of restaging.
+    #[serde(default)]
+    pub(crate) staging_transaction: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub(crate) struct FundConfirmRequest {
+    #[serde(default)]
+    pub(crate) confirm: bool,
+    #[serde(default)]
+    pub(crate) acknowledge_warnings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

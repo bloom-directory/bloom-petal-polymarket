@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::eip712::{FACTORY, PUSD};
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
-use petal::sdk::DispatchResponse;
+use petal::sdk::{DispatchResponse, HostStatus};
 
 pub(crate) fn run_onboard_stages(
     wallet: &str,
@@ -121,6 +121,24 @@ pub(crate) fn run_onboard_stages(
     }
 
     if !read_chain_v2_approvals(deposit)? {
+        if let Some(id) = approve_tx_id.as_deref() {
+            let previous = relayer_transaction(id)?;
+            if previous.is_confirmed() {
+                // The historical batch completed but live authority is absent
+                // (for example after an explicit revoke). Retire it so a new
+                // nonce-bound approval batch can be prepared.
+                approve_tx_id = None;
+                for key in [
+                    format!("onboard/{wallet}/prepared_relayer_batch.json"),
+                    format!("onboard/{wallet}/approval.json"),
+                ] {
+                    match petal::sdk::store_del(&key) {
+                        Ok(()) | Err(petal::sdk::SdkError::Host(HostStatus::NotFound)) => {}
+                        Err(err) => return Err(sdk_error(err)),
+                    }
+                }
+            }
+        }
         let tx = if let Some(id) = approve_tx_id.as_deref() {
             relayer_transaction(id)?
         } else {

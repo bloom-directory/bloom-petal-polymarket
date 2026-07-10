@@ -235,7 +235,7 @@ pub(crate) fn read_chain_method(
 pub(crate) fn chain_method_nonce() -> String {
     let bytes = petal::sdk::random_bytes(16).unwrap_or_else(|_| {
         let mut fallback = [0u8; 16];
-        fallback[..8].copy_from_slice(&now_millis().to_be_bytes());
+        fallback.copy_from_slice(&now_millis().to_be_bytes());
         fallback.to_vec()
     });
     hex::encode(bytes)

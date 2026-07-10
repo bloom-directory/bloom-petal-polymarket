@@ -55,6 +55,16 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             Ok(inputs) => inputs,
             Err(resp) => return resp,
         };
+    let policy_warn = policy_check
+        .get("policy_warn")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if policy_warn && !req.acknowledge_warnings {
+        return error(
+            -3,
+            "policy warnings require {\"post\":true,\"acknowledge_warnings\":true}",
+        );
+    }
     let review_intent_bytes =
         match petal::sdk::store_get(&format!("{base}/review_intent.json"), MAX_STORE_BYTES) {
             Ok(bytes) => bytes,
@@ -63,7 +73,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             }
             Err(e) => return sdk_error(e),
         };
-    let review_intent: serde_json::Value = match serde_json::from_slice(&review_intent_bytes) {
+    let mut review_intent: serde_json::Value = match serde_json::from_slice(&review_intent_bytes) {
         Ok(value) => value,
         Err(e) => return error(-4, format!("corrupt review intent: {e}")),
     };
@@ -91,6 +101,24 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             format!("{message}; write revalidate again before posting"),
         );
     }
+    let Some(review_object) = review_intent.as_object_mut() else {
+        return error(-4, "final review intent is not an object");
+    };
+    review_object.insert(
+        "policy_warnings_acknowledged".into(),
+        serde_json::Value::Bool(req.acknowledge_warnings),
+    );
+    let review_intent_bytes = match serde_json::to_vec_pretty(&review_intent) {
+        Ok(bytes) => bytes,
+        Err(err) => return error(-4, format!("encode final review intent: {err}")),
+    };
+    if let Err(err) = petal::sdk::store_put(
+        &format!("{base}/review_intent.json"),
+        &review_intent_bytes,
+        false,
+    ) {
+        return sdk_error_with_context("persist warning acknowledgement", err);
+    }
     let review_intent_hash = blake3_hex(&review_intent_bytes);
     let creds = match load_creds(wallet) {
         Ok(creds) => creds,
@@ -114,19 +142,26 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             (order, prepared)
         }
         Ok(None) => {
-            let order = build_order(&OrderParams {
-                token_id,
-                maker: funder,
-                quote: LimitQuote {
-                    side: draft.side,
-                    price_micro: draft.limit_price_micro,
-                    size_micro: draft.size_micro,
-                    maker_micro: draft.maker_micro,
-                    taker_micro: draft.taker_micro,
+            let timestamp_ms = match petal::sdk::try_now_ms() {
+                Ok(timestamp_ms) => timestamp_ms,
+                Err(err) => return sdk_error_with_context("read order timestamp", err),
+            };
+            let order = build_order(
+                &OrderParams {
+                    token_id,
+                    maker: funder,
+                    quote: LimitQuote {
+                        side: draft.side,
+                        price_micro: draft.limit_price_micro,
+                        size_micro: draft.size_micro,
+                        maker_micro: draft.maker_micro,
+                        taker_micro: draft.taker_micro,
+                    },
+                    builder_code: None,
+                    signature_type: SIG_TYPE_POLY_1271,
                 },
-                builder_code: None,
-                signature_type: SIG_TYPE_POLY_1271,
-            });
+                timestamp_ms,
+            );
             let digest = poly1271_digest(&order, POLYGON, draft.neg_risk);
             let prepared = PreparedSigning::new(
                 "order",
@@ -147,6 +182,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
                     "neg_risk": draft.neg_risk,
                     "chain_id": POLYGON,
                     "review_intent_hash": review_intent_hash,
+                    "policy_warnings_acknowledged": req.acknowledge_warnings,
                 }),
             );
             if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
@@ -187,6 +223,7 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             "funder": funder.to_checksum(None),
             "salt": salt,
             "review_intent_hash": review_intent_hash.clone(),
+            "policy_warnings_acknowledged": req.acknowledge_warnings,
             "poly1271_digest_blake3": digest_hash,
             "prepared_ms": now_millis(),
             "status": "signing_prepared"
@@ -281,6 +318,46 @@ pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchR
             draft.clob_status = Some(status);
             draft.last_error = None;
             store_put_json(&format!("{base}/order.json"), &draft, false)
+        }
+        Err(DispatchResponse::Error { code: -3, message }) => {
+            let posted_ms = now_millis();
+            let receipt = StoreTradeReceipt {
+                draft_id: id.into(),
+                wallet: wallet.into(),
+                slug: draft.slug.clone(),
+                token_id: draft.token_id.clone(),
+                side: draft.side,
+                order_type: draft.order_type,
+                funder: Some(funder.to_checksum(None)),
+                signature_type: SIG_TYPE_POLY_1271,
+                amount_microusd: draft.amount_micro,
+                limit_price_micro: draft.limit_price_micro,
+                size_micro: draft.size_micro,
+                salt,
+                clob_order_id: None,
+                clob_status: "rejected".into(),
+                filled_size_micro: None,
+                raw_response: serde_json::json!({
+                    "error": "CLOB rejected the order",
+                    "body_hash": body_hash
+                }),
+                review_intent_hash: Some(review_intent_hash),
+                posted_ms,
+            };
+            if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
+                return error(-4, "failed to persist rejected order receipt");
+            }
+            draft.status = "rejected".into();
+            draft.clob_status = Some("rejected".into());
+            draft.last_error = Some(message);
+            if let DispatchResponse::Error { .. } =
+                store_put_json(&format!("{base}/order.json"), &draft, false)
+            {
+                return error(-4, "failed to persist rejected order state");
+            }
+            let _ = petal::sdk::store_del(&prepared_key);
+            let _ = petal::sdk::store_del(&approval_key);
+            error(-3, "CLOB rejected the order; rejected receipt written")
         }
         Err(resp) => {
             if let Some(raw_response) =

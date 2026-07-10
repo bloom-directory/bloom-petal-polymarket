@@ -4,8 +4,7 @@ use crate::polymarket::eip712::PUSD;
 use crate::polymarket::order::parse_micro;
 use crate::polymarket::{POLYGON, Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
-use petal::sdk::DispatchResponse;
-use petal::sdk::{EvmTransaction, HttpRequest};
+use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
 pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
@@ -28,7 +27,7 @@ pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse
     if parse_micro(req.target_pusd.trim()).unwrap_or(0) == 0 {
         return error(-3, "target_pusd must be > 0");
     }
-    if parse_micro(req.max_spend.trim()).unwrap_or(0) == 0 {
+    if !positive_decimal_input(req.max_spend.trim()) {
         return error(-3, "max_spend must be > 0");
     }
     let id = next_id(&format!("fund/{wallet}/requests/"), ".json");
@@ -49,6 +48,7 @@ pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse
         next_transaction: 0,
         plan_md: None,
         approval: None,
+        staging_transaction: None,
     };
     store_put_json(
         &format!("fund/{wallet}/requests/{id}.json"),
@@ -58,17 +58,32 @@ pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse
 }
 
 pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
-    if !confirmation_body(body) {
-        return error(
-            -3,
-            "fund confirm requires confirm, y, or {\"confirm\":true}",
-        );
-    }
+    let confirmation = match fund_confirmation(body) {
+        Ok(confirmation) if confirmation.confirm => confirmation,
+        Ok(_) | Err(()) => {
+            return error(
+                -3,
+                "fund confirm requires confirm, y, or {\"confirm\":true}",
+            );
+        }
+    };
+    let _lock = match acquire_fund_lock(wallet, id) {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
     let key = format!("fund/{wallet}/requests/{id}.json");
     let mut session = match load_fund_session(wallet, id) {
         Ok(session) => session,
         Err(resp) => return resp,
     };
+    if session.staging_transaction == Some(session.next_transaction)
+        && session.outbox_ids.len() == session.next_transaction
+    {
+        return error(
+            -4,
+            "a prior outbox stage may have succeeded without its id becoming durable; refusing to restage automatically",
+        );
+    }
     let prepared = match session.prepared_funding.clone() {
         Some(prepared) => prepared,
         None => match prepare_funding(wallet, &session) {
@@ -130,6 +145,11 @@ pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> Dispa
     }
     let transaction = &prepared.transactions[session.next_transaction];
     if session.outbox_ids.len() == session.next_transaction {
+        session.staging_transaction = Some(session.next_transaction);
+        session.status = "staging_started".into();
+        if let DispatchResponse::Error { .. } = store_put_json(&key, &session, false) {
+            return error(-4, "failed to persist outbox staging marker");
+        }
         let staged = match petal::sdk::tx_stage(&EvmTransaction {
             wallet: wallet.into(),
             chain: "polygon".into(),
@@ -141,9 +161,18 @@ pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> Dispa
             max_priority_fee_per_gas: None,
         }) {
             Ok(staged) => staged,
+            Err(err @ SdkError::Host(HostStatus::Denied | HostStatus::Invalid)) => {
+                session.staging_transaction = None;
+                session.status = "prepared".into();
+                if let DispatchResponse::Error { .. } = store_put_json(&key, &session, false) {
+                    return error(-4, "failed to clear rejected outbox staging marker");
+                }
+                return sdk_error(err);
+            }
             Err(err) => return sdk_error(err),
         };
         session.outbox_ids.push(staged.outbox_id);
+        session.staging_transaction = None;
         session.plan_md = Some(staged.plan_md);
         session.status = "staged".into();
         if let DispatchResponse::Error { .. } = store_put_json(&key, &session, false) {
@@ -152,9 +181,17 @@ pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> Dispa
                 "staged outbox id could not be persisted; refusing restaging",
             );
         }
+        // The authoritative outbox plan (including simulation and warnings) is
+        // now readable. Require a distinct write before confirmation.
+        return DispatchResponse::Write;
     }
     let outbox_id = &session.outbox_ids[session.next_transaction];
-    let outcome = match petal::sdk::tx_confirm(wallet, "polygon", outbox_id, true) {
+    let outcome = match petal::sdk::tx_confirm(
+        wallet,
+        "polygon",
+        outbox_id,
+        confirmation.acknowledge_warnings,
+    ) {
         Ok(outcome) => outcome,
         Err(err) => return sdk_error(err),
     };
@@ -215,9 +252,9 @@ fn prepare_funding(
     if missing.is_zero() {
         return Err(error(-3, "deposit wallet already meets the pUSD target"));
     }
-    if session.from_token.eq_ignore_ascii_case("pusd")
-        || read_chain_erc20_balance(PUSD, owner)? >= missing
-    {
+    if session.from_token.eq_ignore_ascii_case("pusd") {
+        let max_spend = parse_decimal_units(&session.max_spend, 6)?;
+        validate_direct_pusd_funding(missing, max_spend, read_chain_erc20_balance(PUSD, owner)?)?;
         return Ok(direct_pusd(wallet, session, deposit, missing));
     }
     prepare_enso(wallet, session, owner, deposit, missing)
@@ -259,6 +296,7 @@ fn prepare_enso(
     missing: U256,
 ) -> Result<PreparedFunding, DispatchResponse> {
     let api_key = crate::account_views::load_enso_api_key()?;
+    let trusted_router = crate::account_views::load_enso_router()?;
     let native = matches!(
         session.from_token.to_ascii_lowercase().as_str(),
         "native" | "pol" | "matic"
@@ -349,7 +387,7 @@ fn prepare_enso(
         .ok_or_else(|| error(-4, "Enso route missing tx.from"))?
         .parse::<Address>()
         .map_err(|err| error(-4, format!("Enso sender address: {err}")))?;
-    if to == Address::ZERO || from != owner {
+    if to != trusted_router || from != owner {
         return Err(error(-3, "Enso route sender or router is invalid"));
     }
     let data = tx
@@ -531,17 +569,89 @@ fn erc20_transfer_calldata(to: Address, amount: U256) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-fn confirmation_body(body: &[u8]) -> bool {
+fn fund_confirmation(body: &[u8]) -> Result<FundConfirmRequest, ()> {
     let Ok(text) = std::str::from_utf8(body) else {
-        return false;
+        return Err(());
     };
-    matches!(
+    if matches!(
         text.trim().to_ascii_lowercase().as_str(),
         "confirm" | "y" | "yes"
-    ) || serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|value| value.get("confirm").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
+    ) {
+        return Ok(FundConfirmRequest {
+            confirm: true,
+            acknowledge_warnings: false,
+        });
+    }
+    serde_json::from_str(text).map_err(|_| ())
+}
+
+struct FundLock {
+    key: String,
+    expected: Vec<u8>,
+}
+
+impl Drop for FundLock {
+    fn drop(&mut self) {
+        let _ = petal::sdk::store_del_if_value(&self.key, &self.expected);
+    }
+}
+
+fn acquire_fund_lock(wallet: &str, id: &str) -> Result<FundLock, DispatchResponse> {
+    let key = format!("fund/{wallet}/requests/{id}.lock");
+    for attempt in 0..2 {
+        let body = trade_lock_body(wallet, id)?;
+        match petal::sdk::store_put_new(&key, &body, false) {
+            Ok(()) => {
+                return Ok(FundLock {
+                    key,
+                    expected: body,
+                });
+            }
+            Err(SdkError::Host(HostStatus::Denied)) if attempt == 0 => {
+                let Some(stale) = trade_lock_stale_bytes(&key) else {
+                    return Err(error(
+                        -3,
+                        "another funding operation holds this session lock",
+                    ));
+                };
+                match petal::sdk::store_del_if_value(&key, &stale) {
+                    Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => continue,
+                    Err(SdkError::Host(HostStatus::Denied)) => {
+                        return Err(error(-3, "the funding session lock was refreshed"));
+                    }
+                    Err(err) => return Err(sdk_error(err)),
+                }
+            }
+            Err(SdkError::Host(HostStatus::Denied)) => {
+                return Err(error(
+                    -3,
+                    "another funding operation holds this session lock",
+                ));
+            }
+            Err(err) => return Err(sdk_error(err)),
+        }
+    }
+    Err(error(
+        -3,
+        "another funding operation holds this session lock",
+    ))
+}
+
+fn validate_direct_pusd_funding(
+    missing: U256,
+    max_spend: U256,
+    owner_balance: U256,
+) -> Result<(), DispatchResponse> {
+    if missing > max_spend {
+        return Err(error(-3, "missing pUSD exceeds max_spend"));
+    }
+    if owner_balance < missing {
+        return Err(error(
+            -3,
+            "owner pUSD balance is below the required transfer",
+        ));
+    }
+    Ok(())
 }
 
 fn parse_decimal_units(value: &str, decimals: u8) -> Result<U256, DispatchResponse> {
@@ -572,6 +682,23 @@ fn parse_decimal_units(value: &str, decimals: u8) -> Result<U256, DispatchRespon
         .checked_mul(U256::from(10u8).pow(U256::from(decimals)))
         .and_then(|value| value.checked_add(fraction))
         .ok_or_else(|| error(-3, "amount overflows uint256"))
+}
+
+fn positive_decimal_input(value: &str) -> bool {
+    let mut saw_digit = false;
+    let mut saw_nonzero = false;
+    let mut saw_dot = false;
+    for byte in value.bytes() {
+        match byte {
+            b'0'..=b'9' => {
+                saw_digit = true;
+                saw_nonzero |= byte != b'0';
+            }
+            b'.' if !saw_dot => saw_dot = true,
+            _ => return false,
+        }
+    }
+    saw_digit && saw_nonzero && !value.starts_with('.') && !value.ends_with('.')
 }
 
 fn json_u256(value: &serde_json::Value) -> Result<U256, DispatchResponse> {
@@ -615,6 +742,14 @@ mod tests {
     }
 
     #[test]
+    fn direct_pusd_enforces_spend_cap_and_balance() {
+        let missing = U256::from(10_000_000u64);
+        assert!(validate_direct_pusd_funding(missing, U256::from(1_000_000u64), missing).is_err());
+        assert!(validate_direct_pusd_funding(missing, missing, U256::from(9_000_000u64)).is_err());
+        assert!(validate_direct_pusd_funding(missing, missing, missing).is_ok());
+    }
+
+    #[test]
     fn exact_approval_calldata_is_canonical() {
         let spender = Address::repeat_byte(0x22);
         let calldata = erc20_approve_calldata(spender, U256::from(7u8));
@@ -637,10 +772,15 @@ mod tests {
 
     #[test]
     fn funding_confirmation_is_explicit() {
-        assert!(confirmation_body(b"confirm"));
-        assert!(confirmation_body(br#"{"confirm":true}"#));
-        assert!(!confirmation_body(b""));
-        assert!(!confirmation_body(br#"{"confirm":false}"#));
+        assert!(fund_confirmation(b"confirm").unwrap().confirm);
+        assert!(fund_confirmation(br#"{"confirm":true}"#).unwrap().confirm);
+        assert!(fund_confirmation(b"").is_err());
+        assert!(!fund_confirmation(br#"{"confirm":false}"#).unwrap().confirm);
+        assert!(
+            fund_confirmation(br#"{"confirm":true,"acknowledge_warnings":true}"#)
+                .unwrap()
+                .acknowledge_warnings
+        );
     }
 
     #[test]
@@ -651,5 +791,8 @@ mod tests {
         );
         assert!(parse_decimal_units("1.0000001", 6).is_err());
         assert!(parse_decimal_units("-1", 6).is_err());
+        assert!(positive_decimal_input("0.0000001"));
+        assert!(!positive_decimal_input("0.0"));
+        assert!(!positive_decimal_input("1."));
     }
 }

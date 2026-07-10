@@ -223,7 +223,7 @@ pub(crate) fn relayer_batch_body(
             let review_hash = store_review_intent(&review_key, &review)?;
             let prepared = PreparedSigning::new(
                 "onboard_approvals",
-                "polymarket.relayer_batch",
+                "polymarket.onboard",
                 owner,
                 hash,
                 serde_json::json!({
@@ -364,8 +364,7 @@ pub(crate) fn parse_relayer_transaction_response(
         serde_json::Value::Array(items) => items
             .iter()
             .find(|item| relayer_tx_id_matches(item, id))
-            .or_else(|| items.first())
-            .ok_or_else(|| format!("empty relayer /transaction response for {id}"))?,
+            .ok_or_else(|| format!("relayer /transaction response did not contain {id}"))?,
         other => other,
     };
     let state = tx
@@ -376,6 +375,11 @@ pub(crate) fn parse_relayer_transaction_response(
         .iter()
         .find_map(|key| tx.get(*key).and_then(serde_json::Value::as_str))
         .unwrap_or(id);
+    if parsed_id != id {
+        return Err(format!(
+            "relayer /transaction returned id {parsed_id} while polling {id}"
+        ));
+    }
     Ok(LocalRelayerTx {
         id: parsed_id.into(),
         state: state.into(),
@@ -422,5 +426,29 @@ pub(crate) fn dispatch_error_message(resp: &DispatchResponse) -> String {
     match resp {
         DispatchResponse::Error { message, .. } => message.clone(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_poll_requires_exact_id() {
+        let response = serde_json::json!([
+            {"transactionID": "other", "state": "STATE_CONFIRMED"},
+            {"transactionID": "wanted", "state": "STATE_NEW"}
+        ]);
+        let parsed = parse_relayer_transaction_response("wanted", &response).unwrap();
+        assert_eq!(parsed.id, "wanted");
+        assert_eq!(parsed.state, "STATE_NEW");
+        assert!(parse_relayer_transaction_response("missing", &response).is_err());
+        assert!(
+            parse_relayer_transaction_response(
+                "wanted",
+                &serde_json::json!({"transactionID": "other", "state": "STATE_CONFIRMED"}),
+            )
+            .is_err()
+        );
     }
 }

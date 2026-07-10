@@ -8,7 +8,7 @@ pub(crate) fn clob_response_status(raw: &serde_json::Value) -> String {
         .or_else(|| raw.get("orderStatus"))
         .or_else(|| raw.get("order_status"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("posted")
+        .unwrap_or("unknown")
         .to_ascii_lowercase()
 }
 

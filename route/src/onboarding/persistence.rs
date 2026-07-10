@@ -83,12 +83,36 @@ pub(crate) fn persist_onboard_failure(
     deposit: Address,
     resp: &DispatchResponse,
 ) -> Result<serde_json::Value, DispatchResponse> {
+    let existing = stored_status_for_wallet(wallet, owner).ok();
+    let string_field = |name: &str| {
+        existing
+            .as_ref()
+            .and_then(|status| status.get(name))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let stage = existing
+        .as_ref()
+        .and_then(|status| status.get("stage"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|stage| match stage {
+            "deploy" => Some("deploy"),
+            "fund" => Some("fund"),
+            "approve" => Some("approve"),
+            "sync" => Some("sync"),
+            _ => None,
+        });
     persist_onboard_status(
         wallet,
         owner,
         deposit,
         store_get(&format!("creds/{wallet}/clob.json")).is_some(),
         OnboardStatusExtra {
+            stage,
+            deploy_tx_id: string_field("deploy_tx_id"),
+            approve_tx_id: string_field("approve_tx_id"),
+            in_flight_deadline_ms: string_field("in_flight_deadline_ms")
+                .and_then(|value| value.parse().ok()),
             last_error: Some(dispatch_error_message(resp)),
             ..OnboardStatusExtra::default()
         },

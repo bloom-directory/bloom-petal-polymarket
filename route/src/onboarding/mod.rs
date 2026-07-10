@@ -56,7 +56,7 @@ pub(crate) fn begin_onboarding(wallet: &str) -> DispatchResponse {
             };
             let prepared = PreparedSigning::new(
                 "clob_auth",
-                "polymarket.clob_auth",
+                "polymarket.onboard",
                 owner,
                 action.signing_hash,
                 serde_json::json!({

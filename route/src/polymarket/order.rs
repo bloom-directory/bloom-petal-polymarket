@@ -392,13 +392,9 @@ pub struct OrderParams {
     pub signature_type: u8,
 }
 
-/// Build a V2 order: random JS-safe salt, millisecond timestamp.
-pub fn build_order(p: &OrderParams) -> Order {
+/// Build a V2 order with a host-supplied wall clock and random JS-safe salt.
+pub fn build_order(p: &OrderParams, timestamp_ms: u64) -> Order {
     let salt = rand::random::<u64>() & JS_SAFE_INTEGER_MAX;
-    let timestamp_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
     Order {
         salt: U256::from(salt),
         maker: p.maker,
@@ -750,8 +746,8 @@ mod tests {
             builder_code: None,
             signature_type: SIG_TYPE_POLY_1271,
         };
-        let a = build_order(&p);
-        let b = build_order(&p);
+        let a = build_order(&p, 1_700_000_000_000);
+        let b = build_order(&p, 1_700_000_000_001);
         assert!(a.salt <= U256::from(JS_SAFE_INTEGER_MAX));
         assert_ne!(a.salt, b.salt, "salts must not collide");
         assert_eq!(a.signatureType, 3);
@@ -766,7 +762,7 @@ mod tests {
             builder_code: None,
             signature_type: SIG_TYPE_POLY_1271,
         };
-        let o = build_order(&p);
+        let o = build_order(&p, 1_700_000_000_000);
         let normal = signing_hash(&o, crate::polymarket::POLYGON, false);
         let neg = signing_hash(&o, crate::polymarket::POLYGON, true);
         assert_ne!(normal, neg, "verifying contract must separate the domains");

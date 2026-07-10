@@ -87,6 +87,7 @@ pub(crate) fn funding_options(wallet: &str) -> DispatchResponse {
             "fund_route": format!("fund/{wallet}/new"),
             "execution": "enso_quote_then_generic_evm_outbox",
             "enso_key_configured": load_enso_api_key().is_ok(),
+            "enso_router_configured": load_enso_router().is_ok(),
         }],
     }))
 }
@@ -240,18 +241,61 @@ pub(crate) fn revoke_builder_key(wallet: &str, body: &[u8]) -> DispatchResponse 
     DispatchResponse::Write
 }
 
+#[derive(Deserialize)]
+struct EnsoSettingsInput {
+    api_key: String,
+    router: String,
+}
+
 pub(crate) fn write_enso_api_key(body: &[u8]) -> DispatchResponse {
-    let key = match core::str::from_utf8(body) {
+    let text = match core::str::from_utf8(body) {
         Ok(value) => value.trim(),
         Err(_) => return error(-3, "Enso API key must be UTF-8"),
     };
+    let (key, router) = if text.starts_with('{') {
+        let input: EnsoSettingsInput = match serde_json::from_str(text) {
+            Ok(input) => input,
+            Err(err) => return error(-3, format!("Enso settings JSON: {err}")),
+        };
+        let router = match input.router.parse::<Address>() {
+            Ok(router) if router != Address::ZERO => router,
+            Ok(_) => return error(-3, "Enso router cannot be zero"),
+            Err(err) => return error(-3, format!("Enso router address: {err}")),
+        };
+        (input.api_key, Some(router))
+    } else {
+        (text.to_string(), None)
+    };
     if key.is_empty() || key.len() > 4096 || key.chars().any(char::is_whitespace) {
         return error(-3, "Enso API key must be 1-4096 non-whitespace characters");
+    }
+    if let Some(router) = router
+        && let Err(err) = petal::sdk::store_put(
+            "settings/enso-router",
+            router.to_checksum(None).as_bytes(),
+            false,
+        )
+    {
+        return sdk_error(err);
     }
     match petal::sdk::store_put("creds/enso-api-key", key.as_bytes(), true) {
         Ok(()) => DispatchResponse::Write,
         Err(err) => sdk_error(err),
     }
+}
+
+pub(crate) fn load_enso_router() -> Result<Address, DispatchResponse> {
+    let bytes = petal::sdk::store_get("settings/enso-router", 128).map_err(|err| match err {
+        SdkError::Host(HostStatus::NotFound) => error(
+            -3,
+            "trusted Enso router is not configured; write {\"api_key\":\"...\",\"router\":\"0x...\"} to settings/enso-api-key",
+        ),
+        other => sdk_error(other),
+    })?;
+    let raw = core::str::from_utf8(&bytes)
+        .map_err(|_| error(-4, "stored Enso router is not valid UTF-8"))?;
+    raw.parse::<Address>()
+        .map_err(|err| error(-4, format!("stored Enso router address: {err}")))
 }
 
 pub(crate) fn load_enso_api_key() -> Result<String, DispatchResponse> {

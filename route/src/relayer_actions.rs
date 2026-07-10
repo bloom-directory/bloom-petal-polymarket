@@ -218,9 +218,19 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
                     "state": tx.state,
                     "prepared_digest": updated.prepared_digest,
                 });
-                let _ = store_put_json(&progress_key, &updated, false);
-                let _ = petal::sdk::store_del(&approval_key);
-                return store_put_json(&receipt_key, &receipt, false);
+                if let DispatchResponse::Error { .. } =
+                    store_put_json(&receipt_key, &receipt, false)
+                {
+                    return error(-4, "failed to persist relayer action receipt");
+                }
+                for key in [&prepared_key, &review_key, &approval_key, &progress_key] {
+                    match petal::sdk::store_del(key) {
+                        Ok(())
+                        | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+                        Err(err) => return sdk_error(err),
+                    }
+                }
+                return DispatchResponse::Write;
             }
             let _ = store_put_json(&progress_key, &updated, false);
             return if tx.is_failed() {

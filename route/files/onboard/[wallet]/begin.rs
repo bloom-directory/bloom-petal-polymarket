@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::write_spec(), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard"), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write anything here to mint or derive CLOB credentials with the daemon keystore\n".to_vec())
     },

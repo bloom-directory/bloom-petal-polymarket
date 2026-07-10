@@ -305,6 +305,10 @@ pub mod sdk {
         env::now_ms().unwrap_or(0)
     }
 
+    pub fn try_now_ms() -> Result<u64, SdkError> {
+        env::now_ms().map_err(host_err)
+    }
+
     pub fn random_bytes(len: usize) -> Result<Vec<u8>, SdkError> {
         let len = u32::try_from(len).map_err(|_| SdkError::Host(HostStatus::Invalid))?;
         env::random_bytes(len).map_err(host_err)
@@ -493,6 +497,7 @@ pub struct RouteSpec {
     side_effecting_read: bool,
     write_async: bool,
     required_caps: &'static [&'static str],
+    sign_intent: Option<&'static str>,
 }
 
 impl RouteSpec {
@@ -515,11 +520,17 @@ impl RouteSpec {
             side_effecting_read: false,
             write_async: false,
             required_caps: CAPS_NONE,
+            sign_intent: None,
         }
     }
 
     const fn caps(mut self, caps: &'static [&'static str]) -> Self {
         self.required_caps = caps;
+        self
+    }
+
+    const fn sign_intent(mut self, intent: &'static str) -> Self {
+        self.sign_intent = Some(intent);
         self
     }
 
@@ -597,6 +608,10 @@ pub fn write_spec() -> RouteSpec {
         .ttl(None)
 }
 
+pub fn signing_write_spec(intent: &'static str) -> RouteSpec {
+    write_spec().sign_intent(intent)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteChild {
     name: String,
@@ -632,7 +647,7 @@ pub fn framework_metadata(_ctx: &Ctx, spec: RouteSpec) -> Result<RouteMeta, Rout
             .iter()
             .map(|cap| (*cap).to_string())
             .collect(),
-        sign_intent: None,
+        sign_intent: spec.sign_intent.map(str::to_string),
         executable: false,
     })
 }

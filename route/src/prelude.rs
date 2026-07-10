@@ -1,9 +1,9 @@
 #![allow(unused_imports)]
 
 pub(crate) use crate::app_types::{
-    FundNewRequest, LocalPolicyCheck, LocalPolicyOutcome, LocalPolicySide, LocalPolymarketOrderCtx,
-    LocalPolymarketPolicy, LocalWalletPolicy, PreparedEvmTransaction, PreparedFunding,
-    StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
+    FundConfirmRequest, FundNewRequest, LocalPolicyCheck, LocalPolicyOutcome, LocalPolicySide,
+    LocalPolymarketOrderCtx, LocalPolymarketPolicy, LocalWalletPolicy, PreparedEvmTransaction,
+    PreparedFunding, StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
     TradeCancelRequest, TradeNewRequest, TradePostRequest, TradeRevalidateRequest, TradeSnapshot,
     default_slippage_bps, default_true,
 };
