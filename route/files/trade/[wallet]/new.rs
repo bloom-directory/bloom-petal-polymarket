@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::write_spec(), read:
+petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| petal::DispatchResponse::Read(br#"write JSON to create a reviewable draft, e.g.
 {"slug":"will-canada-win-the-2026-fifa-world-cup-755","outcome":"yes","amount":"1","max_price":"0.01"}
 "#.to_vec()),

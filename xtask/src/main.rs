@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -32,6 +32,23 @@ fn run() -> Result<(), String> {
             "no route files found under {}",
             route_files.display()
         ));
+    }
+    if env::args().nth(1).as_deref() == Some("check-caps") {
+        let mut failures = Vec::new();
+        for (route_path, source) in &routes {
+            let artifact = out_dir.join(format!("{route_path}.wasm"));
+            if let Err(err) = check_route_caps(route_path, source, &artifact) {
+                failures.push(err);
+            }
+        }
+        if failures.is_empty() {
+            println!(
+                "checked capability metadata for {} route components",
+                routes.len()
+            );
+            return Ok(());
+        }
+        return Err(failures.join("\n"));
     }
 
     if staging_dir.exists() {
@@ -94,6 +111,7 @@ fn run() -> Result<(), String> {
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit()),
         )?;
+        check_route_caps(route_path, source, &output)?;
     }
 
     if out_dir.exists() {
@@ -119,6 +137,113 @@ fn run() -> Result<(), String> {
         out_dir.display()
     );
     Ok(())
+}
+
+fn check_route_caps(route_path: &str, source: &Path, artifact: &Path) -> Result<(), String> {
+    let required = required_caps(source)?;
+    let wit = Command::new("wasm-tools")
+        .arg("component")
+        .arg("wit")
+        .arg(artifact)
+        .output()
+        .map_err(|err| format!("inspect {}: {err}", artifact.display()))?;
+    if !wit.status.success() {
+        return Err(format!(
+            "inspect {}: {}",
+            artifact.display(),
+            String::from_utf8_lossy(&wit.stderr).trim()
+        ));
+    }
+    let imported = imported_caps(&String::from_utf8_lossy(&wit.stdout));
+    let missing = required.difference(&imported).copied().collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "route {route_path} metadata requires caps absent from its artifact imports: {} (imports: {})",
+            missing.join(", "),
+            imported.into_iter().collect::<Vec<_>>().join(", ")
+        ))
+    }
+}
+
+fn required_caps(source: &Path) -> Result<BTreeSet<&'static str>, String> {
+    let source =
+        fs::read_to_string(source).map_err(|err| format!("read {}: {err}", source.display()))?;
+    if let Some(start) = source.find(".caps(&[") {
+        let rest = &source[start + ".caps(&[".len()..];
+        let end = rest
+            .find("])")
+            .ok_or_else(|| format!("unterminated .caps override in {}", source))?;
+        return Ok(ALL_CAPS
+            .iter()
+            .copied()
+            .filter(|cap| rest[..end].contains(cap))
+            .collect());
+    }
+    let caps: &[&str] = if source.contains("store_dir_spec()") {
+        &["bloom:store", "bloom:vfs.read"]
+    } else if source.contains("account_read_spec()") {
+        &["bloom:http", "bloom:store", "bloom:vfs.read"]
+    } else if source.contains("wallet_http_read_spec(") {
+        &["bloom:http", "bloom:vfs.read"]
+    } else if source.contains("http_dir_spec()") || source.contains("http_read_spec(") {
+        &["bloom:http"]
+    } else if source.contains("store_read_spec()") {
+        &["bloom:store"]
+    } else if source.contains("chain_read_spec()")
+        || source.contains("write_spec()")
+        || source.contains("signing_write_spec(")
+    {
+        ALL_CAPS
+    } else {
+        &[]
+    };
+    Ok(caps.iter().copied().collect())
+}
+
+const ALL_CAPS: &[&str] = &[
+    "bloom:http",
+    "bloom:store",
+    "bloom:sign",
+    "bloom:tx.outbox",
+    "bloom:chain",
+    "bloom:vfs.read",
+    "bloom:vfs.write",
+];
+
+fn imported_caps(wit: &str) -> BTreeSet<&'static str> {
+    let mut caps = BTreeSet::new();
+    for line in wit.lines().map(str::trim) {
+        if !line.starts_with("import ") {
+            continue;
+        }
+        if line.contains("bloom:http/") {
+            caps.insert("bloom:http");
+        } else if line.contains("bloom:store/") {
+            caps.insert("bloom:store");
+        } else if line.contains("bloom:sign/") {
+            caps.insert("bloom:sign");
+        } else if line.contains("bloom:tx/outbox") {
+            caps.insert("bloom:tx.outbox");
+        } else if line.contains("bloom:chain/") {
+            caps.insert("bloom:chain");
+        } else if line.contains("bloom:vfs/readwrite") {
+            // The component WIT interface import is narrowed by the functions
+            // retained in its package block below.
+            let block = wit.split("interface readwrite").nth(1).unwrap_or_default();
+            if ["lookup:", "%list:", "read:"]
+                .iter()
+                .any(|name| block.contains(name))
+            {
+                caps.insert("bloom:vfs.read");
+            }
+            if block.contains("write:") {
+                caps.insert("bloom:vfs.write");
+            }
+        }
+    }
+    caps
 }
 
 fn repo_root() -> Result<PathBuf, String> {

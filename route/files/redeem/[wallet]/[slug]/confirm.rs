@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.relayer_batch"),
+petal::route_file!(spec: petal::signing_write_spec("polymarket.relayer_batch").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read", "bloom:vfs.write"]),
     read: |_ctx: &petal::Ctx| petal::DispatchResponse::Read(b"write confirm to prepare or advance the exact redemption batch\n".to_vec()),
     write: |ctx: &petal::Ctx, body: &[u8]| {
         let wallet = match petal::param(ctx, "wallet") { Ok(value) => value, Err(resp) => return resp };

@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::write_spec(), read:
+petal::route_file!(spec: petal::write_spec().caps(&["bloom:store", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| petal::DispatchResponse::Read(br#"write JSON to create a reviewable pUSD funding request, e.g.
 {"target_pusd":"10","max_spend":"100","from_token":"native","slippage_bps":50}
 "#.to_vec()),

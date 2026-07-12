@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::write_spec(),
+petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store", "bloom:vfs.read"]),
     read: |_ctx: &petal::Ctx| petal::DispatchResponse::Read(b"write confirm or {\"cancel\":true} to cancel this discoverable CLOB order\n".to_vec()),
     write: |ctx: &petal::Ctx, body: &[u8]| {
         let wallet = match petal::param(ctx, "wallet") { Ok(value) => value, Err(resp) => return resp };

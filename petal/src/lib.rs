@@ -524,7 +524,7 @@ impl RouteSpec {
         }
     }
 
-    const fn caps(mut self, caps: &'static [&'static str]) -> Self {
+    pub const fn caps(mut self, caps: &'static [&'static str]) -> Self {
         self.required_caps = caps;
         self
     }
