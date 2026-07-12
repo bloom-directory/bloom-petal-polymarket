@@ -5,16 +5,16 @@ use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignHashOutcome, SignRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct PreparedSigning {
-    pub(crate) operation: String,
-    pub(crate) intent: String,
-    pub(crate) owner: String,
-    pub(crate) signing_hash: String,
-    pub(crate) preimage: serde_json::Value,
+pub struct PreparedSigning {
+    pub operation: String,
+    pub intent: String,
+    pub owner: String,
+    pub signing_hash: String,
+    pub preimage: serde_json::Value,
 }
 
 impl PreparedSigning {
-    pub(crate) fn new(
+    pub fn new(
         operation: impl Into<String>,
         intent: impl Into<String>,
         owner: Address,
@@ -30,7 +30,7 @@ impl PreparedSigning {
         }
     }
 
-    pub(crate) fn hash(&self) -> Result<B256, DispatchResponse> {
+    pub fn hash(&self) -> Result<B256, DispatchResponse> {
         self.signing_hash
             .parse()
             .map_err(|err| error(-4, format!("corrupt prepared signing hash: {err}")))
@@ -59,7 +59,7 @@ struct ApprovalArtifact {
     operation: String,
 }
 
-pub(crate) fn store_prepared_signing(
+pub fn store_prepared_signing(
     key: &str,
     prepared: &PreparedSigning,
 ) -> Result<String, DispatchResponse> {
@@ -70,9 +70,7 @@ pub(crate) fn store_prepared_signing(
     }
 }
 
-pub(crate) fn load_prepared_signing(
-    key: &str,
-) -> Result<Option<PreparedSigning>, DispatchResponse> {
+pub fn load_prepared_signing(key: &str) -> Result<Option<PreparedSigning>, DispatchResponse> {
     let bytes = match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => bytes,
         Err(SdkError::Host(HostStatus::NotFound)) => return Ok(None),
@@ -83,7 +81,7 @@ pub(crate) fn load_prepared_signing(
         .map_err(|err| error(-4, format!("corrupt prepared signing artifact: {err}")))
 }
 
-pub(crate) fn store_review_intent(
+pub fn store_review_intent(
     key: &str,
     review_intent: &serde_json::Value,
 ) -> Result<String, DispatchResponse> {
@@ -93,7 +91,7 @@ pub(crate) fn store_review_intent(
     Ok(blake3_hex(&bytes))
 }
 
-pub(crate) fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), DispatchResponse> {
+pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), DispatchResponse> {
     let bytes = petal::sdk::store_get(key, MAX_STORE_BYTES)
         .map_err(|error| sdk_error_with_context("read review intent", error))?;
     if blake3_hex(&bytes) != expected_hash {
@@ -105,7 +103,7 @@ pub(crate) fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn sign_prepared(
+pub fn sign_prepared(
     wallet: &str,
     prepared: &PreparedSigning,
     approval_key: &str,

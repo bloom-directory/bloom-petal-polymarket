@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::{PolymarketError, Result};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use url::Url;
-pub(crate) fn validate_relative_path(relative: &str) -> Result<&str, String> {
+pub fn validate_relative_path(relative: &str) -> Result<&str, String> {
     if relative.is_empty() {
         return Ok(relative);
     }
@@ -15,7 +15,7 @@ pub(crate) fn validate_relative_path(relative: &str) -> Result<&str, String> {
     Ok(relative)
 }
 
-pub(crate) fn url_with_query(base: &str, pairs: &[(&str, &str)]) -> String {
+pub fn url_with_query(base: &str, pairs: &[(&str, &str)]) -> String {
     let mut url = Url::parse(base).expect("hard-coded Polymarket URL must parse");
     for (key, value) in pairs {
         url.query_pairs_mut().append_pair(key, value);
@@ -23,15 +23,15 @@ pub(crate) fn url_with_query(base: &str, pairs: &[(&str, &str)]) -> String {
     url.to_string()
 }
 
-pub(crate) fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     petal::sdk::now_ms() / 1000
 }
 
-pub(crate) fn now_millis() -> u128 {
+pub fn now_millis() -> u128 {
     u128::from(petal::sdk::now_ms())
 }
 
-pub(crate) fn sdk_error(e: SdkError) -> DispatchResponse {
+pub fn sdk_error(e: SdkError) -> DispatchResponse {
     match e {
         SdkError::Host(HostStatus::NotFound) => error(-1, "not found"),
         SdkError::Host(HostStatus::Denied) => error(-2, "denied"),
@@ -44,7 +44,7 @@ pub(crate) fn sdk_error(e: SdkError) -> DispatchResponse {
     }
 }
 
-pub(crate) fn sdk_error_with_context(context: &str, e: SdkError) -> DispatchResponse {
+pub fn sdk_error_with_context(context: &str, e: SdkError) -> DispatchResponse {
     let code = match &e {
         SdkError::Host(HostStatus::NotFound) => -1,
         SdkError::Host(HostStatus::Denied) => -2,
@@ -56,7 +56,7 @@ pub(crate) fn sdk_error_with_context(context: &str, e: SdkError) -> DispatchResp
     error(code, format!("{context}: {}", e.message()))
 }
 
-pub(crate) fn polymarket_error(e: PolymarketError) -> DispatchResponse {
+pub fn polymarket_error(e: PolymarketError) -> DispatchResponse {
     match e {
         PolymarketError::Invalid(message) => error(-3, message),
         other => error(-4, other.to_string()),

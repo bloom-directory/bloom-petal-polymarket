@@ -7,7 +7,7 @@ use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub(crate) fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
+pub fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
     if let Some(map) = policy_check.as_object_mut() {
         map.insert("status".into(), serde_json::json!("approved"));
         map.insert("can_post".into(), serde_json::json!(true));
@@ -15,7 +15,7 @@ pub(crate) fn enable_trade_posting(policy_check: &mut serde_json::Value, reason:
     }
 }
 
-pub(crate) fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchResponse> {
+pub fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchResponse> {
     let bytes = petal::sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
         .map_err(sdk_error)?;
     let raw = core::str::from_utf8(&bytes)
@@ -23,7 +23,7 @@ pub(crate) fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchR
     toml::from_str(raw).map_err(|e| error(-4, format!("wallet policy parse: {e}")))
 }
 
-pub(crate) fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
+pub fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
     let prefix = format!("trade/{wallet}/receipts/");
     let keys = match petal::sdk::store_list(&prefix, MAX_LIST_BYTES) {
         Ok(keys) => keys,
@@ -70,10 +70,7 @@ pub(crate) fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
     (true, Some(total))
 }
 
-pub(crate) fn audited_receipt_ids_since(
-    wallet: &str,
-    cutoff_ms: u128,
-) -> Result<Vec<String>, SdkError> {
+pub fn audited_receipt_ids_since(wallet: &str, cutoff_ms: u128) -> Result<Vec<String>, SdkError> {
     let key = format!("trade/{wallet}/audit.jsonl");
     let bytes = match petal::sdk::store_get(&key, MAX_STORE_BYTES) {
         Ok(bytes) => bytes,
@@ -107,7 +104,7 @@ pub(crate) fn audited_receipt_ids_since(
     Ok(ids)
 }
 
-pub(crate) fn verify_sell_preflight(
+pub fn verify_sell_preflight(
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -212,13 +209,13 @@ pub(crate) fn verify_sell_preflight(
     }))
 }
 
-pub(crate) fn position_size_micro(position: &Position) -> Option<u64> {
+pub fn position_size_micro(position: &Position) -> Option<u64> {
     position
         .size
         .and_then(|size| parse_json_f64_micro(size).ok())
 }
 
-pub(crate) fn parse_clob_raw_micro(value: &serde_json::Value) -> Option<u64> {
+pub fn parse_clob_raw_micro(value: &serde_json::Value) -> Option<u64> {
     match value {
         serde_json::Value::String(s) => s.trim().parse::<u64>().ok(),
         serde_json::Value::Number(n) => {
@@ -232,14 +229,14 @@ pub(crate) fn parse_clob_raw_micro(value: &serde_json::Value) -> Option<u64> {
     }
 }
 
-pub(crate) fn parse_json_f64_micro(value: f64) -> Result<u64, DispatchResponse> {
+pub fn parse_json_f64_micro(value: f64) -> Result<u64, DispatchResponse> {
     if !value.is_finite() || value < 0.0 {
         return Err(error(-4, "decimal value is not a non-negative number"));
     }
     parse_micro(&format!("{value}")).map_err(|e| error(-4, e.to_string()))
 }
 
-pub(crate) fn evaluate_local_polymarket_order(
+pub fn evaluate_local_polymarket_order(
     policy: &LocalPolymarketPolicy,
     ctx: &LocalPolymarketOrderCtx,
 ) -> Vec<LocalPolicyCheck> {
@@ -424,7 +421,7 @@ pub(crate) fn evaluate_local_polymarket_order(
     out
 }
 
-pub(crate) fn local_policy_check(
+pub fn local_policy_check(
     rule: &str,
     outcome: LocalPolicyOutcome,
     message: impl Into<String>,
@@ -436,7 +433,7 @@ pub(crate) fn local_policy_check(
     }
 }
 
-pub(crate) fn local_policy_list_check(
+pub fn local_policy_list_check(
     name: &str,
     value: &str,
     allowed: &BTreeSet<String>,
@@ -463,19 +460,19 @@ pub(crate) fn local_policy_list_check(
     }
 }
 
-pub(crate) fn local_policy_has_deny(checks: &[LocalPolicyCheck]) -> bool {
+pub fn local_policy_has_deny(checks: &[LocalPolicyCheck]) -> bool {
     checks
         .iter()
         .any(|check| check.outcome == LocalPolicyOutcome::Deny)
 }
 
-pub(crate) fn local_policy_has_warn(checks: &[LocalPolicyCheck]) -> bool {
+pub fn local_policy_has_warn(checks: &[LocalPolicyCheck]) -> bool {
     checks
         .iter()
         .any(|check| check.outcome == LocalPolicyOutcome::Warn)
 }
 
-pub(crate) fn parse_api_float_micro(value: f64, field: &str) -> Result<u64, DispatchResponse> {
+pub fn parse_api_float_micro(value: f64, field: &str) -> Result<u64, DispatchResponse> {
     if !value.is_finite() || value < 0.0 {
         return Err(error(-4, format!("{field} is not a non-negative number")));
     }

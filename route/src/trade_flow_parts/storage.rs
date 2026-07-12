@@ -3,10 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::{Result, validate_wallet_name};
 use petal::sdk::DispatchResponse;
 
-pub(crate) fn load_trade_draft(
-    wallet: &str,
-    id: &str,
-) -> Result<StoreTradeDraft, DispatchResponse> {
+pub fn load_trade_draft(wallet: &str, id: &str) -> Result<StoreTradeDraft, DispatchResponse> {
     if let Err(e) = validate_wallet_name(wallet) {
         return Err(error(-3, e.to_string()));
     }

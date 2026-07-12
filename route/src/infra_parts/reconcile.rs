@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::order::{OrderType, parse_micro};
 use crate::polymarket::{Credentials, Result, Side};
 use alloy::primitives::Address;
-pub(crate) fn clob_response_status(raw: &serde_json::Value) -> String {
+pub fn clob_response_status(raw: &serde_json::Value) -> String {
     raw.get("status")
         .or_else(|| raw.get("orderStatus"))
         .or_else(|| raw.get("order_status"))
@@ -12,15 +12,12 @@ pub(crate) fn clob_response_status(raw: &serde_json::Value) -> String {
         .to_ascii_lowercase()
 }
 
-pub(crate) fn clob_status_excluded_from_daily_cap(
-    status: &str,
-    order_type: Option<OrderType>,
-) -> bool {
+pub fn clob_status_excluded_from_daily_cap(status: &str, order_type: Option<OrderType>) -> bool {
     status == "rejected"
         || (status == "unmatched" && order_type.is_some_and(|order_type| !order_type.can_rest()))
 }
 
-pub(crate) fn reconcile_ambiguous_post(
+pub fn reconcile_ambiguous_post(
     owner: Address,
     creds: &Credentials,
     draft: &StoreTradeDraft,
@@ -31,7 +28,7 @@ pub(crate) fn reconcile_ambiguous_post(
     find_matching_open_order(&open_orders, draft, funder, salt)
 }
 
-pub(crate) fn find_matching_open_order(
+pub fn find_matching_open_order(
     raw: &serde_json::Value,
     draft: &StoreTradeDraft,
     funder: Address,
@@ -50,7 +47,7 @@ pub(crate) fn find_matching_open_order(
     }
 }
 
-pub(crate) fn open_order_matches_draft(
+pub fn open_order_matches_draft(
     item: &serde_json::Value,
     draft: &StoreTradeDraft,
     funder: Address,
@@ -144,7 +141,7 @@ pub(crate) fn open_order_matches_draft(
     matched_fields >= 2
 }
 
-pub(crate) fn clob_order_fields<'a>(
+pub fn clob_order_fields<'a>(
     item: &'a serde_json::Value,
     names: &[&str],
 ) -> Vec<&'a serde_json::Value> {
@@ -164,7 +161,7 @@ pub(crate) fn clob_order_fields<'a>(
     values
 }
 
-pub(crate) fn clob_order_field_strings(
+pub fn clob_order_field_strings(
     item: &serde_json::Value,
     names: &[&str],
 ) -> Result<Option<Vec<String>>, ()> {
@@ -179,7 +176,7 @@ pub(crate) fn clob_order_field_strings(
     Ok((!values.is_empty()).then_some(values))
 }
 
-pub(crate) fn clob_order_field_u64s(
+pub fn clob_order_field_u64s(
     item: &serde_json::Value,
     names: &[&str],
 ) -> Result<Option<Vec<u64>>, ()> {
@@ -197,11 +194,11 @@ pub(crate) fn clob_order_field_u64s(
     Ok((!values.is_empty()).then_some(values))
 }
 
-pub(crate) fn address_strings_equal(left: &str, right: &str) -> bool {
+pub fn address_strings_equal(left: &str, right: &str) -> bool {
     left.trim().eq_ignore_ascii_case(right.trim())
 }
 
-pub(crate) fn clob_side_value_matches(value: &serde_json::Value, side: Side) -> Result<bool, bool> {
+pub fn clob_side_value_matches(value: &serde_json::Value, side: Side) -> Result<bool, bool> {
     let matches = match value {
         serde_json::Value::String(s) => {
             let normalized = s.trim().to_ascii_uppercase();
@@ -218,7 +215,7 @@ pub(crate) fn clob_side_value_matches(value: &serde_json::Value, side: Side) -> 
     matches.then_some(true).ok_or(false)
 }
 
-pub(crate) fn clob_response_order_id(raw: &serde_json::Value) -> Option<String> {
+pub fn clob_response_order_id(raw: &serde_json::Value) -> Option<String> {
     raw.get("orderID")
         .or_else(|| raw.get("orderId"))
         .or_else(|| raw.get("order_id"))
@@ -229,7 +226,7 @@ pub(crate) fn clob_response_order_id(raw: &serde_json::Value) -> Option<String> 
         .map(str::to_string)
 }
 
-pub(crate) fn clob_response_filled_size_micro(raw: &serde_json::Value) -> Option<u64> {
+pub fn clob_response_filled_size_micro(raw: &serde_json::Value) -> Option<u64> {
     raw.get("size_matched")
         .or_else(|| raw.get("matched_size"))
         .or_else(|| raw.get("filled_size"))
@@ -242,7 +239,7 @@ pub(crate) fn clob_response_filled_size_micro(raw: &serde_json::Value) -> Option
         })
 }
 
-pub(crate) fn clob_cancel_confirmed(raw: &serde_json::Value, order_id: &str) -> bool {
+pub fn clob_cancel_confirmed(raw: &serde_json::Value, order_id: &str) -> bool {
     let status_cancelled = raw
         .get("status")
         .and_then(serde_json::Value::as_str)
@@ -267,7 +264,7 @@ pub(crate) fn clob_cancel_confirmed(raw: &serde_json::Value, order_id: &str) -> 
     listed_cancelled || (status_cancelled && status_order_matches)
 }
 
-pub(crate) fn clob_response_public_summary(
+pub fn clob_response_public_summary(
     status: &str,
     order_id: &Option<String>,
     filled_size_micro: Option<u64>,
@@ -280,7 +277,7 @@ pub(crate) fn clob_response_public_summary(
     })
 }
 
-pub(crate) fn clob_reconciled_public_summary(
+pub fn clob_reconciled_public_summary(
     status: &str,
     order_id: &Option<String>,
     filled_size_micro: Option<u64>,
@@ -294,6 +291,6 @@ pub(crate) fn clob_reconciled_public_summary(
     })
 }
 
-pub(crate) fn blake3_hex(bytes: &[u8]) -> String {
+pub fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }

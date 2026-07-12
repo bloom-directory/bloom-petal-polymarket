@@ -5,7 +5,7 @@ use crate::polymarket::{POLYGON, Result, derive_deposit_wallet_address};
 use alloy::primitives::{Address, U256};
 use petal::sdk::DispatchResponse;
 
-pub(crate) fn local_onboard_status(
+pub fn local_onboard_status(
     wallet: &str,
     owner: Address,
     stage: &str,
@@ -35,21 +35,19 @@ pub(crate) fn local_onboard_status(
     })
 }
 
-pub(crate) struct LiveOnboardStatus<'a> {
-    pub(crate) wallet: &'a str,
-    pub(crate) owner: Address,
-    pub(crate) deposit: Address,
-    pub(crate) stage: &'a str,
-    pub(crate) running: bool,
-    pub(crate) creds_present: bool,
-    pub(crate) tradeable: bool,
-    pub(crate) message: &'a str,
-    pub(crate) probes: serde_json::Value,
+pub struct LiveOnboardStatus<'a> {
+    pub wallet: &'a str,
+    pub owner: Address,
+    pub deposit: Address,
+    pub stage: &'a str,
+    pub running: bool,
+    pub creds_present: bool,
+    pub tradeable: bool,
+    pub message: &'a str,
+    pub probes: serde_json::Value,
 }
 
-pub(crate) fn local_onboard_status_with_live_deposit(
-    status: LiveOnboardStatus<'_>,
-) -> serde_json::Value {
+pub fn local_onboard_status_with_live_deposit(status: LiveOnboardStatus<'_>) -> serde_json::Value {
     serde_json::json!({
         "wallet": status.wallet,
         "owner": status.owner.to_checksum(None),
@@ -72,7 +70,7 @@ pub(crate) fn local_onboard_status_with_live_deposit(
     })
 }
 
-pub(crate) fn refreshed_live_onboard_status(
+pub fn refreshed_live_onboard_status(
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -156,7 +154,7 @@ pub(crate) fn refreshed_live_onboard_status(
     }))
 }
 
-pub(crate) fn local_status_for_wallet(
+pub fn local_status_for_wallet(
     wallet: &str,
     owner: Address,
 ) -> Result<serde_json::Value, DispatchResponse> {
@@ -187,10 +185,7 @@ pub(crate) fn local_status_for_wallet(
     Ok(refreshed)
 }
 
-pub(crate) fn preserve_onboard_metadata(
-    previous: &serde_json::Value,
-    refreshed: &mut serde_json::Value,
-) {
+pub fn preserve_onboard_metadata(previous: &serde_json::Value, refreshed: &mut serde_json::Value) {
     let refreshed_complete =
         refreshed.get("stage").and_then(serde_json::Value::as_str) == Some("complete");
     let Some(obj) = refreshed.as_object_mut() else {
@@ -225,7 +220,7 @@ pub(crate) fn preserve_onboard_metadata(
     }
 }
 
-pub(crate) fn stored_status_for_wallet(
+pub fn stored_status_for_wallet(
     wallet: &str,
     owner: Address,
 ) -> Result<serde_json::Value, DispatchResponse> {
@@ -260,10 +255,7 @@ pub(crate) fn stored_status_for_wallet(
     }
 }
 
-pub(crate) fn fundable_deposit_wallet(
-    wallet: &str,
-    owner: Address,
-) -> Result<Address, DispatchResponse> {
+pub fn fundable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, DispatchResponse> {
     let status = stored_status_for_wallet(wallet, owner)?;
     fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
@@ -273,10 +265,7 @@ pub(crate) fn fundable_deposit_wallet(
     })
 }
 
-pub(crate) fn tradeable_deposit_wallet(
-    wallet: &str,
-    owner: Address,
-) -> Result<Address, DispatchResponse> {
+pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, DispatchResponse> {
     let status = local_status_for_wallet(wallet, owner)?;
     let deposit = fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
@@ -298,7 +287,7 @@ pub(crate) fn tradeable_deposit_wallet(
     Ok(deposit)
 }
 
-pub(crate) fn fundable_deposit_wallet_from_status(status: &serde_json::Value) -> Option<Address> {
+pub fn fundable_deposit_wallet_from_status(status: &serde_json::Value) -> Option<Address> {
     let deposit = status
         .get("deposit_wallet")
         .and_then(|value| value.get("address"))

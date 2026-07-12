@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub(crate) fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> {
+pub fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> {
     let Some(bytes) = store_get(&format!("creds/{wallet}/clob.json")) else {
         return Err(error(
             -3,
@@ -13,7 +13,7 @@ pub(crate) fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> 
     serde_json::from_slice(&bytes).map_err(|e| error(-4, format!("corrupt credentials: {e}")))
 }
 
-pub(crate) fn load_builder_credentials(
+pub fn load_builder_credentials(
     wallet: &str,
 ) -> Result<Option<BuilderCredentials>, DispatchResponse> {
     match petal::sdk::store_get(&format!("creds/{wallet}/builder.json"), MAX_STORE_BYTES) {
@@ -25,7 +25,7 @@ pub(crate) fn load_builder_credentials(
     }
 }
 
-pub(crate) fn save_builder_credentials(
+pub fn save_builder_credentials(
     wallet: &str,
     creds: &BuilderCredentials,
 ) -> Result<(), DispatchResponse> {
@@ -37,14 +37,14 @@ pub(crate) fn save_builder_credentials(
     Ok(())
 }
 
-pub(crate) fn delete_builder_credentials(wallet: &str) -> Result<(), DispatchResponse> {
+pub fn delete_builder_credentials(wallet: &str) -> Result<(), DispatchResponse> {
     match petal::sdk::store_del(&format!("creds/{wallet}/builder.json")) {
         Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => Ok(()),
         Err(e) => Err(sdk_error(e)),
     }
 }
 
-pub(crate) fn ensure_builder_credentials(
+pub fn ensure_builder_credentials(
     wallet: &str,
     owner: Address,
     clob_creds: &Credentials,

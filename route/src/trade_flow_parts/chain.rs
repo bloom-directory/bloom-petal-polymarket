@@ -7,10 +7,7 @@ use crate::polymarket::eip712::{
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::{Address, U256};
 use petal::sdk::DispatchResponse;
-pub(crate) fn read_chain_ctf_balance(
-    deposit: Address,
-    token_id: &str,
-) -> Result<u64, DispatchResponse> {
+pub fn read_chain_ctf_balance(deposit: Address, token_id: &str) -> Result<u64, DispatchResponse> {
     let response = read_chain_method(
         CTF,
         "balanceOf",
@@ -28,7 +25,7 @@ pub(crate) fn read_chain_ctf_balance(
     parse_clob_raw_micro(raw).ok_or_else(|| error(-4, "chain CTF balance is not a u64"))
 }
 
-pub(crate) fn read_chain_ctf_approval(
+pub fn read_chain_ctf_approval(
     deposit: Address,
     operator: Address,
 ) -> Result<bool, DispatchResponse> {
@@ -54,9 +51,7 @@ pub(crate) fn read_chain_ctf_approval(
         .ok_or_else(|| error(-4, "chain CTF approval response is not a boolean"))
 }
 
-pub(crate) fn read_chain_deposit_wallet_deployed(
-    address: Address,
-) -> Result<bool, DispatchResponse> {
+pub fn read_chain_deposit_wallet_deployed(address: Address) -> Result<bool, DispatchResponse> {
     let path = format!(
         "chains/polygon/contracts/{}/proxy/implementation",
         address.to_checksum(None)
@@ -77,10 +72,7 @@ pub(crate) fn read_chain_deposit_wallet_deployed(
     })
 }
 
-pub(crate) fn read_chain_erc20_balance(
-    token: Address,
-    holder: Address,
-) -> Result<U256, DispatchResponse> {
+pub fn read_chain_erc20_balance(token: Address, holder: Address) -> Result<U256, DispatchResponse> {
     let response = read_chain_method(
         token,
         "balanceOf",
@@ -91,7 +83,7 @@ pub(crate) fn read_chain_erc20_balance(
     read_decoded_u256(&response, "chain ERC20 balanceOf")
 }
 
-pub(crate) fn read_chain_erc20_allowance(
+pub fn read_chain_erc20_allowance(
     token: Address,
     owner: Address,
     spender: Address,
@@ -106,7 +98,7 @@ pub(crate) fn read_chain_erc20_allowance(
     read_decoded_u256(&response, "chain ERC20 allowance")
 }
 
-pub(crate) fn read_chain_v2_approvals(deposit: Address) -> Result<bool, DispatchResponse> {
+pub fn read_chain_v2_approvals(deposit: Address) -> Result<bool, DispatchResponse> {
     let floor = allowance_floor();
     for spender in v2_spenders() {
         if read_chain_erc20_allowance(PUSD, deposit, spender)? < floor {
@@ -121,7 +113,7 @@ pub(crate) fn read_chain_v2_approvals(deposit: Address) -> Result<bool, Dispatch
     Ok(true)
 }
 
-pub(crate) fn read_clob_collateral_sync(
+pub fn read_clob_collateral_sync(
     owner: Address,
     creds: &Credentials,
 ) -> Result<(bool, Option<U256>, Option<U256>), DispatchResponse> {
@@ -141,7 +133,7 @@ pub(crate) fn read_clob_collateral_sync(
     ))
 }
 
-pub(crate) fn read_decoded_u256(
+pub fn read_decoded_u256(
     response: &serde_json::Value,
     label: &str,
 ) -> Result<U256, DispatchResponse> {
@@ -155,7 +147,7 @@ pub(crate) fn read_decoded_u256(
     parse_json_u256(raw).ok_or_else(|| error(-4, format!("{label} response is not a uint256")))
 }
 
-pub(crate) fn parse_json_u256(value: &serde_json::Value) -> Option<U256> {
+pub fn parse_json_u256(value: &serde_json::Value) -> Option<U256> {
     match value {
         serde_json::Value::String(s) => s.trim().parse::<U256>().ok(),
         serde_json::Value::Number(n) => n.as_u64().map(U256::from),
@@ -163,11 +155,11 @@ pub(crate) fn parse_json_u256(value: &serde_json::Value) -> Option<U256> {
     }
 }
 
-pub(crate) fn allowance_floor() -> U256 {
+pub fn allowance_floor() -> U256 {
     U256::from(1) << 160
 }
 
-pub(crate) fn v2_spenders() -> [Address; 4] {
+pub fn v2_spenders() -> [Address; 4] {
     [
         CTF_EXCHANGE_V2,
         NEG_RISK_EXCHANGE_V2,
@@ -176,7 +168,7 @@ pub(crate) fn v2_spenders() -> [Address; 4] {
     ]
 }
 
-pub(crate) fn predict_deposit_wallet(owner: Address) -> Result<Address, DispatchResponse> {
+pub fn predict_deposit_wallet(owner: Address) -> Result<Address, DispatchResponse> {
     let implementation = read_chain_address(
         FACTORY,
         "implementation",
@@ -194,7 +186,7 @@ pub(crate) fn predict_deposit_wallet(owner: Address) -> Result<Address, Dispatch
     )
 }
 
-pub(crate) fn read_chain_address(
+pub fn read_chain_address(
     contract: Address,
     method: &str,
     body: &serde_json::Value,
@@ -213,7 +205,7 @@ pub(crate) fn read_chain_address(
         .map_err(|e| error(-4, format!("{label} address parse: {e}")))
 }
 
-pub(crate) fn read_chain_method(
+pub fn read_chain_method(
     contract: Address,
     method: &str,
     body: &serde_json::Value,
@@ -232,7 +224,7 @@ pub(crate) fn read_chain_method(
     serde_json::from_slice(&response).map_err(|e| error(-4, format!("chain method JSON: {e}")))
 }
 
-pub(crate) fn chain_method_nonce() -> String {
+pub fn chain_method_nonce() -> String {
     let bytes = petal::sdk::random_bytes(16).unwrap_or_else(|_| {
         let mut fallback = [0u8; 16];
         fallback.copy_from_slice(&now_millis().to_be_bytes());

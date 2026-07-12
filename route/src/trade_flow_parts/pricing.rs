@@ -5,7 +5,7 @@ use crate::polymarket::trade as shared_trade;
 use crate::polymarket::types::BookLevel;
 use crate::polymarket::{Market, OrderBook, Result, Side};
 use petal::sdk::DispatchResponse;
-pub(crate) fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, DispatchResponse> {
+pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, DispatchResponse> {
     let market: Market = get_json(&format!("{GAMMA}/markets/slug/{slug}"))?;
     if !market.is_binary() {
         return Err(error(
@@ -104,7 +104,7 @@ pub(crate) fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot,
     })
 }
 
-pub(crate) fn best_price(levels: &[BookLevel], ask: bool) -> Result<Option<u64>, DispatchResponse> {
+pub fn best_price(levels: &[BookLevel], ask: bool) -> Result<Option<u64>, DispatchResponse> {
     let mut best: Option<u64> = None;
     for level in levels {
         let price = parse_micro(&level.price).map_err(|e| error(-4, e.to_string()))?;
@@ -117,7 +117,7 @@ pub(crate) fn best_price(levels: &[BookLevel], ask: bool) -> Result<Option<u64>,
     Ok(best)
 }
 
-pub(crate) fn choose_trade_limit(
+pub fn choose_trade_limit(
     side: Side,
     marketable: bool,
     bound_micro: u64,
@@ -134,7 +134,7 @@ pub(crate) fn choose_trade_limit(
     .map_err(polymarket_error)
 }
 
-pub(crate) fn build_trade_quote(
+pub fn build_trade_quote(
     side: Side,
     amount_micro: u64,
     limit_micro: u64,
@@ -151,7 +151,7 @@ pub(crate) fn build_trade_quote(
     .map_err(polymarket_error)
 }
 
-pub(crate) fn trade_policy_check(
+pub fn trade_policy_check(
     wallet: &str,
     draft: &StoreTradeDraft,
 ) -> Result<serde_json::Value, DispatchResponse> {

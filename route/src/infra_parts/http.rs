@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::polymarket::{Credentials, Result};
 use petal::sdk::{DispatchResponse, HttpRequest};
-pub(crate) fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, DispatchResponse> {
+pub fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, DispatchResponse> {
     let resp = http("GET", url, &[], Vec::new())?;
     if !(200..300).contains(&resp.status) {
         return Err(error(
@@ -17,7 +17,7 @@ pub(crate) fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, D
     serde_json::from_slice(&resp.body).map_err(|e| error(-4, format!("json: {e}")))
 }
 
-pub(crate) fn clob_auth_request(
+pub fn clob_auth_request(
     method: &str,
     path: &str,
     headers: &[(&str, String)],
@@ -47,7 +47,7 @@ pub(crate) fn clob_auth_request(
     Ok(creds)
 }
 
-pub(crate) fn clob_server_time() -> Result<u64, DispatchResponse> {
+pub fn clob_server_time() -> Result<u64, DispatchResponse> {
     let response = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),

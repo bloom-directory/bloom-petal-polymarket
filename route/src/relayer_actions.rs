@@ -41,7 +41,7 @@ struct RelayerProgress {
     relayer_state: Option<String>,
 }
 
-pub(crate) fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
+pub fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
     let market: Market = match get_json(&format!("{GAMMA}/markets/slug/{slug}")) {
         Ok(market) => market,
         Err(resp) => return resp,
@@ -58,13 +58,13 @@ pub(crate) fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub(crate) fn revoke_plan(wallet: &str) -> DispatchResponse {
+pub fn revoke_plan(wallet: &str) -> DispatchResponse {
     DispatchResponse::Read(format!(
         "# Revoke Polymarket approvals\n\nWallet: {wallet}\n\nThis revokes all pUSD allowances and CTF operator approvals through one persisted deposit-wallet batch.\n"
     ).into_bytes())
 }
 
-pub(crate) fn withdraw_plan(wallet: &str) -> DispatchResponse {
+pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
     let owner = match wallet_address(wallet) {
         Ok(owner) => owner,
         Err(resp) => return resp,
@@ -83,15 +83,15 @@ pub(crate) fn withdraw_plan(wallet: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub(crate) fn confirm_redeem(wallet: &str, slug: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_redeem(wallet: &str, slug: &str, body: &[u8]) -> DispatchResponse {
     execute(RelayerAction::Redeem { slug }, wallet, body)
 }
 
-pub(crate) fn confirm_revoke(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_revoke(wallet: &str, body: &[u8]) -> DispatchResponse {
     execute(RelayerAction::RevokeApprovals, wallet, body)
 }
 
-pub(crate) fn confirm_withdraw(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_withdraw(wallet: &str, body: &[u8]) -> DispatchResponse {
     execute(RelayerAction::WithdrawPusd, wallet, body)
 }
 

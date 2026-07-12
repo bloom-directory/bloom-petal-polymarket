@@ -1,15 +1,15 @@
-pub(crate) mod builder_creds;
-pub(crate) mod creds;
-pub(crate) mod eip712;
-pub(crate) mod order;
-pub(crate) mod order_model;
+pub mod builder_creds;
+pub mod creds;
+pub mod eip712;
+pub mod order;
+pub mod order_model;
 #[cfg(test)]
-pub(crate) mod order_store;
-pub(crate) mod signer;
-pub(crate) mod signing;
-pub(crate) mod trade;
-pub(crate) mod types;
-pub(crate) mod wallet;
+pub mod order_store;
+pub mod signer;
+pub mod signing;
+pub mod trade;
+pub mod types;
+pub mod wallet;
 
 pub use builder_creds::BuilderCredentials;
 pub use eip712::derive_deposit_wallet_address;

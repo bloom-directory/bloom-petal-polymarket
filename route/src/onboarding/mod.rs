@@ -9,16 +9,16 @@ mod flow;
 mod persistence;
 mod status;
 
-pub(crate) use flow::run_onboard_stages;
-pub(crate) use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
-pub(crate) use status::{
+pub use flow::run_onboard_stages;
+pub use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
+pub use status::{
     LiveOnboardStatus, fundable_deposit_wallet, fundable_deposit_wallet_from_status,
     local_onboard_status, local_onboard_status_with_live_deposit, local_status_for_wallet,
     preserve_onboard_metadata, refreshed_live_onboard_status, stored_status_for_wallet,
     tradeable_deposit_wallet,
 };
 
-pub(crate) fn begin_onboarding(wallet: &str) -> DispatchResponse {
+pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }

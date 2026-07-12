@@ -5,7 +5,7 @@ use crate::polymarket::order::parse_micro;
 use crate::polymarket::{POLYGON, Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
-pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -57,7 +57,7 @@ pub(crate) fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse
     )
 }
 
-pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     let confirmation = match fund_confirmation(body) {
         Ok(confirmation) if confirmation.confirm => confirmation,
         Ok(_) | Err(()) => {
@@ -215,7 +215,7 @@ pub(crate) fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> Dispa
     store_put_json(&key, &session, false)
 }
 
-pub(crate) fn read_review(wallet: &str, id: &str) -> DispatchResponse {
+pub fn read_review(wallet: &str, id: &str) -> DispatchResponse {
     match load_fund_session(wallet, id) {
         Ok(session) => match session.review_intent {
             Some(review) => petal::read_json_value(&review),
@@ -225,7 +225,7 @@ pub(crate) fn read_review(wallet: &str, id: &str) -> DispatchResponse {
     }
 }
 
-pub(crate) fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
+pub fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
     match load_fund_session(wallet, id) {
         Ok(session) => match session.approval {
             Some(approval) => petal::read_json_value(&approval),
@@ -715,10 +715,7 @@ fn json_u256(value: &serde_json::Value) -> Result<U256, DispatchResponse> {
     }
 }
 
-pub(crate) fn load_fund_session(
-    wallet: &str,
-    id: &str,
-) -> Result<StoreFundSession, DispatchResponse> {
+pub fn load_fund_session(wallet: &str, id: &str) -> Result<StoreFundSession, DispatchResponse> {
     if let Err(e) = validate_wallet_name(wallet) {
         return Err(error(-3, e.to_string()));
     }

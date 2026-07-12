@@ -3,8 +3,6 @@ name = "petal"
 version = "0.1.0"
 edition = "2024"
 publish = false
-build = "build.rs"
-
 [dependencies]
 getrandom = { version = "0.2", features = ["custom"] }
 serde = { version = "1", features = ["derive"] }

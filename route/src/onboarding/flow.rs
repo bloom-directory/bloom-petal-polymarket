@@ -5,7 +5,7 @@ use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus};
 
-pub(crate) fn run_onboard_stages(
+pub fn run_onboard_stages(
     wallet: &str,
     owner: Address,
     deposit: Address,
