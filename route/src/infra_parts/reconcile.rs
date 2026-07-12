@@ -64,7 +64,7 @@ pub fn open_order_matches_draft(
     }
     let Some(salts) = (match clob_order_field_u64s(item, &["salt"]) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     }) else {
         return false;
     };
@@ -78,7 +78,7 @@ pub fn open_order_matches_draft(
         &["asset_id", "assetId", "token_id", "tokenId", "tokenID"],
     ) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     } {
         if values.iter().any(|value| value != &draft.token_id) {
             return false;
@@ -87,7 +87,7 @@ pub fn open_order_matches_draft(
     }
     if let Some(values) = match clob_order_field_strings(item, &["maker", "signer", "funder"]) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     } {
         let expected = funder.to_checksum(None);
         if values
@@ -109,7 +109,7 @@ pub fn open_order_matches_draft(
     }
     if let Some(values) = match clob_order_field_strings(item, &["orderType", "order_type"]) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     } {
         if values
             .iter()
@@ -121,7 +121,7 @@ pub fn open_order_matches_draft(
     }
     if let Some(values) = match clob_order_field_u64s(item, &["makerAmount", "maker_amount"]) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     } {
         if values.iter().any(|value| *value != draft.maker_micro) {
             return false;
@@ -130,7 +130,7 @@ pub fn open_order_matches_draft(
     }
     if let Some(values) = match clob_order_field_u64s(item, &["takerAmount", "taker_amount"]) {
         Ok(values) => values,
-        Err(()) => return false,
+        Err(_) => return false,
     } {
         if values.iter().any(|value| *value != draft.taker_micro) {
             return false;
@@ -161,16 +161,19 @@ pub fn clob_order_fields<'a>(
     values
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidClobOrderField;
+
 pub fn clob_order_field_strings(
     item: &serde_json::Value,
     names: &[&str],
-) -> Result<Option<Vec<String>>, ()> {
+) -> Result<Option<Vec<String>>, InvalidClobOrderField> {
     let mut values = Vec::new();
     for value in clob_order_fields(item, names) {
         match value {
             serde_json::Value::String(s) => values.push(s.clone()),
             serde_json::Value::Number(n) => values.push(n.to_string()),
-            _ => return Err(()),
+            _ => return Err(InvalidClobOrderField),
         }
     }
     Ok((!values.is_empty()).then_some(values))
@@ -179,7 +182,7 @@ pub fn clob_order_field_strings(
 pub fn clob_order_field_u64s(
     item: &serde_json::Value,
     names: &[&str],
-) -> Result<Option<Vec<u64>>, ()> {
+) -> Result<Option<Vec<u64>>, InvalidClobOrderField> {
     let mut values = Vec::new();
     for value in clob_order_fields(item, names) {
         let Some(parsed) = (match value {
@@ -187,7 +190,7 @@ pub fn clob_order_field_u64s(
             serde_json::Value::String(s) => s.parse::<u64>().ok(),
             _ => None,
         }) else {
-            return Err(());
+            return Err(InvalidClobOrderField);
         };
         values.push(parsed);
     }
