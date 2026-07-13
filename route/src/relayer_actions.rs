@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::polymarket::eip712::{Call, FACTORY, PUSD};
 use crate::polymarket::signing::wallet_batch_action_and_hash;
 use crate::polymarket::wallet::{redeem_positions_call, transfer_amount_call, v2_revoke_calls};
-use crate::polymarket::{Market, POLYGON, validate_wallet_name};
+use crate::polymarket::{Market, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::DispatchResponse;
 
@@ -42,7 +42,13 @@ struct RelayerProgress {
 }
 
 pub fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
-    let market: Market = match get_json(&format!("{GAMMA}/markets/slug/{slug}")) {
+    if let Err(resp) = require_v2_trading() {
+        return resp;
+    }
+    let market: Market = match get_json(&format!(
+        "{}/markets/slug/{slug}",
+        crate::runtime_config::gamma_url()
+    )) {
         Ok(market) => market,
         Err(resp) => return resp,
     };
@@ -59,12 +65,18 @@ pub fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
 }
 
 pub fn revoke_plan(wallet: &str) -> DispatchResponse {
+    if let Err(resp) = require_v2_trading() {
+        return resp;
+    }
     DispatchResponse::Read(format!(
         "# Revoke Polymarket approvals\n\nWallet: {wallet}\n\nThis revokes all pUSD allowances and CTF operator approvals through one persisted deposit-wallet batch.\n"
     ).into_bytes())
 }
 
 pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
+    if let Err(resp) = require_v2_trading() {
+        return resp;
+    }
     let owner = match wallet_address(wallet) {
         Ok(owner) => owner,
         Err(resp) => return resp,
@@ -99,6 +111,13 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
+    if let Err(resp) = require_v2_trading() {
+        return resp;
+    }
+    let (_, chain_id) = match crate::runtime_config::chain() {
+        Ok(chain) => chain,
+        Err(err) => return error(-4, err),
+    };
     if !confirmation_body(body) {
         return error(
             -3,
@@ -132,13 +151,13 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
                 Err(resp) => return resp,
             };
             let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-            let built = wallet_batch_action_and_hash(deposit, POLYGON, nonce, deadline, &calls);
+            let built = wallet_batch_action_and_hash(deposit, chain_id, nonce, deadline, &calls);
             let calls_json: Vec<_> = calls.iter().map(call_json).collect();
             let review = serde_json::json!({
                 "operation": action.operation(),
                 "owner": owner.to_checksum(None),
                 "deposit_wallet": deposit.to_checksum(None),
-                "chain_id": POLYGON,
+                "chain_id": chain_id,
                 "nonce": nonce,
                 "deadline": deadline,
                 "calls": calls_json,
@@ -155,6 +174,7 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
                 built.signing_hash,
                 serde_json::json!({
                     "deposit_wallet": deposit.to_checksum(None),
+                    "chain_id": chain_id,
                     "nonce": nonce,
                     "deadline": deadline,
                     "calls": calls_json,
@@ -168,6 +188,17 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
         }
         Err(resp) => return resp,
     };
+    if prepared
+        .preimage
+        .get("chain_id")
+        .and_then(serde_json::Value::as_u64)
+        != Some(chain_id)
+    {
+        return error(
+            -4,
+            "prepared relayer action does not match configured chain",
+        );
+    }
     let expected_review = match prepared
         .preimage
         .get("review_intent_hash")
@@ -288,7 +319,7 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
         Ok(creds) => creds,
         Err(resp) => return resp,
     };
-    let tx = match relayer_submit_with_builder_repair(
+    let tx = match relayer_submit_configured(
         wallet,
         owner,
         &creds,
@@ -325,7 +356,10 @@ fn calls_for(
 ) -> Result<Vec<Call>, DispatchResponse> {
     match action {
         RelayerAction::Redeem { slug } => {
-            let market: Market = get_json(&format!("{GAMMA}/markets/slug/{slug}"))?;
+            let market: Market = get_json(&format!(
+                "{}/markets/slug/{slug}",
+                crate::runtime_config::gamma_url()
+            ))?;
             let condition = market
                 .condition_id
                 .parse::<B256>()

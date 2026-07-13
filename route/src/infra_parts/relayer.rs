@@ -1,9 +1,28 @@
 use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash};
 use crate::polymarket::wallet::v2_approval_calls;
-use crate::polymarket::{BuilderCredentials, Credentials, POLYGON, Result};
+use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HttpRequest};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PreparedRelayerSignature {
+    prepared_digest: String,
+    signature_hex: String,
+}
+
+pub(crate) fn prepared_relayer_batch_expired(
+    prepared: &PreparedSigning,
+    now_secs: u64,
+) -> Result<bool, DispatchResponse> {
+    let deadline = prepared
+        .preimage
+        .get("deadline")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
+    Ok(now_secs >= deadline)
+}
 pub struct LocalRelayerTx {
     pub id: String,
     pub state: String,
@@ -20,7 +39,25 @@ impl LocalRelayerTx {
     }
 }
 
-pub fn relayer_submit_with_builder_repair(
+pub fn relayer_submit_configured(
+    wallet: &str,
+    owner: Address,
+    clob_creds: &Credentials,
+    body: serde_json::Value,
+) -> Result<LocalRelayerTx, DispatchResponse> {
+    match crate::relayer_config::configured_relayer_auth()? {
+        crate::relayer_config::RelayerAuth::AutoBuilder => {
+            relayer_submit_with_builder_repair(wallet, owner, clob_creds, body)
+        }
+        crate::relayer_config::RelayerAuth::Manual { key, address } => {
+            relayer_submit_with_headers(manual_relayer_headers(&key, &address), &body)
+                .map_err(relayer_http_error)
+        }
+        crate::relayer_config::RelayerAuth::Disabled { reason } => Err(error(-3, reason)),
+    }
+}
+
+fn relayer_submit_with_builder_repair(
     wallet: &str,
     owner: Address,
     clob_creds: &Credentials,
@@ -66,24 +103,36 @@ pub fn relayer_submit(
     builder: &BuilderCredentials,
     body: &serde_json::Value,
 ) -> Result<LocalRelayerTx, RelayerHttpError> {
+    let encoded = serde_json::to_string(body).map_err(|e| RelayerHttpError {
+        status: 0,
+        body: format!("relayer body JSON: {e}"),
+    })?;
+    let headers = builder_headers(builder, "POST", "/submit", &encoded).map_err(|message| {
+        RelayerHttpError {
+            status: 0,
+            body: message,
+        }
+    })?;
+    let headers: Vec<(String, String)> = headers
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+    relayer_submit_with_headers(headers, body)
+}
+
+fn relayer_submit_with_headers(
+    mut headers: Vec<(String, String)>,
+    body: &serde_json::Value,
+) -> Result<LocalRelayerTx, RelayerHttpError> {
     let body = serde_json::to_string(body).map_err(|e| RelayerHttpError {
         status: 0,
         body: format!("relayer body JSON: {e}"),
     })?;
-    let headers =
-        builder_headers(builder, "POST", "/submit", &body).map_err(|message| RelayerHttpError {
-            status: 0,
-            body: message,
-        })?;
-    let mut headers: Vec<(String, String)> = headers
-        .into_iter()
-        .map(|(name, value)| (name.to_string(), value))
-        .collect();
     headers.push(("content-type".into(), "application/json".into()));
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "POST".into(),
-            url: format!("{RELAYER}/submit"),
+            url: format!("{}/submit", crate::runtime_config::relayer_url()),
             headers,
             body: body.into_bytes(),
         },
@@ -115,7 +164,7 @@ pub fn relayer_submit(
 
 pub fn relayer_wallet_nonce(owner: Address) -> Result<u64, DispatchResponse> {
     let value = relayer_get_json(&url_with_query(
-        &format!("{RELAYER}/nonce"),
+        &format!("{}/nonce", crate::runtime_config::relayer_url()),
         &[("address", &format!("{owner:#x}")), ("type", "WALLET")],
     ))?;
     value
@@ -147,18 +196,25 @@ pub fn relayer_poll_confirmed(tx: &LocalRelayerTx) -> Result<LocalRelayerTx, Dis
 
 pub fn relayer_transaction(id: &str) -> Result<LocalRelayerTx, DispatchResponse> {
     let value = relayer_get_json(&url_with_query(
-        &format!("{RELAYER}/transaction"),
+        &format!("{}/transaction", crate::runtime_config::relayer_url()),
         &[("id", id)],
     ))?;
     parse_relayer_transaction_response(id, &value).map_err(|message| error(-4, message))
 }
 
 pub fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchResponse> {
+    let headers = match crate::relayer_config::configured_relayer_auth()? {
+        crate::relayer_config::RelayerAuth::AutoBuilder => Vec::new(),
+        crate::relayer_config::RelayerAuth::Manual { key, address } => {
+            manual_relayer_headers(&key, &address)
+        }
+        crate::relayer_config::RelayerAuth::Disabled { reason } => return Err(error(-3, reason)),
+    };
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
             url: url.into(),
-            headers: Vec::new(),
+            headers,
             body: Vec::new(),
         },
         MAX_HTTP_BYTES,
@@ -177,6 +233,13 @@ pub fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchResponse
     serde_json::from_slice(&resp.body).map_err(|e| error(-4, format!("relayer JSON: {e}")))
 }
 
+pub fn manual_relayer_headers(key: &str, address: &str) -> Vec<(String, String)> {
+    vec![
+        ("RELAYER_API_KEY".into(), key.into()),
+        ("RELAYER_API_KEY_ADDRESS".into(), address.into()),
+    ]
+}
+
 pub fn relayer_batch_body(
     wallet: &str,
     owner: Address,
@@ -184,9 +247,77 @@ pub fn relayer_batch_body(
     nonce: u64,
     deadline: u64,
 ) -> Result<serde_json::Value, DispatchResponse> {
+    let prepared = prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)?;
+    let prepared_deadline = prepared
+        .preimage
+        .get("deadline")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
+    if prepared_relayer_batch_expired(&prepared, now_secs())? {
+        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
+        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_signature.json"));
+        return Err(error(
+            -2,
+            "prepared onboarding approval signature expired; retry onboarding to prepare and approve a fresh bounded batch",
+        ));
+    }
+    let calls_json = prepared
+        .preimage
+        .get("calls")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing calls"))?;
+    let prepared_nonce = prepared
+        .preimage
+        .get("nonce")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
+    let signature_key = format!("onboard/{wallet}/prepared_relayer_signature.json");
+    let signature = match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
+        Ok(bytes) => {
+            let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
+                .map_err(|err| error(-4, format!("stored relayer signature: {err}")))?;
+            if stored.prepared_digest != prepared.digest()? {
+                return Err(error(
+                    -4,
+                    "stored relayer signature does not match prepared batch",
+                ));
+            }
+            stored.signature_hex
+        }
+        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => format!(
+            "0x{}",
+            hex::encode(sign_prepared(
+                wallet,
+                &prepared,
+                &format!("onboard/{wallet}/approval.json"),
+            )?)
+        ),
+        Err(err) => return Err(sdk_error(err)),
+    };
+    Ok(serde_json::json!({
+        "type": "WALLET",
+        "from": owner.to_checksum(None),
+        "to": FACTORY.to_checksum(None),
+        "nonce": prepared_nonce.to_string(),
+        "signature": signature,
+        "depositWalletParams": {
+            "depositWallet": deposit.to_checksum(None),
+            "deadline": prepared_deadline.to_string(),
+            "calls": calls_json,
+        },
+    }))
+}
+
+pub fn prepare_relayer_batch(
+    wallet: &str,
+    owner: Address,
+    deposit: Address,
+    nonce: u64,
+    deadline: u64,
+) -> Result<PreparedSigning, DispatchResponse> {
+    let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let prepared_key = format!("onboard/{wallet}/prepared_relayer_batch.json");
-    let review_key = format!("onboard/{wallet}/review_intent.json");
-    let approval_key = format!("onboard/{wallet}/approval.json");
+    let review_key = format!("onboard/{wallet}/review_relayer_intent.json");
     let prepared = match load_prepared_signing(&prepared_key)? {
         Some(prepared) => prepared,
         None => {
@@ -197,7 +328,7 @@ pub fn relayer_batch_body(
                 deadline: U256::from(deadline),
                 calls: calls.clone(),
             };
-            let hash = batch_signing_hash(&batch, POLYGON, deposit);
+            let hash = batch_signing_hash(&batch, chain_id, deposit);
             let calls_json: Vec<serde_json::Value> = calls
                 .iter()
                 .map(|call| {
@@ -212,7 +343,7 @@ pub fn relayer_batch_body(
                 "operation": "onboard_approvals",
                 "owner": owner.to_checksum(None),
                 "deposit_wallet": deposit.to_checksum(None),
-                "chain_id": POLYGON,
+                "chain_id": chain_id,
                 "nonce": nonce,
                 "deadline": deadline,
                 "calls": calls_json,
@@ -226,6 +357,7 @@ pub fn relayer_batch_body(
                 hash,
                 serde_json::json!({
                     "deposit_wallet": deposit.to_checksum(None),
+                    "chain_id": chain_id,
                     "nonce": nonce,
                     "deadline": deadline,
                     "calls": calls_json,
@@ -239,43 +371,43 @@ pub fn relayer_batch_body(
     if prepared.operation != "onboard_approvals" || prepared.owner != owner.to_checksum(None) {
         return Err(error(-4, "prepared onboarding batch identity mismatch"));
     }
+    if prepared
+        .preimage
+        .get("chain_id")
+        .and_then(serde_json::Value::as_u64)
+        != Some(chain_id)
+    {
+        return Err(error(
+            -4,
+            "prepared onboarding batch does not match configured chain",
+        ));
+    }
     let review_hash = prepared
         .preimage
         .get("review_intent_hash")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing review hash"))?;
     verify_review_intent(&review_key, review_hash)?;
-    let prepared_nonce = prepared
-        .preimage
-        .get("nonce")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
-    let prepared_deadline = prepared
-        .preimage
-        .get("deadline")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
-    let calls_json = prepared
-        .preimage
-        .get("calls")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing calls"))?;
-    let signature = format!(
-        "0x{}",
-        hex::encode(sign_prepared(wallet, &prepared, &approval_key)?)
-    );
-    Ok(serde_json::json!({
-        "type": "WALLET",
-        "from": owner.to_checksum(None),
-        "to": FACTORY.to_checksum(None),
-        "nonce": prepared_nonce.to_string(),
-        "signature": signature,
-        "depositWalletParams": {
-            "depositWallet": deposit.to_checksum(None),
-            "deadline": prepared_deadline.to_string(),
-            "calls": calls_json,
-        },
-    }))
+    Ok(prepared)
+}
+
+pub fn store_prepared_relayer_signature(
+    wallet: &str,
+    prepared: &PreparedSigning,
+    signature: &[u8],
+) -> Result<(), DispatchResponse> {
+    let value = PreparedRelayerSignature {
+        prepared_digest: prepared.digest()?,
+        signature_hex: format!("0x{}", hex::encode(signature)),
+    };
+    match store_put_json(
+        &format!("onboard/{wallet}/prepared_relayer_signature.json"),
+        &value,
+        true,
+    ) {
+        DispatchResponse::Write => Ok(()),
+        response => Err(response),
+    }
 }
 
 pub fn sign_hash_hex(wallet: &str, purpose: &str, hash: B256) -> Result<String, DispatchResponse> {
@@ -389,7 +521,7 @@ pub fn relayer_http_error(err: RelayerHttpError) -> DispatchResponse {
         return error(
             -4,
             format!(
-                "relayer rejected builder authentication (status {}): {}",
+                "relayer rejected authentication (status {}): {}",
                 err.status, err.body
             ),
         );
@@ -441,6 +573,17 @@ mod tests {
                 &serde_json::json!({"transactionID": "other", "state": "STATE_CONFIRMED"}),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn manual_auth_uses_native_header_names() {
+        assert_eq!(
+            manual_relayer_headers("key", "0xowner"),
+            vec![
+                ("RELAYER_API_KEY".into(), "key".into()),
+                ("RELAYER_API_KEY_ADDRESS".into(), "0xowner".into()),
+            ]
         );
     }
 }

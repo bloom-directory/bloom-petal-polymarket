@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read", "bloom:vfs.write"]), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write anything here to mint or derive CLOB credentials with the daemon keystore\n".to_vec())
     },

@@ -25,7 +25,7 @@ pub fn clob_auth_request(
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: method.into(),
-            url: format!("{CLOB}{path}"),
+            url: format!("{}{path}", crate::runtime_config::clob_url()),
             headers: headers
                 .iter()
                 .map(|(name, value)| ((*name).into(), value.clone()))
@@ -51,7 +51,7 @@ pub fn clob_server_time() -> Result<u64, DispatchResponse> {
     let response = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
-            url: format!("{CLOB}/time"),
+            url: format!("{}/time", crate::runtime_config::clob_url()),
             headers: Vec::new(),
             body: Vec::new(),
         },

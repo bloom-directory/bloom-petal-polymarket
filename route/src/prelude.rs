@@ -8,8 +8,8 @@ pub use crate::app_types::{
     default_slippage_bps, default_true,
 };
 pub use crate::approval::{
-    PreparedSigning, load_prepared_signing, sign_prepared, store_prepared_signing,
-    store_review_intent, verify_review_intent,
+    PreparedSigning, load_prepared_signing, sign_prepared, sign_prepared_batch,
+    store_prepared_signing, store_review_intent, verify_review_intent,
 };
 pub use crate::constants::{
     BATCH_DEADLINE_SECS, CLOB, CLOB_AUTH_NONCE, DATA, GAMMA, MARKETS_LIST_LIMIT,
@@ -37,10 +37,10 @@ pub use crate::infra_parts::reconcile::{
 pub use crate::infra_parts::relayer::{
     LocalRelayerTx, RelayerHttpError, builder_headers, builder_hmac_signature,
     dispatch_error_message, onboard_in_flight_deadline_ms, parse_json_u64,
-    parse_relayer_submit_response, parse_relayer_transaction_response, relayer_batch_body,
-    relayer_get_json, relayer_http_error, relayer_poll_confirmed, relayer_submit,
-    relayer_submit_with_builder_repair, relayer_transaction, relayer_tx_id_matches,
-    relayer_wallet_nonce, sign_hash_hex,
+    parse_relayer_submit_response, parse_relayer_transaction_response, prepare_relayer_batch,
+    relayer_batch_body, relayer_get_json, relayer_http_error, relayer_poll_confirmed,
+    relayer_submit, relayer_submit_configured, relayer_transaction, relayer_tx_id_matches,
+    relayer_wallet_nonce, sign_hash_hex, store_prepared_relayer_signature,
 };
 pub use crate::infra_parts::store::{
     StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,
@@ -58,12 +58,12 @@ pub use crate::onboarding::{
     run_onboard_stages, stored_status_for_wallet, tradeable_deposit_wallet,
 };
 pub use crate::public_reads::{market_by_slug, position_user};
+pub use crate::relayer_config::require_v2_trading;
 pub use crate::trade_flow_parts::chain::{
-    allowance_floor, chain_method_nonce, parse_json_u256, predict_deposit_wallet,
-    read_chain_address, read_chain_ctf_approval, read_chain_ctf_balance,
-    read_chain_deposit_wallet_deployed, read_chain_erc20_allowance, read_chain_erc20_balance,
-    read_chain_method, read_chain_v2_approvals, read_clob_collateral_sync, read_decoded_u256,
-    v2_spenders,
+    allowance_floor, parse_json_u256, predict_deposit_wallet, read_chain_ctf_approval,
+    read_chain_ctf_balance, read_chain_deposit_wallet_deployed, read_chain_erc20_allowance,
+    read_chain_erc20_balance, read_chain_eth_call, read_chain_v2_approvals,
+    read_clob_collateral_sync, v2_spenders,
 };
 pub use crate::trade_flow_parts::draft::create_trade_draft;
 pub use crate::trade_flow_parts::policy::{

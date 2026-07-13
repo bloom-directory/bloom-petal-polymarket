@@ -8,7 +8,7 @@ petal::route_file!(spec: petal::wallet_http_read_spec(10_000), read: |ctx: &peta
         Err(resp) => return resp,
     };
     match crate::infra_parts::http::get_json::<serde_json::Value>(&crate::infra_parts::util::url_with_query(
-        &format!("{}{}", crate::constants::DATA, "/activity"),
+        &format!("{}/activity", crate::runtime_config::data_url()),
         &[("user", &user)],
     )) {
         Ok(value) => petal::read_json_value(&value),

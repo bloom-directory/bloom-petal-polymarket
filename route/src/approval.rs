@@ -2,7 +2,9 @@ use alloy::primitives::{Address, B256, Signature};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
-use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignHashOutcome, SignRequest};
+use petal::sdk::{
+    DispatchResponse, HostStatus, SdkError, SignBatchOutcome, SignHashOutcome, SignRequest,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedSigning {
@@ -42,10 +44,87 @@ impl PreparedSigning {
             .map_err(|err| error(-4, format!("corrupt prepared owner: {err}")))
     }
 
-    fn digest(&self) -> Result<String, DispatchResponse> {
+    pub(crate) fn digest(&self) -> Result<String, DispatchResponse> {
         serde_json::to_vec(self)
             .map(|bytes| blake3_hex(&bytes))
             .map_err(|err| error(-4, format!("encode prepared signing: {err}")))
+    }
+}
+
+pub fn sign_prepared_batch(
+    wallet: &str,
+    prepared: &[&PreparedSigning],
+    approval_key: &str,
+) -> Result<Vec<Vec<u8>>, DispatchResponse> {
+    if prepared.is_empty() {
+        return Err(error(-3, "prepared signing batch is empty"));
+    }
+    let requests = prepared
+        .iter()
+        .map(|item| {
+            Ok(SignRequest {
+                wallet: wallet.into(),
+                hash32: item.hash()?.into(),
+                purpose: item.intent.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, DispatchResponse>>()?;
+    match petal::sdk::sign_hashes(&requests) {
+        Ok(SignBatchOutcome::Signatures(signatures)) if signatures.len() == prepared.len() => {
+            for (signature, item) in signatures.iter().zip(prepared) {
+                if signature.len() != 65 {
+                    return Err(error(-4, "sign_hashes returned a non-65-byte signature"));
+                }
+                let signature = Signature::from_raw(signature)
+                    .map_err(|err| error(-4, format!("host signature: {err}")))?;
+                if signature
+                    .recover_address_from_prehash(&item.hash()?)
+                    .map_err(|err| error(-4, format!("recover host signature: {err}")))?
+                    != item.owner()?
+                {
+                    return Err(error(
+                        -4,
+                        "host batch signature does not match prepared owner",
+                    ));
+                }
+            }
+            let _ = petal::sdk::store_del(approval_key);
+            Ok(signatures)
+        }
+        Ok(SignBatchOutcome::Signatures(_)) => {
+            Err(error(-4, "sign_hashes returned the wrong signature count"))
+        }
+        Ok(SignBatchOutcome::ApprovalRequired {
+            action_id,
+            ceremony_url,
+            expires_ms,
+        }) => {
+            let batch_digest = blake3_hex(
+                &serde_json::to_vec(prepared)
+                    .map_err(|err| error(-4, format!("encode signing batch: {err}")))?,
+            );
+            let artifact = serde_json::json!({
+                "action_id": action_id,
+                "ceremony_url": ceremony_url,
+                "expires_ms": expires_ms,
+                "prepared_artifact_digest": batch_digest,
+                "retry_state": "approval_required",
+                "operation": "signing_batch",
+                "request_count": prepared.len(),
+            });
+            match store_put_json(approval_key, &artifact, false) {
+                DispatchResponse::Write => Err(error(
+                    -2,
+                    format!(
+                        "Sealed Approval required; approve action {} at {} then retry the exact write",
+                        artifact["action_id"].as_str().unwrap_or_default(),
+                        artifact["ceremony_url"].as_str().unwrap_or_default(),
+                    ),
+                )),
+                response => Err(response),
+            }
+        }
+        Err(err) => Err(sdk_error_with_context("sign prepared batch", err)),
     }
 }
 

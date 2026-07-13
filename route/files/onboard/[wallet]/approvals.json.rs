@@ -6,6 +6,10 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:v
     if let Err(e) = crate::polymarket::validate_wallet_name(wallet) {
         return petal::error(-3, e.to_string());
     }
+    let (_, chain_id) = match crate::runtime_config::chain() {
+        Ok(chain) => chain,
+        Err(err) => return petal::error(-4, err),
+    };
     let owner = match crate::infra_parts::host_calls::wallet_address(wallet) {
         Ok(owner) => owner,
         Err(resp) => return resp,
@@ -20,7 +24,7 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:v
                 .and_then(serde_json::Value::as_str)
         })
         .and_then(|address| address.parse::<alloy::primitives::Address>().ok())
-        .unwrap_or_else(|| crate::polymarket::eip712::derive_deposit_wallet_address(&owner, crate::polymarket::POLYGON));
+        .unwrap_or_else(|| crate::polymarket::eip712::derive_deposit_wallet_address(&owner, chain_id));
     let deposit_source = status
         .as_ref()
         .and_then(|status| {
@@ -63,7 +67,7 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:v
         } else {
             serde_json::Value::String("do not fund this locally derived estimate; full onboarding must resolve the live factory address before funding or approvals".into())
         },
-        "chain_id": crate::polymarket::POLYGON,
+        "chain_id": chain_id,
         "calls": calls,
         "signing": "preview_only"
     }))

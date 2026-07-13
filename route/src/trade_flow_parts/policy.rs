@@ -114,7 +114,7 @@ pub fn verify_sell_preflight(
 ) -> Result<serde_json::Value, DispatchResponse> {
     let deposit_user = deposit.to_checksum(None);
     let data_api_holding_micro = get_json::<Vec<Position>>(&url_with_query(
-        &format!("{DATA}/positions"),
+        &format!("{}/positions", crate::runtime_config::data_url()),
         &[("user", &deposit_user)],
     ))
     .ok()

@@ -4,7 +4,10 @@ use crate::polymarket::{Market, Result};
 use alloy::primitives::Address;
 use petal::sdk::DispatchResponse;
 pub fn market_by_slug(slug: &str) -> Result<Market, DispatchResponse> {
-    get_json(&format!("{GAMMA}/markets/slug/{slug}"))
+    get_json(&format!(
+        "{}/markets/slug/{slug}",
+        crate::runtime_config::gamma_url()
+    ))
 }
 
 pub fn position_user(segment: &str) -> Result<String, DispatchResponse> {

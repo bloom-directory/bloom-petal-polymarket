@@ -29,6 +29,8 @@ pub mod polymarket;
 pub mod prelude;
 pub mod public_reads;
 pub mod relayer_actions;
+pub mod relayer_config;
+pub mod runtime_config;
 pub mod trade_flow_parts {
     pub mod chain;
     pub mod draft;

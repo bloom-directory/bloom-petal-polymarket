@@ -2,12 +2,15 @@ use crate::prelude::*;
 
 use crate::polymarket::eip712::PUSD;
 use crate::polymarket::order::parse_micro;
-use crate::polymarket::{POLYGON, Result, validate_wallet_name};
+use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
 pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
+    }
+    if let Err(resp) = require_v2_trading() {
+        return resp;
     }
     let owner = match wallet_address(wallet) {
         Ok(address) => address,
@@ -58,6 +61,13 @@ pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
 }
 
 pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+    if let Err(resp) = require_v2_trading() {
+        return resp;
+    }
+    let (chain, _) = match crate::runtime_config::chain() {
+        Ok(chain) => chain,
+        Err(err) => return error(-4, err),
+    };
     let confirmation = match fund_confirmation(body) {
         Ok(confirmation) if confirmation.confirm => confirmation,
         Ok(_) | Err(()) => {
@@ -100,7 +110,7 @@ pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
         return store_put_json(&key, &session, false);
     }
     if let Some(outbox_id) = session.outbox_ids.get(session.next_transaction).cloned() {
-        let inspection = match petal::sdk::tx_inspect(wallet, "polygon", &outbox_id) {
+        let inspection = match petal::sdk::tx_inspect(wallet, &chain, &outbox_id) {
             Ok(inspection) => inspection,
             Err(err) => return sdk_error(err),
         };
@@ -152,7 +162,7 @@ pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
         }
         let staged = match petal::sdk::tx_stage(&EvmTransaction {
             wallet: wallet.into(),
-            chain: "polygon".into(),
+            chain: chain.clone(),
             to: transaction.to.clone(),
             value_wei: transaction.value_wei.clone(),
             data_hex: transaction.data_hex.clone(),
@@ -188,7 +198,7 @@ pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     let outbox_id = &session.outbox_ids[session.next_transaction];
     let outcome = match petal::sdk::tx_confirm(
         wallet,
-        "polygon",
+        &chain,
         outbox_id,
         confirmation.acknowledge_warnings,
     ) {
@@ -239,6 +249,7 @@ fn prepare_funding(
     wallet: &str,
     session: &StoreFundSession,
 ) -> Result<PreparedFunding, DispatchResponse> {
+    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let owner = wallet_address(wallet)?;
     let deposit = session
         .deposit_wallet
@@ -255,7 +266,7 @@ fn prepare_funding(
     if session.from_token.eq_ignore_ascii_case("pusd") {
         let max_spend = parse_decimal_units(&session.max_spend, 6)?;
         validate_direct_pusd_funding(missing, max_spend, read_chain_erc20_balance(PUSD, owner)?)?;
-        return Ok(direct_pusd(wallet, session, deposit, missing));
+        return Ok(direct_pusd(wallet, session, &chain, deposit, missing));
     }
     prepare_enso(wallet, session, owner, deposit, missing)
 }
@@ -263,6 +274,7 @@ fn prepare_funding(
 fn direct_pusd(
     wallet: &str,
     session: &StoreFundSession,
+    chain: &str,
     deposit: Address,
     missing: U256,
 ) -> PreparedFunding {
@@ -276,7 +288,7 @@ fn direct_pusd(
         review_intent: serde_json::json!({
             "operation": "polymarket_fund",
             "wallet": wallet,
-            "chain": "polygon",
+            "chain": chain,
             "from_token": "pUSD",
             "recipient": deposit.to_checksum(None),
             "amount_pusd_micro": missing.to_string(),
@@ -295,6 +307,7 @@ fn prepare_enso(
     deposit: Address,
     missing: U256,
 ) -> Result<PreparedFunding, DispatchResponse> {
+    let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let api_key = crate::account_views::load_enso_api_key()?;
     let trusted_router = crate::account_views::load_enso_router()?;
     let native = matches!(
@@ -330,7 +343,7 @@ fn prepare_enso(
     }
     let common = vec![
         ("fromAddress".into(), owner.to_checksum(None)),
-        ("chainId".into(), POLYGON.to_string()),
+        ("chainId".into(), chain_id.to_string()),
         ("tokenIn".into(), token_in.to_checksum(None)),
         ("tokenOut".into(), PUSD.to_checksum(None)),
         ("slippage".into(), session.slippage_bps.to_string()),
@@ -367,7 +380,7 @@ fn prepare_enso(
         .flatten()
         .filter_map(|hop| hop.get("destinationChainId"))
         .filter_map(|value| json_u256(value).ok())
-        .any(|chain| chain != U256::from(POLYGON))
+        .any(|chain| chain != U256::from(chain_id))
     {
         return Err(error(-3, "cross-chain Enso routes are forbidden"));
     }
@@ -509,8 +522,9 @@ fn funding_required_input(max_spend: U256, missing: U256, output_at_max: U256) -
 }
 
 fn read_chain_native_balance(holder: Address) -> Result<U256, DispatchResponse> {
+    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let result = petal::sdk::chain_read(
-        "polygon",
+        &chain,
         "eth_getBalance",
         &serde_json::json!([holder.to_checksum(None), "latest"]).to_string(),
     )
@@ -528,8 +542,9 @@ fn read_chain_eth_call_u256(
     calldata: &[u8],
     field: &str,
 ) -> Result<U256, DispatchResponse> {
+    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let result = petal::sdk::chain_read(
-        "polygon",
+        &chain,
         "eth_call",
         &serde_json::json!([{
             "to": contract.to_checksum(None),

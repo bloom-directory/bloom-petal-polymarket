@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::polymarket::eip712::PUSD;
-use crate::polymarket::{POLYGON, Result, derive_deposit_wallet_address};
+use crate::polymarket::{Result, derive_deposit_wallet_address};
 use alloy::primitives::{Address, U256};
 use petal::sdk::DispatchResponse;
 
@@ -13,7 +13,10 @@ pub fn local_onboard_status(
     creds_present: bool,
     message: &str,
 ) -> serde_json::Value {
-    let deposit = derive_deposit_wallet_address(&owner, POLYGON);
+    let chain_id = crate::runtime_config::configured_chain()
+        .map(|(_, id)| id)
+        .unwrap_or(137);
+    let deposit = derive_deposit_wallet_address(&owner, chain_id);
     serde_json::json!({
         "wallet": wallet,
         "owner": format!("{owner:#x}"),

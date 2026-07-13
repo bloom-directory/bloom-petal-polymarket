@@ -11,7 +11,7 @@ petal::route_file!(spec: petal::http_read_spec(2_000), read: |ctx: &petal::Ctx| 
         return petal::error(-4, "market has no YES token id");
     };
     match crate::infra_parts::http::get_json::<crate::polymarket::OrderBook>(&crate::infra_parts::util::url_with_query(
-        &format!("{}{}", crate::constants::CLOB, "/book"),
+        &format!("{}/book", crate::runtime_config::clob_url()),
         &[("token_id", token_id)],
     )) {
         Ok(book) => petal::read_json_value(&book),

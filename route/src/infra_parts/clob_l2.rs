@@ -22,7 +22,10 @@ pub fn clob_l2_get_json(
         "",
     )
     .map_err(|e| error(-4, e.to_string()))?;
-    let url = url_with_query(&format!("{CLOB}{path}"), query);
+    let url = url_with_query(
+        &format!("{}{path}", crate::runtime_config::clob_url()),
+        query,
+    );
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
@@ -73,7 +76,7 @@ pub fn clob_l2_post_json(
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "POST".into(),
-            url: format!("{CLOB}{path}"),
+            url: format!("{}{path}", crate::runtime_config::clob_url()),
             headers: headers
                 .into_iter()
                 .map(|(name, value)| (name.into(), value))
@@ -84,9 +87,17 @@ pub fn clob_l2_post_json(
     )
     .map_err(sdk_error)?;
     if !(200..300).contains(&resp.status) {
+        let diagnostic = bounded_response_diagnostic(&resp.body);
+        let code = if (400..500).contains(&resp.status) {
+            // The CLOB received and definitively rejected the request. This is
+            // not an ambiguous transport failure and must not be retried.
+            -3
+        } else {
+            -4
+        };
         return Err(error(
-            -4,
-            format!("CLOB post error (status {})", resp.status),
+            code,
+            format!("CLOB post error (status {}): {diagnostic}", resp.status),
         ));
     }
     if resp.body.iter().all(|b| b.is_ascii_whitespace()) {
@@ -105,6 +116,20 @@ pub fn clob_l2_post_json(
         validate_order_post_response(&value)?;
     }
     Ok(value)
+}
+
+fn bounded_response_diagnostic(body: &[u8]) -> String {
+    const MAX_CHARS: usize = 512;
+    let text = String::from_utf8_lossy(body);
+    let mut chars = text.trim().chars();
+    let diagnostic: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{diagnostic}…")
+    } else if diagnostic.is_empty() {
+        "empty response body".into()
+    } else {
+        diagnostic
+    }
 }
 
 fn validate_order_post_response(value: &serde_json::Value) -> Result<(), DispatchResponse> {
@@ -162,7 +187,7 @@ pub fn clob_l2_delete_json(
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "DELETE".into(),
-            url: format!("{CLOB}{path}"),
+            url: format!("{}{path}", crate::runtime_config::clob_url()),
             headers: headers
                 .into_iter()
                 .map(|(name, value)| (name.into(), value))

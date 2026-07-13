@@ -102,6 +102,16 @@ pub enum SignHashOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignBatchOutcome {
+    Signatures(Vec<Vec<u8>>),
+    ApprovalRequired {
+        action_id: String,
+        ceremony_url: String,
+        expires_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvmTransaction {
     pub wallet: String,
     pub chain: String,
@@ -168,7 +178,8 @@ impl SdkError {
 pub mod sdk {
     pub use super::{
         DispatchResponse, EvmTransaction, HostStatus, HttpRequest, HttpResponse, OutboxApproval,
-        OutboxInspection, SdkError, SignHashOutcome, SignRequest, StagedTransaction,
+        OutboxInspection, SdkError, SignBatchOutcome, SignHashOutcome, SignRequest,
+        StagedTransaction,
     };
     use crate::bindings::bloom::chain::read as chain;
     use crate::bindings::bloom::env::runtime as env;
@@ -209,6 +220,29 @@ pub mod sdk {
                 ceremony_url: approval.ceremony_url,
                 expires_ms: approval.expires_ms,
             }),
+        }
+    }
+
+    pub fn sign_hashes(requests: &[SignRequest]) -> Result<SignBatchOutcome, SdkError> {
+        let requests = requests
+            .iter()
+            .map(|request| sign::SignRequest {
+                wallet: request.wallet.clone(),
+                hash32: request.hash32.to_vec(),
+                intent: request.purpose.clone(),
+            })
+            .collect::<Vec<_>>();
+        match sign::sign_hashes(&requests).map_err(host_err)? {
+            sign::SignBatchResult::Signatures(signatures) => {
+                Ok(SignBatchOutcome::Signatures(signatures))
+            }
+            sign::SignBatchResult::ApprovalRequired(approval) => {
+                Ok(SignBatchOutcome::ApprovalRequired {
+                    action_id: approval.action_id,
+                    ceremony_url: approval.ceremony_url,
+                    expires_ms: approval.expires_ms,
+                })
+            }
         }
     }
 
@@ -345,6 +379,10 @@ pub mod sdk {
     pub fn random_bytes(len: usize) -> Result<Vec<u8>, SdkError> {
         let len = u32::try_from(len).map_err(|_| SdkError::Host(HostStatus::Invalid))?;
         env::random_bytes(len).map_err(host_err)
+    }
+
+    pub fn runtime_setting(key: &str) -> Result<Option<String>, SdkError> {
+        env::setting(key).map_err(host_err)
     }
 
     fn staged_transaction(staged: tx::StagedTransaction) -> StagedTransaction {

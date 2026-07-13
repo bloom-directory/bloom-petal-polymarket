@@ -16,16 +16,19 @@ summary = "Expose Polymarket market reads, onboarding, account views, funding dr
 allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:vfs.write"]
 
 [[net.allow]]
+binding = "gamma"
 host = "gamma-api.polymarket.com"
 methods = ["get"]
 paths = ["/markets", "/markets/slug/*", "/public-search"]
 
 [[net.allow]]
+binding = "data"
 host = "data-api.polymarket.com"
 methods = ["get"]
 paths = ["/positions", "/trades", "/activity"]
 
 [[net.allow]]
+binding = "clob"
 host = "clob.polymarket.com"
 methods = ["get"]
 paths = [
@@ -43,6 +46,7 @@ paths = [
 ]
 
 [[net.allow]]
+binding = "clob"
 host = "clob.polymarket.com"
 methods = ["post"]
 paths = [
@@ -53,6 +57,7 @@ paths = [
 ]
 
 [[net.allow]]
+binding = "clob"
 host = "clob.polymarket.com"
 methods = ["delete"]
 paths = ["/order", "/auth/builder-api-key"]
@@ -63,6 +68,7 @@ methods = ["get"]
 paths = ["/api/v1/shortcuts/quote", "/api/v1/shortcuts/route"]
 
 [[net.allow]]
+binding = "relayer"
 host = "relayer-v2.polymarket.com"
 methods = ["get", "post"]
 paths = ["/nonce", "/submit", "/transaction"]

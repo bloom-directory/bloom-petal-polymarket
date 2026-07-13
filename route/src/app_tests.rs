@@ -158,7 +158,7 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 93);
+        assert_eq!(routes.len(), 94);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
@@ -460,5 +460,22 @@ max_daily_usd = "100"
         assert!(checks.iter().any(|check| {
             check.rule == "polymarket.max_daily_usd" && check.outcome == LocalPolicyOutcome::Deny
         }));
+    }
+
+    #[test]
+    fn prepared_onboarding_batch_expires_at_its_sealed_deadline() {
+        let prepared = PreparedSigning::new(
+            "onboard_approvals",
+            "polymarket.onboard",
+            Address::ZERO,
+            alloy::primitives::B256::ZERO,
+            serde_json::json!({"deadline": 500}),
+        );
+        assert!(
+            !crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 499).unwrap()
+        );
+        assert!(
+            crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 500).unwrap()
+        );
     }
 }
