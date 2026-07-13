@@ -28,7 +28,7 @@ pub fn status(wallet: &str) -> DispatchResponse {
         "tradeable": tradeable,
         "onboarding_stage": status.get("stage").cloned().unwrap_or(serde_json::json!("not_started")),
         "credentials_present": status.get("creds_present").cloned().unwrap_or(serde_json::json!(false)),
-        "next_required_action": if legacy_eoa { None } else if tradeable { None } else { Some("continue_onboarding") },
+        "next_required_action": if legacy_eoa || tradeable { None } else { Some("continue_onboarding") },
     }))
 }
 
