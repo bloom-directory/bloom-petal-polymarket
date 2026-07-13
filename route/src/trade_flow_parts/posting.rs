@@ -7,7 +7,7 @@ use crate::polymarket::order::{
 use crate::polymarket::{POLYGON, Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub(crate) fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -511,7 +511,7 @@ fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchRespo
     })
 }
 
-pub(crate) fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -590,7 +590,7 @@ pub(crate) fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> Dispa
     DispatchResponse::Write
 }
 
-pub(crate) fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), DispatchResponse> {
+pub fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), DispatchResponse> {
     let draft_key = format!("trade/{wallet}/drafts/{id}/order.json");
     if let Some(bytes) = store_get(&draft_key) {
         let mut draft: StoreTradeDraft = match serde_json::from_slice(&bytes) {
@@ -610,7 +610,7 @@ pub(crate) fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), D
     Ok(())
 }
 
-pub(crate) fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchResponse> {
+pub fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchResponse> {
     if let Err(err) = validate_wallet_name(wallet) {
         return Err(error(-3, err.to_string()));
     }
@@ -632,11 +632,7 @@ pub(crate) fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, Dispat
     Ok(ids)
 }
 
-pub(crate) fn cancel_discovered_order(
-    wallet: &str,
-    order_id: &str,
-    body: &[u8],
-) -> DispatchResponse {
+pub fn cancel_discovered_order(wallet: &str, order_id: &str, body: &[u8]) -> DispatchResponse {
     if !petal::is_safe_segment(order_id) {
         return error(-3, "invalid CLOB order id");
     }

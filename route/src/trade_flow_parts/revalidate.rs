@@ -5,7 +5,7 @@ use crate::polymarket::{Result, Side, validate_wallet_name};
 use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -260,7 +260,7 @@ pub(crate) fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> Dis
     store_put_json(&format!("{base}/order.json"), &draft, false)
 }
 
-pub(crate) fn refresh_trade_post_inputs(
+pub fn refresh_trade_post_inputs(
     wallet: &str,
     base: &str,
     draft: &mut StoreTradeDraft,
@@ -399,7 +399,7 @@ pub(crate) fn refresh_trade_post_inputs(
     Ok((policy_check, sell_preflight))
 }
 
-pub(crate) fn review_intent_matches_draft(
+pub fn review_intent_matches_draft(
     review: &serde_json::Value,
     draft: &StoreTradeDraft,
     owner: Address,

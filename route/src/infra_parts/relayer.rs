@@ -4,23 +4,23 @@ use crate::polymarket::{BuilderCredentials, Credentials, POLYGON, Result};
 use crate::prelude::*;
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HttpRequest};
-pub(crate) struct LocalRelayerTx {
-    pub(crate) id: String,
-    pub(crate) state: String,
+pub struct LocalRelayerTx {
+    pub id: String,
+    pub state: String,
 }
 
 impl LocalRelayerTx {
-    pub(crate) fn is_confirmed(&self) -> bool {
+    pub fn is_confirmed(&self) -> bool {
         self.state == "STATE_CONFIRMED"
     }
 
-    pub(crate) fn is_failed(&self) -> bool {
+    pub fn is_failed(&self) -> bool {
         let state = self.state.to_ascii_uppercase();
         state.contains("FAIL") || state.contains("INVALID")
     }
 }
 
-pub(crate) fn relayer_submit_with_builder_repair(
+pub fn relayer_submit_with_builder_repair(
     wallet: &str,
     owner: Address,
     clob_creds: &Credentials,
@@ -57,12 +57,12 @@ pub(crate) fn relayer_submit_with_builder_repair(
 }
 
 #[derive(Debug)]
-pub(crate) struct RelayerHttpError {
+pub struct RelayerHttpError {
     status: u16,
     body: String,
 }
 
-pub(crate) fn relayer_submit(
+pub fn relayer_submit(
     builder: &BuilderCredentials,
     body: &serde_json::Value,
 ) -> Result<LocalRelayerTx, RelayerHttpError> {
@@ -113,7 +113,7 @@ pub(crate) fn relayer_submit(
     })
 }
 
-pub(crate) fn relayer_wallet_nonce(owner: Address) -> Result<u64, DispatchResponse> {
+pub fn relayer_wallet_nonce(owner: Address) -> Result<u64, DispatchResponse> {
     let value = relayer_get_json(&url_with_query(
         &format!("{RELAYER}/nonce"),
         &[("address", &format!("{owner:#x}")), ("type", "WALLET")],
@@ -125,9 +125,7 @@ pub(crate) fn relayer_wallet_nonce(owner: Address) -> Result<u64, DispatchRespon
         .ok_or_else(|| error(-4, format!("relayer /nonce response unparsable: {value}")))
 }
 
-pub(crate) fn relayer_poll_confirmed(
-    tx: &LocalRelayerTx,
-) -> Result<LocalRelayerTx, DispatchResponse> {
+pub fn relayer_poll_confirmed(tx: &LocalRelayerTx) -> Result<LocalRelayerTx, DispatchResponse> {
     let current = relayer_transaction(&tx.id)?;
     if current.is_confirmed() {
         Ok(current)
@@ -147,7 +145,7 @@ pub(crate) fn relayer_poll_confirmed(
     }
 }
 
-pub(crate) fn relayer_transaction(id: &str) -> Result<LocalRelayerTx, DispatchResponse> {
+pub fn relayer_transaction(id: &str) -> Result<LocalRelayerTx, DispatchResponse> {
     let value = relayer_get_json(&url_with_query(
         &format!("{RELAYER}/transaction"),
         &[("id", id)],
@@ -155,7 +153,7 @@ pub(crate) fn relayer_transaction(id: &str) -> Result<LocalRelayerTx, DispatchRe
     parse_relayer_transaction_response(id, &value).map_err(|message| error(-4, message))
 }
 
-pub(crate) fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchResponse> {
+pub fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchResponse> {
     let resp = petal::sdk::http_fetch(
         &HttpRequest {
             method: "GET".into(),
@@ -179,7 +177,7 @@ pub(crate) fn relayer_get_json(url: &str) -> Result<serde_json::Value, DispatchR
     serde_json::from_slice(&resp.body).map_err(|e| error(-4, format!("relayer JSON: {e}")))
 }
 
-pub(crate) fn relayer_batch_body(
+pub fn relayer_batch_body(
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -280,11 +278,7 @@ pub(crate) fn relayer_batch_body(
     }))
 }
 
-pub(crate) fn sign_hash_hex(
-    wallet: &str,
-    purpose: &str,
-    hash: B256,
-) -> Result<String, DispatchResponse> {
+pub fn sign_hash_hex(wallet: &str, purpose: &str, hash: B256) -> Result<String, DispatchResponse> {
     let owner = wallet_address(wallet)?;
     let prepared = PreparedSigning::new(
         "relayer_batch",
@@ -301,7 +295,7 @@ pub(crate) fn sign_hash_hex(
     .map(|signature| format!("0x{}", hex::encode(signature)))
 }
 
-pub(crate) fn builder_headers(
+pub fn builder_headers(
     creds: &BuilderCredentials,
     method: &str,
     path: &str,
@@ -317,7 +311,7 @@ pub(crate) fn builder_headers(
     ])
 }
 
-pub(crate) fn builder_hmac_signature(
+pub fn builder_hmac_signature(
     secret: &str,
     timestamp: &str,
     method: &str,
@@ -339,9 +333,7 @@ pub(crate) fn builder_hmac_signature(
     Ok(out.replace('+', "-").replace('/', "_"))
 }
 
-pub(crate) fn parse_relayer_submit_response(
-    value: &serde_json::Value,
-) -> Result<LocalRelayerTx, String> {
+pub fn parse_relayer_submit_response(value: &serde_json::Value) -> Result<LocalRelayerTx, String> {
     let id = ["transactionID", "transactionId", "transaction_id", "id"]
         .iter()
         .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
@@ -356,7 +348,7 @@ pub(crate) fn parse_relayer_submit_response(
     })
 }
 
-pub(crate) fn parse_relayer_transaction_response(
+pub fn parse_relayer_transaction_response(
     id: &str,
     value: &serde_json::Value,
 ) -> Result<LocalRelayerTx, String> {
@@ -386,13 +378,13 @@ pub(crate) fn parse_relayer_transaction_response(
     })
 }
 
-pub(crate) fn relayer_tx_id_matches(value: &serde_json::Value, id: &str) -> bool {
+pub fn relayer_tx_id_matches(value: &serde_json::Value, id: &str) -> bool {
     ["transactionID", "transactionId", "transaction_id", "id"]
         .iter()
         .any(|key| value.get(*key).and_then(serde_json::Value::as_str) == Some(id))
 }
 
-pub(crate) fn relayer_http_error(err: RelayerHttpError) -> DispatchResponse {
+pub fn relayer_http_error(err: RelayerHttpError) -> DispatchResponse {
     if err.status == 401 || err.status == 403 {
         return error(
             -4,
@@ -412,17 +404,17 @@ pub(crate) fn relayer_http_error(err: RelayerHttpError) -> DispatchResponse {
     }
 }
 
-pub(crate) fn parse_json_u64(value: &serde_json::Value) -> Option<u64> {
+pub fn parse_json_u64(value: &serde_json::Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
-pub(crate) fn onboard_in_flight_deadline_ms() -> u128 {
+pub fn onboard_in_flight_deadline_ms() -> u128 {
     now_millis().saturating_add((ONBOARD_POLL_TIMEOUT_SECS as u128).saturating_mul(1000))
 }
 
-pub(crate) fn dispatch_error_message(resp: &DispatchResponse) -> String {
+pub fn dispatch_error_message(resp: &DispatchResponse) -> String {
     match resp {
         DispatchResponse::Error { message, .. } => message.clone(),
         other => format!("{other:?}"),

@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.order.poly1271"), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.order.poly1271").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read", "bloom:vfs.write"]), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write {\"post\":true} to sign and post a revalidated draft, then write a private receipt. This performs a value-moving CLOB POST /order.\n".to_vec())
     },

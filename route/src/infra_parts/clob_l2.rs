@@ -4,7 +4,7 @@ use crate::polymarket::signer::l2_headers;
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HttpRequest};
-pub(crate) fn clob_l2_get_json(
+pub fn clob_l2_get_json(
     owner: Address,
     creds: &Credentials,
     path: &str,
@@ -52,7 +52,7 @@ pub(crate) fn clob_l2_get_json(
     serde_json::from_slice(&resp.body).map_err(|e| error(-4, format!("json: {e}")))
 }
 
-pub(crate) fn clob_l2_post_json(
+pub fn clob_l2_post_json(
     owner: Address,
     creds: &Credentials,
     path: &str,
@@ -141,7 +141,7 @@ fn validate_order_post_response(value: &serde_json::Value) -> Result<(), Dispatc
     }
 }
 
-pub(crate) fn clob_l2_delete_json(
+pub fn clob_l2_delete_json(
     owner: Address,
     creds: &Credentials,
     path: &str,

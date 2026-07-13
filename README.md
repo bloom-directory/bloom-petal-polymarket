@@ -13,9 +13,12 @@ This package implements the Polymarket app at `apps/polymarket/...` using the
 - `route/src/` contains Polymarket-specific domain code used by those route
   controllers: HTTP/store/signing infrastructure, onboarding, funding, trading,
   policy, order construction, EIP-712, wallet calls, and typed DTOs.
-- `xtask/` discovers route files, derives route metadata from file paths, builds
-  each selected route, converts it with `wasm-tools component new`, and
-  validates the result.
+- `xtask/` discovers route files and generates one leaf `cdylib` package per
+  controller under `target/polymarket-v2-routes/workspace/`. Cargo builds the
+  generated workspace once, sharing Petal and Polymarket compilation while
+  independently linking each route. `xtask` then converts each core WASM with
+  `wasm-tools component new`, validates its capabilities, and installs the
+  complete route tree only after every artifact succeeds.
 
 The route tree currently builds 93 route components. Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest

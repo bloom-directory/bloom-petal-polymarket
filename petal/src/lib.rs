@@ -26,8 +26,41 @@ fn component_getrandom(buf: &mut [u8]) -> Result<(), getrandom::Error> {
 
 getrandom::register_custom_getrandom!(component_getrandom);
 
-pub use bindings::{Ctx, Entry, Guest, RouteError, RouteMeta};
 pub use bindings::bloom::route::types::EntryKind;
+pub use bindings::{Ctx as RawCtx, Entry, Guest as RawGuest, RouteError, RouteMeta};
+
+pub trait RouteIdentity {
+    const PATH: &'static str;
+    const CANONICAL_PATH: &'static str;
+    const PARAMS: &'static [(&'static str, usize)];
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ctx {
+    pub app_root: String,
+    pub package_hash: String,
+    pub path: String,
+    pub params: Vec<(String, String)>,
+    pub actor: Option<String>,
+    identity_path: &'static str,
+    identity_canonical_path: &'static str,
+    identity_params: &'static [(&'static str, usize)],
+}
+
+impl Ctx {
+    pub fn bind<I: RouteIdentity>(raw: RawCtx) -> Self {
+        Self {
+            app_root: raw.app_root,
+            package_hash: raw.package_hash,
+            path: raw.path,
+            params: raw.params,
+            actor: raw.actor,
+            identity_path: I::PATH,
+            identity_canonical_path: I::CANONICAL_PATH,
+            identity_params: I::PARAMS,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DispatchResponse {
@@ -353,25 +386,28 @@ macro_rules! route_file {
     (spec: $spec:expr, list: $children:expr $(,)?) => {
         pub struct Route;
 
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+        impl $crate::RawGuest for Route {
+            fn metadata(ctx: $crate::RawCtx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_metadata(&ctx, $spec)
             }
 
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+            fn lookup(ctx: $crate::RawCtx) -> Result<$crate::Entry, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_lookup(&ctx, $spec)
             }
 
-            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+            fn list(ctx: $crate::RawCtx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let children = $children;
                 $crate::framework_list(&ctx, children)
             }
 
-            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+            fn read(_ctx: $crate::RawCtx) -> Result<Vec<u8>, $crate::RouteError> {
                 Err($crate::RouteError::Invalid("not a file".into()))
             }
 
-            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+            fn write(_ctx: $crate::RawCtx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
                 Err($crate::RouteError::Denied("path is not writable".into()))
             }
         }
@@ -379,25 +415,28 @@ macro_rules! route_file {
     (spec: $spec:expr, fallible_list: $children:expr $(,)?) => {
         pub struct Route;
 
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+        impl $crate::RawGuest for Route {
+            fn metadata(ctx: $crate::RawCtx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_metadata(&ctx, $spec)
             }
 
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+            fn lookup(ctx: $crate::RawCtx) -> Result<$crate::Entry, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_lookup(&ctx, $spec)
             }
 
-            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+            fn list(ctx: $crate::RawCtx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let children = $children;
                 $crate::framework_fallible_list(&ctx, children)
             }
 
-            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+            fn read(_ctx: $crate::RawCtx) -> Result<Vec<u8>, $crate::RouteError> {
                 Err($crate::RouteError::Invalid("not a file".into()))
             }
 
-            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+            fn write(_ctx: $crate::RawCtx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
                 Err($crate::RouteError::Denied("path is not writable".into()))
             }
         }
@@ -405,25 +444,28 @@ macro_rules! route_file {
     (spec: $spec:expr, ctx_list: $children:expr $(,)?) => {
         pub struct Route;
 
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+        impl $crate::RawGuest for Route {
+            fn metadata(ctx: $crate::RawCtx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_metadata(&ctx, $spec)
             }
 
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+            fn lookup(ctx: $crate::RawCtx) -> Result<$crate::Entry, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_lookup(&ctx, $spec)
             }
 
-            fn list(ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+            fn list(ctx: $crate::RawCtx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let children = $children;
                 $crate::framework_fallible_list(&ctx, children(&ctx))
             }
 
-            fn read(_ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+            fn read(_ctx: $crate::RawCtx) -> Result<Vec<u8>, $crate::RouteError> {
                 Err($crate::RouteError::Invalid("not a file".into()))
             }
 
-            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+            fn write(_ctx: $crate::RawCtx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
                 Err($crate::RouteError::Denied("path is not writable".into()))
             }
         }
@@ -431,25 +473,28 @@ macro_rules! route_file {
     (spec: $spec:expr, read: $read:expr $(,)?) => {
         pub struct Route;
 
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+        impl $crate::RawGuest for Route {
+            fn metadata(ctx: $crate::RawCtx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_metadata(&ctx, $spec)
             }
 
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+            fn lookup(ctx: $crate::RawCtx) -> Result<$crate::Entry, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_lookup(&ctx, $spec)
             }
 
-            fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+            fn list(_ctx: $crate::RawCtx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
                 Err($crate::RouteError::Invalid("not a directory".into()))
             }
 
-            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+            fn read(ctx: $crate::RawCtx) -> Result<Vec<u8>, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let read = $read;
                 $crate::framework_read(read(&ctx))
             }
 
-            fn write(_ctx: $crate::Ctx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
+            fn write(_ctx: $crate::RawCtx, _body: Vec<u8>) -> Result<(), $crate::RouteError> {
                 Err($crate::RouteError::Denied("path is not writable".into()))
             }
         }
@@ -457,25 +502,29 @@ macro_rules! route_file {
     (spec: $spec:expr, read: $read:expr, write: $write:expr $(,)?) => {
         pub struct Route;
 
-        impl $crate::Guest for Route {
-            fn metadata(ctx: $crate::Ctx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+        impl $crate::RawGuest for Route {
+            fn metadata(ctx: $crate::RawCtx) -> Result<$crate::RouteMeta, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_metadata(&ctx, $spec)
             }
 
-            fn lookup(ctx: $crate::Ctx) -> Result<$crate::Entry, $crate::RouteError> {
+            fn lookup(ctx: $crate::RawCtx) -> Result<$crate::Entry, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 $crate::framework_lookup(&ctx, $spec)
             }
 
-            fn list(_ctx: $crate::Ctx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
+            fn list(_ctx: $crate::RawCtx) -> Result<Vec<$crate::Entry>, $crate::RouteError> {
                 Err($crate::RouteError::Invalid("not a directory".into()))
             }
 
-            fn read(ctx: $crate::Ctx) -> Result<Vec<u8>, $crate::RouteError> {
+            fn read(ctx: $crate::RawCtx) -> Result<Vec<u8>, $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let read = $read;
                 $crate::framework_read(read(&ctx))
             }
 
-            fn write(ctx: $crate::Ctx, body: Vec<u8>) -> Result<(), $crate::RouteError> {
+            fn write(ctx: $crate::RawCtx, body: Vec<u8>) -> Result<(), $crate::RouteError> {
+                let ctx = $crate::Ctx::bind::<crate::__PetalRouteIdentity>(ctx);
                 let write = $write;
                 $crate::framework_write(write(&ctx, &body))
             }
@@ -524,7 +573,7 @@ impl RouteSpec {
         }
     }
 
-    const fn caps(mut self, caps: &'static [&'static str]) -> Self {
+    pub const fn caps(mut self, caps: &'static [&'static str]) -> Self {
         self.required_caps = caps;
         self
     }
@@ -618,15 +667,15 @@ pub struct RouteChild {
     kind: RouteFileKind,
 }
 
-pub fn current_route_path() -> &'static str {
-    env!("BLOOM_ROUTE_PATH")
+pub fn current_route_path(ctx: &Ctx) -> &'static str {
+    ctx.identity_path
 }
 
-pub fn current_route_canonical_path() -> &'static str {
-    env!("BLOOM_ROUTE_CANONICAL_PATH")
+pub fn current_route_canonical_path(ctx: &Ctx) -> &'static str {
+    ctx.identity_canonical_path
 }
 
-pub fn framework_metadata(_ctx: &Ctx, spec: RouteSpec) -> Result<RouteMeta, RouteError> {
+pub fn framework_metadata(ctx: &Ctx, spec: RouteSpec) -> Result<RouteMeta, RouteError> {
     Ok(RouteMeta {
         kind: match spec.kind {
             RouteFileKind::Dir => EntryKind::Dir,
@@ -640,7 +689,7 @@ pub fn framework_metadata(_ctx: &Ctx, spec: RouteSpec) -> Result<RouteMeta, Rout
         cache_ttl_ms: spec.cache_ttl_ms,
         side_effecting_read: spec.side_effecting_read,
         write_async: spec.write_async,
-        description: Some(format!("Petal route {}", current_route_path())),
+        description: Some(format!("Petal route {}", current_route_path(ctx))),
         consent_summary: None,
         required_caps: spec
             .required_caps
@@ -700,7 +749,7 @@ pub fn framework_write(resp: DispatchResponse) -> Result<(), RouteError> {
 
 pub fn route_relative(ctx: &Ctx) -> String {
     if ctx.path.is_empty() {
-        return current_route_canonical_path().to_string();
+        return current_route_canonical_path(ctx).to_string();
     }
     metadata_path(&ctx.path)
 }
@@ -722,19 +771,10 @@ pub fn param<'a>(ctx: &'a Ctx, name: &str) -> Result<&'a str, DispatchResponse> 
 }
 
 pub fn route_generated_param<'a>(ctx: &'a Ctx, name: &str) -> Option<&'a str> {
-    for pair in env!("BLOOM_ROUTE_PARAMS").split(',') {
-        let Some((candidate, index)) = pair.split_once(':') else {
-            continue;
-        };
-        if candidate != name {
-            continue;
-        }
-        let Ok(index) = index.parse::<usize>() else {
-            continue;
-        };
-        return route_segment(ctx, index);
-    }
-    None
+    ctx.identity_params
+        .iter()
+        .find_map(|(candidate, index)| (*candidate == name).then_some(*index))
+        .and_then(|index| route_segment(ctx, index))
 }
 
 pub fn route_invalid(message: impl Into<String>) -> DispatchResponse {
@@ -832,6 +872,76 @@ pub fn metadata_path(path: &str) -> String {
     match path {
         "$index" => String::new(),
         _ => path.strip_suffix("/$index").unwrap_or(path).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    struct Root;
+    impl RouteIdentity for Root {
+        const PATH: &'static str = "$index";
+        const CANONICAL_PATH: &'static str = "";
+        const PARAMS: &'static [(&'static str, usize)] = &[];
+    }
+
+    struct Nested;
+    impl RouteIdentity for Nested {
+        const PATH: &'static str = "trade/[wallet]/drafts/[id]/plan.md";
+        const CANONICAL_PATH: &'static str = "trade/[wallet]/drafts/[id]/plan.md";
+        const PARAMS: &'static [(&'static str, usize)] = &[("wallet", 1), ("id", 3)];
+    }
+
+    fn raw(path: &str, params: &[(&str, &str)]) -> RawCtx {
+        RawCtx {
+            app_root: String::new(),
+            package_hash: String::new(),
+            path: path.into(),
+            params: params
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into()))
+                .collect(),
+            actor: None,
+        }
+    }
+
+    #[test]
+    fn root_and_index_use_empty_canonical_fallback() {
+        let ctx = Ctx::bind::<Root>(raw("", &[]));
+        assert_eq!(route_relative(&ctx), "");
+        assert_eq!(current_route_path(&ctx), "$index");
+    }
+
+    #[test]
+    fn generated_params_support_multiple_and_repeated_lookups() {
+        let ctx = Ctx::bind::<Nested>(raw("trade/0xabc/drafts/42/plan.md", &[]));
+        assert_eq!(param(&ctx, "wallet").unwrap(), "0xabc");
+        assert_eq!(param(&ctx, "id").unwrap(), "42");
+        assert_eq!(param(&ctx, "wallet").unwrap(), "0xabc");
+    }
+
+    #[test]
+    fn supplied_params_are_authoritative_and_partial_values_fall_back() {
+        let ctx = Ctx::bind::<Nested>(raw(
+            "trade/path-wallet/drafts/path-id/plan.md",
+            &[("wallet", "supplied-wallet")],
+        ));
+        assert_eq!(param(&ctx, "wallet").unwrap(), "supplied-wallet");
+        assert_eq!(param(&ctx, "id").unwrap(), "path-id");
+    }
+
+    #[test]
+    fn absent_segments_and_unknown_params_return_the_existing_error() {
+        let ctx = Ctx::bind::<Nested>(raw("trade", &[]));
+        assert!(matches!(
+            param(&ctx, "wallet"),
+            Err(DispatchResponse::Error { code: -3, .. })
+        ));
+        assert!(matches!(
+            param(&ctx, "unknown"),
+            Err(DispatchResponse::Error { code: -3, .. })
+        ));
     }
 }
 

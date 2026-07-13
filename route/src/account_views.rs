@@ -6,7 +6,7 @@ use crate::polymarket::{Position, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub(crate) fn status(wallet: &str) -> DispatchResponse {
+pub fn status(wallet: &str) -> DispatchResponse {
     let (owner, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -27,7 +27,7 @@ pub(crate) fn status(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub(crate) fn buying_power(wallet: &str) -> DispatchResponse {
+pub fn buying_power(wallet: &str) -> DispatchResponse {
     let (owner, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -67,7 +67,7 @@ pub(crate) fn buying_power(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub(crate) fn funding_options(wallet: &str) -> DispatchResponse {
+pub fn funding_options(wallet: &str) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -92,7 +92,7 @@ pub(crate) fn funding_options(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub(crate) fn obligations(wallet: &str) -> DispatchResponse {
+pub fn obligations(wallet: &str) -> DispatchResponse {
     let (_, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -133,7 +133,7 @@ pub(crate) fn obligations(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub(crate) fn builder_keys(wallet: &str) -> DispatchResponse {
+pub fn builder_keys(wallet: &str) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -185,7 +185,7 @@ struct RevokeBuilderKey {
     key: Option<String>,
 }
 
-pub(crate) fn revoke_builder_key(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn revoke_builder_key(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -247,7 +247,7 @@ struct EnsoSettingsInput {
     router: String,
 }
 
-pub(crate) fn write_enso_api_key(body: &[u8]) -> DispatchResponse {
+pub fn write_enso_api_key(body: &[u8]) -> DispatchResponse {
     let text = match core::str::from_utf8(body) {
         Ok(value) => value.trim(),
         Err(_) => return error(-3, "Enso API key must be UTF-8"),
@@ -284,7 +284,7 @@ pub(crate) fn write_enso_api_key(body: &[u8]) -> DispatchResponse {
     }
 }
 
-pub(crate) fn load_enso_router() -> Result<Address, DispatchResponse> {
+pub fn load_enso_router() -> Result<Address, DispatchResponse> {
     let bytes = petal::sdk::store_get("settings/enso-router", 128).map_err(|err| match err {
         SdkError::Host(HostStatus::NotFound) => error(
             -3,
@@ -298,7 +298,7 @@ pub(crate) fn load_enso_router() -> Result<Address, DispatchResponse> {
         .map_err(|err| error(-4, format!("stored Enso router address: {err}")))
 }
 
-pub(crate) fn load_enso_api_key() -> Result<String, DispatchResponse> {
+pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
     let bytes = petal::sdk::store_get("creds/enso-api-key", 4096).map_err(|err| match err {
         SdkError::Host(HostStatus::NotFound) => error(
             -3,

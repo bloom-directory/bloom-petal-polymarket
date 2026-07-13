@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::write_spec(), read:
+petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write {\"cancel\":true} to cancel the posted CLOB order recorded by this receipt. Cancelling uses CLOB DELETE /order and updates the private receipt/draft status.\n".to_vec())
     },

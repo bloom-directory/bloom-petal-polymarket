@@ -4,16 +4,16 @@ use alloy::primitives::Address;
 use petal::sdk::DispatchResponse;
 
 #[derive(Default)]
-pub(crate) struct OnboardStatusExtra {
-    pub(crate) stage: Option<&'static str>,
-    pub(crate) deploy_tx_id: Option<String>,
-    pub(crate) approve_tx_id: Option<String>,
-    pub(crate) in_flight_deadline_ms: Option<u128>,
-    pub(crate) relayer_auth: Option<&'static str>,
-    pub(crate) last_error: Option<String>,
+pub struct OnboardStatusExtra {
+    pub stage: Option<&'static str>,
+    pub deploy_tx_id: Option<String>,
+    pub approve_tx_id: Option<String>,
+    pub in_flight_deadline_ms: Option<u128>,
+    pub relayer_auth: Option<&'static str>,
+    pub last_error: Option<String>,
 }
 
-pub(crate) fn persist_onboard_status(
+pub fn persist_onboard_status(
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -77,7 +77,7 @@ pub(crate) fn persist_onboard_status(
     Ok(status)
 }
 
-pub(crate) fn persist_onboard_failure(
+pub fn persist_onboard_failure(
     wallet: &str,
     owner: Address,
     deposit: Address,

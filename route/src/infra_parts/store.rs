@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::Result;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 use serde::Serialize;
-pub(crate) fn read_store(key: &str) -> DispatchResponse {
+pub fn read_store(key: &str) -> DispatchResponse {
     match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(SdkError::Host(HostStatus::NotFound)) => error(-1, "not found"),
@@ -11,7 +11,7 @@ pub(crate) fn read_store(key: &str) -> DispatchResponse {
     }
 }
 
-pub(crate) fn acquire_trade_lock(
+pub fn acquire_trade_lock(
     wallet: &str,
     draft_id: &str,
 ) -> Result<StoreTradeLock, DispatchResponse> {
@@ -60,7 +60,7 @@ pub(crate) fn acquire_trade_lock(
     ))
 }
 
-pub(crate) fn trade_lock_body(wallet: &str, draft_id: &str) -> Result<Vec<u8>, DispatchResponse> {
+pub fn trade_lock_body(wallet: &str, draft_id: &str) -> Result<Vec<u8>, DispatchResponse> {
     let mut token = [0u8; 16];
     let random = petal::sdk::random_bytes(token.len())
         .map_err(|e| error(-4, format!("trade lock random token: {}", e.message())))?;
@@ -74,7 +74,7 @@ pub(crate) fn trade_lock_body(wallet: &str, draft_id: &str) -> Result<Vec<u8>, D
     serde_json::to_vec(&body).map_err(|e| error(-4, format!("json: {e}")))
 }
 
-pub(crate) fn trade_lock_stale_bytes(key: &str) -> Option<Vec<u8>> {
+pub fn trade_lock_stale_bytes(key: &str) -> Option<Vec<u8>> {
     match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => {
             let stale = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -88,7 +88,7 @@ pub(crate) fn trade_lock_stale_bytes(key: &str) -> Option<Vec<u8>> {
     }
 }
 
-pub(crate) struct StoreTradeLock {
+pub struct StoreTradeLock {
     key: String,
     expected: Vec<u8>,
 }
@@ -99,11 +99,11 @@ impl Drop for StoreTradeLock {
     }
 }
 
-pub(crate) fn store_get(key: &str) -> Option<Vec<u8>> {
+pub fn store_get(key: &str) -> Option<Vec<u8>> {
     petal::sdk::store_get(key, MAX_STORE_BYTES).ok()
 }
 
-pub(crate) fn store_put_json<T: Serialize>(key: &str, value: &T, secret: bool) -> DispatchResponse {
+pub fn store_put_json<T: Serialize>(key: &str, value: &T, secret: bool) -> DispatchResponse {
     let bytes = match serde_json::to_vec_pretty(value) {
         Ok(bytes) => bytes,
         Err(e) => return error(-4, format!("json: {e}")),
@@ -114,7 +114,7 @@ pub(crate) fn store_put_json<T: Serialize>(key: &str, value: &T, secret: bool) -
     }
 }
 
-pub(crate) fn store_trade_receipt(
+pub fn store_trade_receipt(
     wallet: &str,
     id: &str,
     receipt: &StoreTradeReceipt,
@@ -138,7 +138,7 @@ pub(crate) fn store_trade_receipt(
     )
 }
 
-pub(crate) fn append_trade_audit(
+pub fn append_trade_audit(
     wallet: &str,
     event: &str,
     details: serde_json::Value,

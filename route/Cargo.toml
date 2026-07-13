@@ -3,12 +3,10 @@ name = "bloom-polymarket-v2-route"
 version = "0.1.0"
 edition = "2024"
 publish = false
-build = "build.rs"
-
 [workspace]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["rlib"]
 
 [features]
 default = []
