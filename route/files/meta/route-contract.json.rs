@@ -23,7 +23,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "obligations": "obligations/<wallet>.json"
         },
         "generic_ipc_only": [
-            "bloom:sign/signing@0.2.0",
+            "bloom:sign/signing@0.1.0",
             "bloom:tx/outbox@0.1.0",
             "bloom:chain/read@0.1.0"
         ]

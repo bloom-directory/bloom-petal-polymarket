@@ -1,4 +1,4 @@
-schema = "bloom.petal.local-app.v2"
+schema = "bloom.petal.package.v1"
 name = "polymarket"
 
 [source]
@@ -7,10 +7,10 @@ repository = "bloom-directory/bloom-petal-polymarket"
 
 [build]
 command = "scripts/build.sh"
-outputs = ["app/polymarket"]
+outputs = ["petal/polymarket"]
 
 [consent]
-summary = "Expose Polymarket market reads, onboarding, account views, funding drafts, and trade draft/post/cancel flows as a v2 Petal app."
+summary = "Expose Polymarket market reads, onboarding, account views, funding drafts, and trade draft/post/cancel flows as a Petal."
 
 [caps]
 allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:vfs.write"]

@@ -7,7 +7,7 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let req: TradeNewRequest = match serde_json::from_slice(body) {

@@ -9,7 +9,7 @@ pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let owner = match wallet_address(wallet) {
@@ -61,7 +61,7 @@ pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
 }
 
 pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let (chain, _) = match crate::runtime_config::chain() {

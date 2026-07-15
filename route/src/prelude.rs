@@ -58,12 +58,12 @@ pub use crate::onboarding::{
     run_onboard_stages, stored_status_for_wallet, tradeable_deposit_wallet,
 };
 pub use crate::public_reads::{market_by_slug, position_user};
-pub use crate::relayer_config::require_v2_trading;
+pub use crate::relayer_config::require_deposit_wallet_trading;
 pub use crate::trade_flow_parts::chain::{
-    allowance_floor, parse_json_u256, predict_deposit_wallet, read_chain_ctf_approval,
-    read_chain_ctf_balance, read_chain_deposit_wallet_deployed, read_chain_erc20_allowance,
-    read_chain_erc20_balance, read_chain_eth_call, read_chain_v2_approvals,
-    read_clob_collateral_sync, v2_spenders,
+    allowance_floor, approval_spenders, parse_json_u256, predict_deposit_wallet,
+    read_chain_approvals, read_chain_ctf_approval, read_chain_ctf_balance,
+    read_chain_deposit_wallet_deployed, read_chain_erc20_allowance, read_chain_erc20_balance,
+    read_chain_eth_call, read_clob_collateral_sync,
 };
 pub use crate::trade_flow_parts::draft::create_trade_draft;
 pub use crate::trade_flow_parts::policy::{

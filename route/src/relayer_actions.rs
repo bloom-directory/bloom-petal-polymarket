@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::polymarket::eip712::{Call, FACTORY, PUSD};
 use crate::polymarket::signing::wallet_batch_action_and_hash;
-use crate::polymarket::wallet::{redeem_positions_call, transfer_amount_call, v2_revoke_calls};
+use crate::polymarket::wallet::{redeem_positions_call, revoke_calls, transfer_amount_call};
 use crate::polymarket::{Market, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::DispatchResponse;
@@ -42,7 +42,7 @@ struct RelayerProgress {
 }
 
 pub fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let market: Market = match get_json(&format!(
@@ -65,7 +65,7 @@ pub fn redeem_plan(wallet: &str, slug: &str) -> DispatchResponse {
 }
 
 pub fn revoke_plan(wallet: &str) -> DispatchResponse {
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     DispatchResponse::Read(format!(
@@ -74,7 +74,7 @@ pub fn revoke_plan(wallet: &str) -> DispatchResponse {
 }
 
 pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let owner = match wallet_address(wallet) {
@@ -111,7 +111,7 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let (_, chain_id) = match crate::runtime_config::chain() {
@@ -366,7 +366,7 @@ fn calls_for(
                 .map_err(|err| error(-3, format!("market condition id: {err}")))?;
             Ok(vec![redeem_positions_call(condition, market.neg_risk)])
         }
-        RelayerAction::RevokeApprovals => Ok(v2_revoke_calls()),
+        RelayerAction::RevokeApprovals => Ok(revoke_calls()),
         RelayerAction::WithdrawPusd => {
             let balance = read_chain_erc20_balance(PUSD, deposit)?;
             let amount = withdraw_amount(body, balance)?;

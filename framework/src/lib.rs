@@ -9,7 +9,7 @@ pub mod bindings {
         with: {
             "bloom:http/fetch@0.1.0": generate,
             "bloom:store/kv@0.1.0": generate,
-            "bloom:sign/signing@0.2.0": generate,
+            "bloom:sign/signing@0.1.0": generate,
             "bloom:tx/outbox@0.1.0": generate,
             "bloom:chain/read@0.1.0": generate,
             "bloom:vfs/readwrite@0.1.0": generate,
@@ -37,7 +37,7 @@ pub trait RouteIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ctx {
-    pub app_root: String,
+    pub petal_root: String,
     pub package_hash: String,
     pub path: String,
     pub params: Vec<(String, String)>,
@@ -50,7 +50,7 @@ pub struct Ctx {
 impl Ctx {
     pub fn bind<I: RouteIdentity>(raw: RawCtx) -> Self {
         Self {
-            app_root: raw.app_root,
+            petal_root: raw.petal_root,
             package_hash: raw.package_hash,
             path: raw.path,
             params: raw.params,
@@ -933,7 +933,7 @@ mod identity_tests {
 
     fn raw(path: &str, params: &[(&str, &str)]) -> RawCtx {
         RawCtx {
-            app_root: String::new(),
+            petal_root: String::new(),
             package_hash: String::new(),
             path: path.into(),
             params: params

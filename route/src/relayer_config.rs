@@ -164,7 +164,7 @@ impl RelayerConfig {
             "relayer_api_key": if self.relayer_api_key.is_some() { "<redacted>" } else { "" },
             "relayer_api_key_address": self.relayer_api_key_address,
             "legacy_eoa_mode": self.legacy_eoa_mode,
-            "trading_mode": if self.legacy_eoa_mode { "credentials_read_only" } else { "deposit_wallet_v2" },
+            "trading_mode": if self.legacy_eoa_mode { "credentials_read_only" } else { "deposit_wallet" },
         })
     }
 }
@@ -205,8 +205,8 @@ pub fn write_relayer_config(body: &[u8]) -> DispatchResponse {
     }
 }
 
-pub fn require_v2_trading() -> Result<(), DispatchResponse> {
-    require_v2_trading_config(&load_relayer_config()?)
+pub fn require_deposit_wallet_trading() -> Result<(), DispatchResponse> {
+    require_deposit_wallet_trading_config(&load_relayer_config()?)
 }
 
 pub fn legacy_eoa_status(wallet: &str, owner: Address) -> serde_json::Value {
@@ -225,15 +225,15 @@ pub fn legacy_eoa_status(wallet: &str, owner: Address) -> serde_json::Value {
         "probes": {
             "source": "owner_eoa",
         },
-        "message": "legacy EOA compatibility stores CLOB credentials for reads only; V2 trading and value-moving operations require deposit-wallet mode",
+        "message": "legacy EOA compatibility stores CLOB credentials for reads only; trading and value-moving operations require deposit-wallet mode",
     })
 }
 
-fn require_v2_trading_config(config: &RelayerConfig) -> Result<(), DispatchResponse> {
+fn require_deposit_wallet_trading_config(config: &RelayerConfig) -> Result<(), DispatchResponse> {
     if config.legacy_eoa_mode {
         return Err(error(
             -3,
-            "legacy_eoa_mode is credentials/read-only compatibility; V2 trading and value-moving operations require deposit-wallet mode",
+            "legacy_eoa_mode is credentials/read-only compatibility; trading and value-moving operations require deposit-wallet mode",
         ));
     }
     Ok(())
@@ -304,9 +304,9 @@ mod tests {
     #[test]
     fn legacy_mode_common_guard_rejects_value_moving_entry_points() {
         let mut config = RelayerConfig::default();
-        assert!(require_v2_trading_config(&config).is_ok());
+        assert!(require_deposit_wallet_trading_config(&config).is_ok());
         config.legacy_eoa_mode = true;
-        let error = require_v2_trading_config(&config).unwrap_err();
+        let error = require_deposit_wallet_trading_config(&config).unwrap_err();
         assert!(matches!(
             error,
             DispatchResponse::Error { code: -3, message }

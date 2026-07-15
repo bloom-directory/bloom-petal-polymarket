@@ -3,9 +3,9 @@
 
 //! Local Polymarket handler petal.
 //!
-//! This petal owns `apps/polymarket/` directly. Public market/account reads go
-//! through the v2 `bloom:http` import; staged local state goes through the
-//! v2 private store import. It intentionally does not call the legacy native
+//! This petal owns `petals/polymarket/` directly. Public market/account reads go
+//! through the `bloom:http` import; staged local state goes through the
+//! private store import. It intentionally does not call the legacy native
 //! `polymarket/` VFS handler.
 
 pub mod account_views;

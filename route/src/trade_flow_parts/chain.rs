@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use crate::polymarket::eip712::{
-    CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE_V2, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
-    NEG_RISK_EXCHANGE_V2, PUSD,
+    CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
+    NEG_RISK_EXCHANGE, PUSD,
 };
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::{Address, U256};
@@ -105,14 +105,14 @@ pub fn read_chain_erc20_allowance(
         .map_err(|err| error(-4, format!("chain ERC20 allowance decode: {err}")))
 }
 
-pub fn read_chain_v2_approvals(deposit: Address) -> Result<bool, DispatchResponse> {
+pub fn read_chain_approvals(deposit: Address) -> Result<bool, DispatchResponse> {
     let floor = allowance_floor();
-    for spender in v2_spenders() {
+    for spender in approval_spenders() {
         if read_chain_erc20_allowance(PUSD, deposit, spender)? < floor {
             return Ok(false);
         }
     }
-    for operator in v2_spenders() {
+    for operator in approval_spenders() {
         if !read_chain_ctf_approval(deposit, operator)? {
             return Ok(false);
         }
@@ -164,10 +164,10 @@ pub fn allowance_floor() -> U256 {
     U256::from(1) << 160
 }
 
-pub fn v2_spenders() -> [Address; 4] {
+pub fn approval_spenders() -> [Address; 4] {
     [
-        CTF_EXCHANGE_V2,
-        NEG_RISK_EXCHANGE_V2,
+        CTF_EXCHANGE,
+        NEG_RISK_EXCHANGE,
         CTF_COLLATERAL_ADAPTER,
         NEG_RISK_CTF_COLLATERAL_ADAPTER,
     ]

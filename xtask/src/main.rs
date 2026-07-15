@@ -33,14 +33,14 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let root = repo_root()?;
-    let app = env::var_os("POLYMARKET_APP_DIR")
+    let petal = env::var_os("POLYMARKET_PETAL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.clone());
     let routes = discover_routes(&root.join("route/files"))?;
     if routes.is_empty() {
         return Err("no route controllers found".into());
     }
-    let out_dir = app.join("app/polymarket");
+    let out_dir = petal.join("petal/polymarket");
 
     if env::args().nth(1).as_deref() == Some("check-caps") {
         let failures = routes
@@ -61,13 +61,13 @@ fn run() -> Result<(), String> {
 
     require_tool("cargo")?;
     require_tool("wasm-tools")?;
-    let build_root = root.join("target/polymarket-v2-routes");
+    let build_root = root.join("target/polymarket-routes");
     let workspace = build_root.join("workspace");
     generate_workspace(&root, &workspace, &routes)?;
     generate_lockfile(&workspace)?;
     let artifacts = build_workspace(&workspace, &routes)?;
 
-    let staging = build_root.join("staging/app/polymarket");
+    let staging = build_root.join("staging/petal/polymarket");
     if staging.exists() {
         fs::remove_dir_all(&staging).map_err(display_err("remove", &staging))?;
     }
@@ -150,7 +150,7 @@ fn generate_workspace(root: &Path, workspace: &Path, routes: &[Route]) -> Result
     for route in routes {
         let dir = members_dir.join(&route.package);
         let manifest = format!(
-            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nalloy = {{ version = \"2\", default-features = false, features = [\"dyn-abi\", \"k256\", \"signer-local\", \"sol-types\", \"std\"] }}\nhex = \"0.4\"\npetal = {{ path = \"../../../../../petal\" }}\npolymarket_route = {{ package = \"bloom-polymarket-v2-route\", path = \"../../../../../route\" }}\nserde_json = \"1\"\n",
+            "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nalloy = {{ version = \"2\", default-features = false, features = [\"dyn-abi\", \"k256\", \"signer-local\", \"sol-types\", \"std\"] }}\nhex = \"0.4\"\npetal = {{ path = \"../../../../../framework\" }}\npolymarket_route = {{ package = \"bloom-polymarket-route\", path = \"../../../../../route\" }}\nserde_json = \"1\"\n",
             route.package
         );
         let params = route_params(&route.path)

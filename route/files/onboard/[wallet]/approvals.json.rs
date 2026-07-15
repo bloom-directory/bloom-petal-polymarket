@@ -44,9 +44,9 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:v
         })
         .unwrap_or(false);
     let deposit_fundable = raw_deposit_fundable && deposit_source == "live_factory_resolved";
-    let calls: Vec<serde_json::Value> = crate::polymarket::wallet::v2_approval_calls()
+    let calls: Vec<serde_json::Value> = crate::polymarket::wallet::approval_calls()
         .iter()
-        .zip(crate::polymarket::wallet::V2_APPROVAL_LABELS)
+        .zip(crate::polymarket::wallet::APPROVAL_LABELS)
         .map(|(call, label)| {
             serde_json::json!({
                 "label": label,

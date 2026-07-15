@@ -197,9 +197,9 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repository root");
-        let wit = std::fs::read_to_string(root.join("petal/wit/route.wit")).expect("route WIT");
+        let wit = std::fs::read_to_string(root.join("framework/wit/route.wit")).expect("route WIT");
         assert!(wit.contains("package bloom:route@0.1.0"));
-        assert!(wit.contains("bloom:sign/signing@0.2.0"));
+        assert!(wit.contains("bloom:sign/signing@0.1.0"));
         assert!(wit.contains("bloom:tx/outbox@0.1.0"));
         assert!(!root.join("route/files/meta/parity.json.rs").exists());
     }

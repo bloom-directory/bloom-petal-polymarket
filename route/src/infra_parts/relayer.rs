@@ -1,5 +1,5 @@
 use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash};
-use crate::polymarket::wallet::v2_approval_calls;
+use crate::polymarket::wallet::approval_calls;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
 use alloy::primitives::{Address, B256, U256};
@@ -321,7 +321,7 @@ pub fn prepare_relayer_batch(
     let prepared = match load_prepared_signing(&prepared_key)? {
         Some(prepared) => prepared,
         None => {
-            let calls = v2_approval_calls();
+            let calls = approval_calls();
             let batch = Batch {
                 wallet: deposit,
                 nonce: U256::from(nonce),

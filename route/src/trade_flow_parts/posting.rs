@@ -18,7 +18,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
     if !is_safe_segment(id) {
         return error(-3, "invalid draft id");
     }
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let req: TradePostRequest = match serde_json::from_slice(body) {
@@ -533,7 +533,7 @@ pub fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     if !is_safe_segment(id) {
         return error(-3, "invalid receipt id");
     }
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     let req: TradeCancelRequest = match serde_json::from_slice(body) {
@@ -651,7 +651,7 @@ pub fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchRespo
 }
 
 pub fn cancel_discovered_order(wallet: &str, order_id: &str, body: &[u8]) -> DispatchResponse {
-    if let Err(resp) = require_v2_trading() {
+    if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
     if !petal::is_safe_segment(order_id) {

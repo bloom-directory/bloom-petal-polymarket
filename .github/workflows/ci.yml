@@ -52,7 +52,7 @@ jobs:
           home="$(mktemp -d)"
           "$RUNNER_TEMP/bloom" --home "$home" petal install "$GITHUB_WORKSPACE"
           contract="$RUNNER_TEMP/route-contract.json"
-          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /apps/polymarket/meta/route-contract.json > "$contract"
+          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /petals/polymarket/meta/route-contract.json > "$contract"
           for required in \
             'bloom.polymarket.petal-route-contract.v1' \
             'settings/enso-api-key' \
@@ -62,7 +62,7 @@ jobs:
             'revoke-approvals/<wallet>/request/confirm' \
             'withdraw/<wallet>/pusd/confirm' \
             'obligations/<wallet>.json' \
-            'bloom:sign/signing@0.2.0' \
+            'bloom:sign/signing@0.1.0' \
             'bloom:tx/outbox@0.1.0' \
             'bloom:chain/read@0.1.0'; do
             grep -Fq "$required" "$contract"
@@ -80,4 +80,4 @@ jobs:
           fi
           home="$(mktemp -d)"
           "$RUNNER_TEMP/bloom" --home "$home" petal install "$source_url" --ref "$source_ref"
-          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /apps/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'
+          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'

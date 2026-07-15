@@ -86,7 +86,7 @@ pub fn refreshed_live_onboard_status(
         U256::ZERO
     };
     let approvals_in_place = if deployed && !pusd_balance.is_zero() {
-        read_chain_v2_approvals(deposit)?
+        read_chain_approvals(deposit)?
     } else {
         false
     };
@@ -114,7 +114,7 @@ pub fn refreshed_live_onboard_status(
         (
             "approve",
             false,
-            "deposit wallet holds pUSD; waiting for V2 exchange and adapter approvals",
+            "deposit wallet holds pUSD; waiting for exchange and adapter approvals",
         )
     } else if !creds_present {
         (

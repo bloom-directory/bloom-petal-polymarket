@@ -120,7 +120,7 @@ pub fn run_onboard_stages(
         );
     }
 
-    if !read_chain_v2_approvals(deposit)? {
+    if !read_chain_approvals(deposit)? {
         if let Some(id) = approve_tx_id.as_deref() {
             let previous = relayer_transaction(id)?;
             if previous.is_confirmed() {
@@ -193,7 +193,7 @@ pub fn run_onboard_stages(
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_signature.json"));
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/approval.json"));
-        if !read_chain_v2_approvals(deposit)? {
+        if !read_chain_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
             persist_onboard_status(
                 wallet,

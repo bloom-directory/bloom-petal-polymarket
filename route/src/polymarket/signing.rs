@@ -199,12 +199,12 @@ mod tests {
     #[test]
     fn action_id_is_bound_to_kind_and_hash() {
         assert_ne!(
-            action_id_for("polymarket.order.v2", &B256::ZERO),
+            action_id_for("polymarket.order.poly1271", &B256::ZERO),
             action_id_for("polymarket.onboarding", &B256::ZERO)
         );
         assert_ne!(
-            action_id_for("polymarket.order.v2", &B256::ZERO),
-            action_id_for("polymarket.order.v2", &B256::repeat_byte(1))
+            action_id_for("polymarket.order.poly1271", &B256::ZERO),
+            action_id_for("polymarket.order.poly1271", &B256::repeat_byte(1))
         );
     }
 

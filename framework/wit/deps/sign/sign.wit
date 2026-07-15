@@ -1,4 +1,4 @@
-package bloom:sign@0.2.0;
+package bloom:sign@0.1.0;
 
 interface signing {
   record approval-required {

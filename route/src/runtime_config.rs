@@ -1,4 +1,4 @@
-//! Read-only, daemon-owned runtime configuration for this app.
+//! Read-only, daemon-owned runtime configuration for this Petal.
 
 const DEFAULT_CHAIN: &str = "polygon";
 const DEFAULT_CHAIN_ID: u64 = 137;
