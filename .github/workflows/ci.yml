@@ -32,6 +32,8 @@ jobs:
         run: cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
+      - name: Install canonical Petal toolchain
+        run: cargo install --git https://github.com/bloom-directory/petal --rev 942dc5fd3eeb9b5a679d81a55f00e77c180d1fcd --locked bloom-petal-cli
       - name: Build source package
         run: scripts/build.sh
       - name: Checkout Bloom CLI

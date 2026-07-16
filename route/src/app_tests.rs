@@ -197,7 +197,11 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repository root");
-        let wit = std::fs::read_to_string(root.join("framework/wit/route.wit")).expect("route WIT");
+        let wit = bloom_petal_contract::WIT_FILES
+            .iter()
+            .find_map(|(path, contents)| (*path == "route.wit").then_some(*contents))
+            .expect("canonical route WIT");
+        let wit = std::str::from_utf8(wit).expect("route WIT is UTF-8");
         assert!(wit.contains("package bloom:route@0.1.0"));
         assert!(wit.contains("bloom:sign/signing@0.1.0"));
         assert!(wit.contains("bloom:tx/outbox@0.1.0"));
