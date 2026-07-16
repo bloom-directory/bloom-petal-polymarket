@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
+petal::route_file!(spec: petal::account_read_spec().caps(&["bloom:http", "bloom:store", "bloom:chain", "bloom:vfs.read"]), read: |ctx: &petal::Ctx| {
     let wallet = match petal::param(ctx, "wallet") {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -14,11 +14,18 @@ petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
         Ok(creds) => creds,
         Err(resp) => return resp,
     };
+    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config.legacy_eoa_mode,
+        Err(resp) => return resp,
+    };
     match crate::infra_parts::clob_l2::clob_l2_get_json(
         owner,
         &creds,
         "/balance-allowance",
-        &[("asset_type", "COLLATERAL"), ("signature_type", "3")],
+        &[
+            ("asset_type", "COLLATERAL"),
+            ("signature_type", if legacy_eoa { "0" } else { "3" }),
+        ],
     ) {
         Ok(clob_balance_allowance) => {
             let status = match crate::onboarding::local_status_for_wallet(wallet, owner) {
@@ -29,6 +36,7 @@ petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
                 "wallet": wallet,
                 "owner": format!("{owner:#x}"),
                 "credentials_present": true,
+                "credentials_read_only": legacy_eoa,
                 "clob_balance_allowance": clob_balance_allowance,
                 "deposit_wallet": status
                     .get("deposit_wallet")
@@ -37,7 +45,7 @@ petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
                 "onboarding_state": {
                     "stage": status.get("stage").cloned().unwrap_or(serde_json::Value::Null),
                     "creds_present": status.get("creds_present").cloned().unwrap_or(serde_json::Value::Bool(true)),
-                    "tradeable": status.get("tradeable").cloned().unwrap_or(serde_json::Value::Bool(false))
+                    "tradeable": if legacy_eoa { serde_json::Value::Bool(false) } else { status.get("tradeable").cloned().unwrap_or(serde_json::Value::Bool(false)) }
                 }
             }))
         }

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::polymarket::eip712::PUSD;
-use crate::polymarket::{POLYGON, Result, derive_deposit_wallet_address};
+use crate::polymarket::{Result, derive_deposit_wallet_address};
 use alloy::primitives::{Address, U256};
 use petal::sdk::DispatchResponse;
 
@@ -13,7 +13,10 @@ pub fn local_onboard_status(
     creds_present: bool,
     message: &str,
 ) -> serde_json::Value {
-    let deposit = derive_deposit_wallet_address(&owner, POLYGON);
+    let chain_id = crate::runtime_config::configured_chain()
+        .map(|(_, id)| id)
+        .unwrap_or(137);
+    let deposit = derive_deposit_wallet_address(&owner, chain_id);
     serde_json::json!({
         "wallet": wallet,
         "owner": format!("{owner:#x}"),
@@ -83,7 +86,7 @@ pub fn refreshed_live_onboard_status(
         U256::ZERO
     };
     let approvals_in_place = if deployed && !pusd_balance.is_zero() {
-        read_chain_v2_approvals(deposit)?
+        read_chain_approvals(deposit)?
     } else {
         false
     };
@@ -111,7 +114,7 @@ pub fn refreshed_live_onboard_status(
         (
             "approve",
             false,
-            "deposit wallet holds pUSD; waiting for V2 exchange and adapter approvals",
+            "deposit wallet holds pUSD; waiting for exchange and adapter approvals",
         )
     } else if !creds_present {
         (

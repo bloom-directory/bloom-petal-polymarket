@@ -11,21 +11,21 @@ petal::route_file!(spec: petal::http_read_spec(2_000), read: |ctx: &petal::Ctx| 
         return petal::error(-4, "market has no YES token id");
     };
     let midpoint = match crate::infra_parts::http::get_json::<serde_json::Value>(&crate::infra_parts::util::url_with_query(
-        &format!("{}{}", crate::constants::CLOB, "/midpoint"),
+        &format!("{}/midpoint", crate::runtime_config::clob_url()),
         &[("token_id", token_id)],
     )) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
     let spread = match crate::infra_parts::http::get_json::<serde_json::Value>(&crate::infra_parts::util::url_with_query(
-        &format!("{}{}", crate::constants::CLOB, "/spread"),
+        &format!("{}/spread", crate::runtime_config::clob_url()),
         &[("token_id", token_id)],
     )) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
     let best_buy = match crate::infra_parts::http::get_json::<serde_json::Value>(&crate::infra_parts::util::url_with_query(
-        &format!("{}{}", crate::constants::CLOB, "/price"),
+        &format!("{}/price", crate::runtime_config::clob_url()),
         &[("token_id", token_id), ("side", "BUY")],
     )) {
         Ok(value) => value,

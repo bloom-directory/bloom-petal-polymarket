@@ -1,7 +1,7 @@
 petal::route_file!(spec: petal::http_dir_spec(), fallible_list:
     {
         let url = crate::infra_parts::util::url_with_query(
-            &format!("{}{}", crate::constants::GAMMA, "/markets"),
+            &format!("{}/markets", crate::runtime_config::gamma_url()),
             &[
                 ("closed", "false"),
                 ("limit", &crate::constants::MARKETS_LIST_LIMIT.to_string()),

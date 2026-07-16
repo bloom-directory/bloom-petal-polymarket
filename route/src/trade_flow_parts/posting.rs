@@ -4,15 +4,22 @@ use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
     poly1271_digest, wrap_poly1271_signature,
 };
-use crate::polymarket::{POLYGON, Result, validate_wallet_name};
+use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+    let (_, chain_id) = match crate::runtime_config::chain() {
+        Ok(chain) => chain,
+        Err(err) => return error(-4, err),
+    };
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
     if !is_safe_segment(id) {
         return error(-3, "invalid draft id");
+    }
+    if let Err(resp) = require_deposit_wallet_trading() {
+        return resp;
     }
     let req: TradePostRequest = match serde_json::from_slice(body) {
         Ok(req) => req,
@@ -162,7 +169,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
                 },
                 timestamp_ms,
             );
-            let digest = poly1271_digest(&order, POLYGON, draft.neg_risk);
+            let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
             let prepared = PreparedSigning::new(
                 "order",
                 "polymarket.order.poly1271",
@@ -180,7 +187,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
                     "signature_type": order.signatureType,
                     "timestamp_ms": order.timestamp.to_string(),
                     "neg_risk": draft.neg_risk,
-                    "chain_id": POLYGON,
+                    "chain_id": chain_id,
                     "review_intent_hash": review_intent_hash,
                     "policy_warnings_acknowledged": req.acknowledge_warnings,
                 }),
@@ -200,6 +207,14 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
     {
         return error(-4, "prepared order does not match final review intent");
     }
+    if prepared
+        .preimage
+        .get("chain_id")
+        .and_then(serde_json::Value::as_u64)
+        != Some(chain_id)
+    {
+        return error(-4, "prepared order does not match configured chain");
+    }
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -207,7 +222,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
     draft.salt = Some(salt);
     draft.status = "signing_prepared".into();
     draft.last_error = None;
-    let digest = poly1271_digest(&order, POLYGON, draft.neg_risk);
+    let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
     let digest_hash = blake3_hex(digest.as_slice());
     if let DispatchResponse::Error { .. } =
         store_put_json(&format!("{base}/order.json"), &draft, false)
@@ -236,7 +251,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let signature = match wrap_poly1271_signature(&order, &inner_sig, POLYGON, draft.neg_risk) {
+    let signature = match wrap_poly1271_signature(&order, &inner_sig, chain_id, draft.neg_risk) {
         Ok(signature) => signature,
         Err(e) => return polymarket_error(e),
     };
@@ -518,6 +533,9 @@ pub fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     if !is_safe_segment(id) {
         return error(-3, "invalid receipt id");
     }
+    if let Err(resp) = require_deposit_wallet_trading() {
+        return resp;
+    }
     let req: TradeCancelRequest = match serde_json::from_slice(body) {
         Ok(req) => req,
         Err(e) => return error(-3, format!("cancel JSON: {e}")),
@@ -633,6 +651,9 @@ pub fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchRespo
 }
 
 pub fn cancel_discovered_order(wallet: &str, order_id: &str, body: &[u8]) -> DispatchResponse {
+    if let Err(resp) = require_deposit_wallet_trading() {
+        return resp;
+    }
     if !petal::is_safe_segment(order_id) {
         return error(-3, "invalid CLOB order id");
     }

@@ -158,7 +158,7 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 93);
+        assert_eq!(routes.len(), 95);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
@@ -169,6 +169,11 @@ mod tests {
             routes
                 .iter()
                 .any(|path| path.ends_with("meta/route-contract.json.rs"))
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|path| path.ends_with("onboard/[wallet]/review_relayer_intent.json.rs"))
         );
         assert!(
             !routes
@@ -197,9 +202,13 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("repository root");
-        let wit = std::fs::read_to_string(root.join("petal/wit/route.wit")).expect("route WIT");
+        let wit = bloom_petal_contract::WIT_FILES
+            .iter()
+            .find_map(|(path, contents)| (*path == "route.wit").then_some(*contents))
+            .expect("canonical route WIT");
+        let wit = std::str::from_utf8(wit).expect("route WIT is UTF-8");
         assert!(wit.contains("package bloom:route@0.1.0"));
-        assert!(wit.contains("bloom:sign/signing@0.2.0"));
+        assert!(wit.contains("bloom:sign/signing@0.1.0"));
         assert!(wit.contains("bloom:tx/outbox@0.1.0"));
         assert!(!root.join("route/files/meta/parity.json.rs").exists());
     }
@@ -460,5 +469,22 @@ max_daily_usd = "100"
         assert!(checks.iter().any(|check| {
             check.rule == "polymarket.max_daily_usd" && check.outcome == LocalPolicyOutcome::Deny
         }));
+    }
+
+    #[test]
+    fn prepared_onboarding_batch_expires_at_its_sealed_deadline() {
+        let prepared = PreparedSigning::new(
+            "onboard_approvals",
+            "polymarket.onboard",
+            Address::ZERO,
+            alloy::primitives::B256::ZERO,
+            serde_json::json!({"deadline": 500}),
+        );
+        assert!(
+            !crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 499).unwrap()
+        );
+        assert!(
+            crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 500).unwrap()
+        );
     }
 }

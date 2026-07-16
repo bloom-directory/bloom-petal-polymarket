@@ -1,6 +1,6 @@
 /target/
 /route/target/
-/petal/target/
+/framework/target/
 /xtask/target/
 /artifacts/
-/app/polymarket/**/*.wasm
+/petal/polymarket/**/*.wasm

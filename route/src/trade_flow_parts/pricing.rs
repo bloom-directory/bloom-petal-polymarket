@@ -6,7 +6,10 @@ use crate::polymarket::types::BookLevel;
 use crate::polymarket::{Market, OrderBook, Result, Side};
 use petal::sdk::DispatchResponse;
 pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, DispatchResponse> {
-    let market: Market = get_json(&format!("{GAMMA}/markets/slug/{slug}"))?;
+    let market: Market = get_json(&format!(
+        "{}/markets/slug/{slug}",
+        crate::runtime_config::gamma_url()
+    ))?;
     if !market.is_binary() {
         return Err(error(
             -3,
@@ -38,7 +41,7 @@ pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, Dispat
     .ok_or_else(|| error(-3, format!("market '{slug}' has no {outcome} token id")))?
     .to_string();
     let book: OrderBook = get_json(&url_with_query(
-        &format!("{CLOB}/book"),
+        &format!("{}/book", crate::runtime_config::clob_url()),
         &[("token_id", &token_id)],
     ))?;
     if !book.asset_id.is_empty() && book.asset_id != token_id {

@@ -11,6 +11,7 @@ pub fn run_onboard_stages(
     deposit: Address,
     creds: &Credentials,
 ) -> Result<serde_json::Value, DispatchResponse> {
+    let relayer_auth = crate::relayer_config::configured_relayer_auth()?.label();
     let mut deploy_tx_id = stored_status_for_wallet(wallet, owner)
         .ok()
         .and_then(|status| {
@@ -32,8 +33,7 @@ pub fn run_onboard_stages(
         let tx = if let Some(id) = deploy_tx_id.as_deref() {
             relayer_transaction(id)?
         } else {
-            let _builder = ensure_builder_credentials(wallet, owner, creds)?;
-            let tx = relayer_submit_with_builder_repair(
+            let tx = relayer_submit_configured(
                 wallet,
                 owner,
                 creds,
@@ -54,7 +54,7 @@ pub fn run_onboard_stages(
                     deploy_tx_id: deploy_tx_id.clone(),
                     approve_tx_id: approve_tx_id.clone(),
                     in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                    relayer_auth: Some("builder_key_auto"),
+                    relayer_auth: Some(relayer_auth),
                     last_error: None,
                 },
             )?;
@@ -74,7 +74,7 @@ pub fn run_onboard_stages(
                         deploy_tx_id,
                         approve_tx_id,
                         in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                        relayer_auth: Some("builder_key_auto"),
+                        relayer_auth: Some(relayer_auth),
                         last_error: Some(msg),
                     },
                 )?;
@@ -94,7 +94,7 @@ pub fn run_onboard_stages(
                     deploy_tx_id,
                     approve_tx_id,
                     in_flight_deadline_ms: None,
-                    relayer_auth: Some("builder_key_auto"),
+                    relayer_auth: Some(relayer_auth),
                     last_error: Some(msg.clone()),
                 },
             )?;
@@ -114,13 +114,13 @@ pub fn run_onboard_stages(
                 deploy_tx_id,
                 approve_tx_id,
                 in_flight_deadline_ms: None,
-                relayer_auth: Some("builder_key_auto"),
+                relayer_auth: Some(relayer_auth),
                 last_error: None,
             },
         );
     }
 
-    if !read_chain_v2_approvals(deposit)? {
+    if !read_chain_approvals(deposit)? {
         if let Some(id) = approve_tx_id.as_deref() {
             let previous = relayer_transaction(id)?;
             if previous.is_confirmed() {
@@ -130,6 +130,7 @@ pub fn run_onboard_stages(
                 approve_tx_id = None;
                 for key in [
                     format!("onboard/{wallet}/prepared_relayer_batch.json"),
+                    format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
                     format!("onboard/{wallet}/approval.json"),
                 ] {
                     match petal::sdk::store_del(&key) {
@@ -142,10 +143,9 @@ pub fn run_onboard_stages(
         let tx = if let Some(id) = approve_tx_id.as_deref() {
             relayer_transaction(id)?
         } else {
-            let _builder = ensure_builder_credentials(wallet, owner, creds)?;
             let nonce = relayer_wallet_nonce(owner)?;
             let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-            let tx = relayer_submit_with_builder_repair(
+            let tx = relayer_submit_configured(
                 wallet,
                 owner,
                 creds,
@@ -162,7 +162,7 @@ pub fn run_onboard_stages(
                     deploy_tx_id: deploy_tx_id.clone(),
                     approve_tx_id: approve_tx_id.clone(),
                     in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                    relayer_auth: Some("builder_key_auto"),
+                    relayer_auth: Some(relayer_auth),
                     last_error: None,
                 },
             )?;
@@ -182,7 +182,7 @@ pub fn run_onboard_stages(
                         deploy_tx_id,
                         approve_tx_id,
                         in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-                        relayer_auth: Some("builder_key_auto"),
+                        relayer_auth: Some(relayer_auth),
                         last_error: Some(msg),
                     },
                 )?;
@@ -191,8 +191,11 @@ pub fn run_onboard_stages(
         };
         approve_tx_id = Some(confirmed.id);
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
+        let _ = petal::sdk::store_del(&format!(
+            "creds/onboard/{wallet}/prepared_relayer_signature.json"
+        ));
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/approval.json"));
-        if !read_chain_v2_approvals(deposit)? {
+        if !read_chain_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
             persist_onboard_status(
                 wallet,
@@ -204,7 +207,7 @@ pub fn run_onboard_stages(
                     deploy_tx_id,
                     approve_tx_id,
                     in_flight_deadline_ms: None,
-                    relayer_auth: Some("builder_key_auto"),
+                    relayer_auth: Some(relayer_auth),
                     last_error: Some(msg.clone()),
                 },
             )?;
@@ -222,7 +225,7 @@ pub fn run_onboard_stages(
             deploy_tx_id: deploy_tx_id.clone(),
             approve_tx_id: approve_tx_id.clone(),
             in_flight_deadline_ms: Some(onboard_in_flight_deadline_ms()),
-            relayer_auth: Some("builder_key_auto"),
+            relayer_auth: Some(relayer_auth),
             last_error: None,
         },
     )?;
@@ -242,7 +245,7 @@ pub fn run_onboard_stages(
             deploy_tx_id,
             approve_tx_id,
             in_flight_deadline_ms: None,
-            relayer_auth: Some("builder_key_auto"),
+            relayer_auth: Some(relayer_auth),
             last_error: None,
         },
     )

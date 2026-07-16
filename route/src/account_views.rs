@@ -7,27 +7,36 @@ use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
 pub fn status(wallet: &str) -> DispatchResponse {
+    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config.legacy_eoa_mode,
+        Err(resp) => return resp,
+    };
     let (owner, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    let tradeable = status
-        .get("tradeable")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let tradeable = !legacy_eoa
+        && status
+            .get("tradeable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
     petal::read_json_value(&serde_json::json!({
         "wallet": wallet,
         "owner_address": owner.to_checksum(None),
-        "mode": "deposit_wallet",
+        "mode": if legacy_eoa { "legacy_eoa_credentials_read_only" } else { "deposit_wallet" },
         "deposit_wallet": status.get("deposit_wallet").cloned().unwrap_or(serde_json::Value::Null),
         "tradeable": tradeable,
         "onboarding_stage": status.get("stage").cloned().unwrap_or(serde_json::json!("not_started")),
         "credentials_present": status.get("creds_present").cloned().unwrap_or(serde_json::json!(false)),
-        "next_required_action": if tradeable { None } else { Some("continue_onboarding") },
+        "next_required_action": if legacy_eoa || tradeable { None } else { Some("continue_onboarding") },
     }))
 }
 
 pub fn buying_power(wallet: &str) -> DispatchResponse {
+    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config.legacy_eoa_mode,
+        Err(resp) => return resp,
+    };
     let (owner, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -40,7 +49,10 @@ pub fn buying_power(wallet: &str) -> DispatchResponse {
         owner,
         &creds,
         "/balance-allowance",
-        &[("asset_type", "COLLATERAL"), ("signature_type", "3")],
+        &[
+            ("asset_type", "COLLATERAL"),
+            ("signature_type", if legacy_eoa { "0" } else { "3" }),
+        ],
     ) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -61,7 +73,8 @@ pub fn buying_power(wallet: &str) -> DispatchResponse {
             "source": "clob_balance_allowance",
             "clob_balance_allowance": balance_allowance,
         },
-        "can_trade_now": tradeable && has_balance,
+        "can_trade_now": !legacy_eoa && tradeable && has_balance,
+        "credentials_read_only": legacy_eoa,
         "funding_needed": !has_balance,
         "funding_options_ref": format!("account/{wallet}/funding_options.json"),
     }))
@@ -71,41 +84,55 @@ pub fn funding_options(wallet: &str) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
+    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config.legacy_eoa_mode,
+        Err(resp) => return resp,
+    };
     petal::read_json_value(&serde_json::json!({
         "wallet": wallet,
         "target_asset": "pUSD",
         "options": [{
             "from": "pUSD",
-            "supported": true,
+            "supported": !legacy_eoa,
             "review_required": true,
             "fund_route": format!("fund/{wallet}/new"),
             "execution": "generic_evm_outbox_direct_erc20_transfer",
         }, {
             "from": "native_or_other_erc20",
-            "supported": true,
+            "supported": !legacy_eoa,
             "review_required": true,
             "fund_route": format!("fund/{wallet}/new"),
             "execution": "enso_quote_then_generic_evm_outbox",
             "enso_key_configured": load_enso_api_key().is_ok(),
             "enso_router_configured": load_enso_router().is_ok(),
         }],
+        "credentials_read_only": legacy_eoa,
     }))
 }
 
 pub fn obligations(wallet: &str) -> DispatchResponse {
-    let (_, status) = match wallet_status(wallet) {
+    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config.legacy_eoa_mode,
+        Err(resp) => return resp,
+    };
+    let (owner, status) = match wallet_status(wallet) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    let Some(deposit) = fundable_deposit_wallet_from_status(&status) else {
-        return error(
-            -3,
-            "deposit wallet is not factory-resolved; begin onboarding first",
-        );
+    let subject = if legacy_eoa {
+        owner
+    } else {
+        let Some(deposit) = fundable_deposit_wallet_from_status(&status) else {
+            return error(
+                -3,
+                "deposit wallet is not factory-resolved; begin onboarding first",
+            );
+        };
+        deposit
     };
     let positions = match get_json::<Vec<Position>>(&url_with_query(
-        &format!("{DATA}/positions"),
-        &[("user", &deposit.to_checksum(None))],
+        &format!("{}/positions", crate::runtime_config::data_url()),
+        &[("user", &subject.to_checksum(None))],
     )) {
         Ok(positions) => positions,
         Err(resp) => return resp,
@@ -122,12 +149,14 @@ pub fn obligations(wallet: &str) -> DispatchResponse {
             "avg_price": position.avg_price,
             "current_price": position.cur_price,
             "redeemable": position.redeemable,
-            "next_action": if position.redeemable { "redeem" } else { "sell_to_close_or_wait_for_redemption" },
+            "next_action": if legacy_eoa { "read_only" } else if position.redeemable { "redeem" } else { "sell_to_close_or_wait_for_redemption" },
         }))
         .collect();
     petal::read_json_value(&serde_json::json!({
         "wallet": wallet,
-        "deposit_wallet": deposit.to_checksum(None),
+        "account_address": subject.to_checksum(None),
+        "deposit_wallet": if legacy_eoa { serde_json::Value::Null } else { serde_json::Value::String(subject.to_checksum(None)) },
+        "credentials_read_only": legacy_eoa,
         "open_positions": open,
         "next_required_action": if open.is_empty() { "none" } else { "review_open_positions" },
     }))

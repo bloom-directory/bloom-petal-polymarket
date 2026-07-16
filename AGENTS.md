@@ -1,20 +1,20 @@
-# Polymarket v2 Petal
+# Polymarket Petal
 
 - Keep this package on `bloom:route@0.1.0`; do not add legacy or compat route
   artifacts.
-- The route component owns the Polymarket behavior. It may use v2 HTTP, store,
+- The route component owns the Polymarket behavior. It may use HTTP, store,
   signing, and mediated wallet/chain VFS imports, but it must not delegate to
   the legacy native `polymarket/...` VFS handler.
-- `petal/` is the local framework crate. It owns route WIT, route macros/specs,
-  metadata and param helpers, response/error conversion, and Bloom host SDK
-  wrappers. Keep it generic; it must not know Polymarket route semantics.
+- The canonical WIT, SDK, and builder come from
+  `https://github.com/bloom-directory/petal` at the exact revision pinned in
+  `route/Cargo.toml` and `petal-build.toml`. Do not copy them into this repo.
 - `route/files/` contains route controllers. Each route file builds as a
   focused WASM component. Directory endpoints use `$index.rs`; do not add
   `$list.rs`.
-- After changing `petal/`, `route/files/`, `route/src/`, or `xtask/`, run
+- After changing `route/files/`, `route/src/`, or `petal-build.toml`, run
   `cargo test --manifest-path route/Cargo.toml` and `scripts/build.sh`.
 - Do not commit generated `.wasm` artifacts, `target/` directories, or
-  `petal/target/`.
+  generated `petal/polymarket/` output.
 
 ## Route/controller/module shape
 
@@ -35,10 +35,8 @@
   evaluation, trade/fund/onboarding workflows, relayer orchestration,
   HTTP/store/signing infrastructure, and other multi-step behavior reused by
   more than one route.
-- Keep foundational petal framework and SDK code in the local `petal` crate:
-  route specs, entry metadata, param lookup, route macros, WIT bindings, host
-  SDK wrappers, and response/error conversion. Framework helpers must not know
-  Polymarket route semantics.
+- Keep foundational Petal contract and SDK behavior in the canonical `petal`
+  repository. This repository owns only Polymarket route and domain behavior.
 - Route files should use `petal::route_file!`, `petal::Ctx`, `petal::param`,
   `petal::files`, `petal::dirs`, `petal::read_json_value`, and related generic
   framework helpers directly. Domain modules should use `petal::sdk` for Bloom

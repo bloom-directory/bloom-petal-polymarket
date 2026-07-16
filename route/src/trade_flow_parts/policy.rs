@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use std::collections::BTreeSet;
 
-use crate::polymarket::eip712::{CTF, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2};
+use crate::polymarket::eip712::{CTF, CTF_EXCHANGE, NEG_RISK_EXCHANGE};
 use crate::polymarket::order::{format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
@@ -114,7 +114,7 @@ pub fn verify_sell_preflight(
 ) -> Result<serde_json::Value, DispatchResponse> {
     let deposit_user = deposit.to_checksum(None);
     let data_api_holding_micro = get_json::<Vec<Position>>(&url_with_query(
-        &format!("{DATA}/positions"),
+        &format!("{}/positions", crate::runtime_config::data_url()),
         &[("user", &deposit_user)],
     ))
     .ok()
@@ -152,9 +152,9 @@ pub fn verify_sell_preflight(
         ));
     }
     let operator = if neg_risk {
-        NEG_RISK_EXCHANGE_V2
+        NEG_RISK_EXCHANGE
     } else {
-        CTF_EXCHANGE_V2
+        CTF_EXCHANGE
     };
     let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
     if chain_ctf_balance < size_micro {
@@ -202,7 +202,7 @@ pub fn verify_sell_preflight(
         "chain_ctf_balance_micro": chain_ctf_balance,
         "chain_ctf_balance": format_micro(chain_ctf_balance),
         "ctf_operator": operator.to_checksum(None),
-        "ctf_operator_kind": if neg_risk { "neg_risk_exchange_v2" } else { "ctf_exchange_v2" },
+        "ctf_operator_kind": if neg_risk { "neg_risk_exchange" } else { "ctf_exchange" },
         "ctf_approved_for_all": ctf_approved,
         "signing_enabled": true,
         "posting_enabled": true
