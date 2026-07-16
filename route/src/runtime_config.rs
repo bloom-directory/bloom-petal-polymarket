@@ -52,7 +52,17 @@ pub fn configured_chain() -> Result<(String, u64), String> {
         }
         _ => return Err("chain and chain_id must be configured together".into()),
     };
+    require_supported_chain_id(id)?;
     Ok((name, id))
+}
+
+fn require_supported_chain_id(id: u64) -> Result<(), String> {
+    if id != DEFAULT_CHAIN_ID {
+        return Err(format!(
+            "unsupported Polymarket chain_id {id}; this Petal supports Polygon mainnet ({DEFAULT_CHAIN_ID}) only"
+        ));
+    }
+    Ok(())
 }
 
 pub fn chain() -> Result<(String, u64), String> {
@@ -71,4 +81,16 @@ pub fn chain() -> Result<(String, u64), String> {
         ));
     }
     Ok((name, id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_polygon_mainnet_chain_id_is_supported() {
+        assert!(require_supported_chain_id(137).is_ok());
+        let err = require_supported_chain_id(80002).unwrap_err();
+        assert!(err.contains("supports Polygon mainnet (137) only"));
+    }
 }
