@@ -158,7 +158,7 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 94);
+        assert_eq!(routes.len(), 95);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
@@ -169,6 +169,11 @@ mod tests {
             routes
                 .iter()
                 .any(|path| path.ends_with("meta/route-contract.json.rs"))
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|path| path.ends_with("onboard/[wallet]/review_relayer_intent.json.rs"))
         );
         assert!(
             !routes

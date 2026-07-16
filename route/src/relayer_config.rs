@@ -6,7 +6,9 @@ use crate::constants::MAX_STORE_BYTES;
 use crate::infra_parts::util::sdk_error;
 use crate::prelude::error;
 
-const RELAYER_CONFIG_KEY: &str = "config/relayer.json";
+// Secret store routing is key-based in the Petal SDK: `creds/` keys are read
+// from the same secret namespace selected by `store_put(..., secret=true)`.
+const RELAYER_CONFIG_KEY: &str = "creds/relayer.json";
 
 fn default_builder_key_mode() -> String {
     "auto".into()

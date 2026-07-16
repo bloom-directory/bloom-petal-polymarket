@@ -255,7 +255,9 @@ pub fn relayer_batch_body(
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
     if prepared_relayer_batch_expired(&prepared, now_secs())? {
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_signature.json"));
+        let _ = petal::sdk::store_del(&format!(
+            "creds/onboard/{wallet}/prepared_relayer_signature.json"
+        ));
         return Err(error(
             -2,
             "prepared onboarding approval signature expired; retry onboarding to prepare and approve a fresh bounded batch",
@@ -271,7 +273,7 @@ pub fn relayer_batch_body(
         .get("nonce")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
-    let signature_key = format!("onboard/{wallet}/prepared_relayer_signature.json");
+    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
     let signature = match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
         Ok(bytes) => {
             let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
@@ -318,7 +320,18 @@ pub fn prepare_relayer_batch(
     let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let prepared_key = format!("onboard/{wallet}/prepared_relayer_batch.json");
     let review_key = format!("onboard/{wallet}/review_relayer_intent.json");
-    let prepared = match load_prepared_signing(&prepared_key)? {
+    let existing = match load_prepared_signing(&prepared_key)? {
+        Some(prepared) if prepared_relayer_batch_expired(&prepared, now_secs())? => {
+            let _ = petal::sdk::store_del(&prepared_key);
+            let _ = petal::sdk::store_del(&format!(
+                "creds/onboard/{wallet}/prepared_relayer_signature.json"
+            ));
+            let _ = petal::sdk::store_del(&review_key);
+            None
+        }
+        other => other,
+    };
+    let prepared = match existing {
         Some(prepared) => prepared,
         None => {
             let calls = approval_calls();
@@ -401,7 +414,7 @@ pub fn store_prepared_relayer_signature(
         signature_hex: format!("0x{}", hex::encode(signature)),
     };
     match store_put_json(
-        &format!("onboard/{wallet}/prepared_relayer_signature.json"),
+        &format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
         &value,
         true,
     ) {

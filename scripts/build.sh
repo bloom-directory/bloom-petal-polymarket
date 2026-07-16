@@ -6,8 +6,6 @@ PETAL_REV="4f6fb57063a70f95cba288f68bdc139e3ecac7a5"
 
 if [[ -n "${PETAL_BIN:-}" ]]; then
   "$PETAL_BIN" build --root "$ROOT"
-elif command -v petal >/dev/null 2>&1; then
-  petal build --root "$ROOT"
 else
   tool_root="$ROOT/target/petal-tool"
   cargo install \

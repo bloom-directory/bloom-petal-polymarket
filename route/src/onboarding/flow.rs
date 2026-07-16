@@ -130,7 +130,7 @@ pub fn run_onboard_stages(
                 approve_tx_id = None;
                 for key in [
                     format!("onboard/{wallet}/prepared_relayer_batch.json"),
-                    format!("onboard/{wallet}/prepared_relayer_signature.json"),
+                    format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
                     format!("onboard/{wallet}/approval.json"),
                 ] {
                     match petal::sdk::store_del(&key) {
@@ -191,7 +191,9 @@ pub fn run_onboard_stages(
         };
         approve_tx_id = Some(confirmed.id);
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_signature.json"));
+        let _ = petal::sdk::store_del(&format!(
+            "creds/onboard/{wallet}/prepared_relayer_signature.json"
+        ));
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/approval.json"));
         if !read_chain_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
