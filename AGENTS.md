@@ -15,6 +15,12 @@
   `cargo test --manifest-path route/Cargo.toml` and `scripts/build.sh`.
 - Do not commit generated `.wasm` artifacts, `target/` directories, or
   generated `petal/polymarket/` output.
+- Installable archives are released by the reusable workflow owned by the
+  canonical `petal` repository. Keep `.github/workflows/release.yml` thin, pin
+  its `uses:` reference to a full commit SHA, and do not duplicate packaging or
+  release implementation in this repository.
+- Release tags use `vMAJOR.MINOR.PATCH`. Published assets are immutable; use a
+  new patch version rather than moving a tag or replacing an archive.
 
 ## Route/controller/module shape
 
