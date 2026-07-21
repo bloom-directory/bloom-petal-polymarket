@@ -40,8 +40,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bloom-directory/bloom
-          ref: feat/local-petal-plugins
+          ref: master
           path: bloom
+          persist-credentials: false
       - name: Build Bloom CLI
         run: |
           cargo build --release --manifest-path bloom/Cargo.toml -p bloom --bin bloom
