@@ -527,13 +527,28 @@ pub fn wrap_poly1271_signature(
             inner_signature.len()
         )));
     }
+    // Bloom's triad signing boundary uses the normalized recoverable-signature
+    // encoding (0/1), while Ethereum contract signatures use 27/28. Keep that
+    // protocol distinction at the Polymarket adapter boundary. Legacy callers
+    // already supplying the Ethereum form remain byte-for-byte unchanged.
+    let mut ethereum_signature = [0u8; 65];
+    ethereum_signature.copy_from_slice(inner_signature);
+    ethereum_signature[64] = match ethereum_signature[64] {
+        recovery @ 0..=1 => recovery + 27,
+        recovery @ 27..=28 => recovery,
+        recovery => {
+            return Err(PolymarketError::invalid(format!(
+                "POLY_1271 inner signature has invalid recovery byte {recovery}"
+            )));
+        }
+    };
     let contents_hash = order.eip712_hash_struct();
     let app_domain_separator = ctf_exchange_domain(chain_id, neg_risk).hash_struct();
     let type_len =
         u16::try_from(ORDER_TYPE_STRING.len()).expect("order type string length fits in u16");
     let mut wrapped = String::with_capacity(2 + 130 + 64 + 64 + ORDER_TYPE_STRING.len() * 2 + 4);
     wrapped.push_str("0x");
-    wrapped.push_str(&hex::encode(inner_signature));
+    wrapped.push_str(&hex::encode(ethereum_signature));
     wrapped.push_str(&hex::encode(app_domain_separator.as_slice()));
     wrapped.push_str(&hex::encode(contents_hash.as_slice()));
     wrapped.push_str(&hex::encode(ORDER_TYPE_STRING.as_bytes()));
@@ -939,6 +954,17 @@ mod tests {
                 .unwrap();
         assert_eq!(wrapped_from_inner, EXPECTED_NORMAL);
 
+        // The triad Signer returns the same recoverable signature with a
+        // normalized 0/1 recovery byte. The Polymarket envelope must translate
+        // it back to Ethereum's 27/28 form before submission to the CLOB.
+        let mut triad_inner = inner.as_bytes().to_vec();
+        assert!(matches!(triad_inner[64], 27 | 28));
+        triad_inner[64] -= 27;
+        let wrapped_from_triad =
+            wrap_poly1271_signature(&order, &triad_inner, crate::polymarket::POLYGON, false)
+                .unwrap();
+        assert_eq!(wrapped_from_triad, EXPECTED_NORMAL);
+
         let wrapped = sign_order_poly1271(&order, &signer, crate::polymarket::POLYGON, true)
             .await
             .unwrap();
@@ -965,6 +991,12 @@ mod tests {
         );
         assert!(
             wrap_poly1271_signature(&order, &[7u8; 64], crate::polymarket::POLYGON, false).is_err()
+        );
+        let mut invalid_recovery = inner.as_bytes().to_vec();
+        invalid_recovery[64] = 2;
+        assert!(
+            wrap_poly1271_signature(&order, &invalid_recovery, crate::polymarket::POLYGON, false)
+                .is_err()
         );
     }
 
