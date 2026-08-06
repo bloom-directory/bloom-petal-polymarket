@@ -2,12 +2,12 @@ use crate::prelude::*;
 
 use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, wrap_poly1271_signature,
+    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     let (_, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
@@ -174,6 +174,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
                 "order",
                 "polymarket.order.poly1271",
                 owner,
+                poly1271_signing_preimage(&order, chain_id, draft.neg_risk),
                 digest,
                 serde_json::json!({
                     "draft_id": id,
@@ -247,7 +248,7 @@ pub fn post_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match sign_prepared(wallet, &prepared, &approval_key) {
+    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
         Ok(signature) => signature,
         Err(resp) => return resp,
     };

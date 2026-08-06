@@ -158,7 +158,7 @@ pub fn trade_policy_check(
     wallet: &str,
     draft: &StoreTradeDraft,
 ) -> Result<serde_json::Value, DispatchResponse> {
-    let policy = wallet_policy(wallet)?;
+    let policy = venue_config(wallet)?;
     let (receipt_store_readable, daily_posted_microusd) = daily_posted_microusd(wallet);
     let ctx = LocalPolymarketOrderCtx {
         slug: draft.slug.clone(),
@@ -177,7 +177,7 @@ pub fn trade_policy_check(
         receipt_store_readable,
         daily_posted_microusd,
     };
-    let checks = evaluate_local_polymarket_order(&policy.polymarket, &ctx);
+    let checks = evaluate_local_polymarket_order(&policy, &ctx);
     let deny = local_policy_has_deny(&checks);
     let warn = local_policy_has_warn(&checks);
     let policy_status = if deny {

@@ -6,6 +6,7 @@ use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus};
 
 pub fn run_onboard_stages(
+    ctx: &petal::Ctx,
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -149,7 +150,7 @@ pub fn run_onboard_stages(
                 wallet,
                 owner,
                 creds,
-                relayer_batch_body(wallet, owner, deposit, nonce, deadline)?,
+                relayer_batch_body(ctx, wallet, owner, deposit, nonce, deadline)?,
             )?;
             approve_tx_id = Some(tx.id.clone());
             persist_onboard_status(

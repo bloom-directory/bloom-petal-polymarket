@@ -1,8 +1,8 @@
-use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash};
+use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash, batch_signing_preimage};
 use crate::polymarket::wallet::approval_calls;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, HttpRequest};
 use serde::{Deserialize, Serialize};
 
@@ -241,6 +241,7 @@ pub fn manual_relayer_headers(key: &str, address: &str) -> Vec<(String, String)>
 }
 
 pub fn relayer_batch_body(
+    ctx: &petal::Ctx,
     wallet: &str,
     owner: Address,
     deposit: Address,
@@ -289,6 +290,7 @@ pub fn relayer_batch_body(
         Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => format!(
             "0x{}",
             hex::encode(sign_prepared(
+                ctx,
                 wallet,
                 &prepared,
                 &format!("onboard/{wallet}/approval.json"),
@@ -367,6 +369,7 @@ pub fn prepare_relayer_batch(
                 "onboard_approvals",
                 "polymarket.onboard",
                 owner,
+                batch_signing_preimage(&batch, chain_id, deposit),
                 hash,
                 serde_json::json!({
                     "deposit_wallet": deposit.to_checksum(None),
@@ -421,23 +424,6 @@ pub fn store_prepared_relayer_signature(
         DispatchResponse::Write => Ok(()),
         response => Err(response),
     }
-}
-
-pub fn sign_hash_hex(wallet: &str, purpose: &str, hash: B256) -> Result<String, DispatchResponse> {
-    let owner = wallet_address(wallet)?;
-    let prepared = PreparedSigning::new(
-        "relayer_batch",
-        purpose,
-        owner,
-        hash,
-        serde_json::json!({"signing_hash": format!("{hash:#x}")}),
-    );
-    sign_prepared(
-        wallet,
-        &prepared,
-        &format!("onboard/{wallet}/approval.json"),
-    )
-    .map(|signature| format!("0x{}", hex::encode(signature)))
 }
 
 pub fn builder_headers(

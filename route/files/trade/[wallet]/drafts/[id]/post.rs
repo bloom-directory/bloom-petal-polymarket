@@ -11,6 +11,6 @@ petal::route_file!(spec: petal::signing_write_spec("polymarket.order.poly1271").
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::trade_flow_parts::posting::post_trade_draft(wallet, id, body)
+        crate::trade_flow_parts::posting::post_trade_draft(ctx, wallet, id, body)
     }
 );

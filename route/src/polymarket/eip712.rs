@@ -13,6 +13,14 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use alloy::sol;
 use alloy::sol_types::SolStruct;
 
+pub fn signing_preimage(value: &impl SolStruct, domain: &Eip712Domain) -> Vec<u8> {
+    let mut preimage = Vec::with_capacity(66);
+    preimage.extend_from_slice(&[0x19, 0x01]);
+    preimage.extend_from_slice(domain.hash_struct().as_slice());
+    preimage.extend_from_slice(value.eip712_hash_struct().as_slice());
+    preimage
+}
+
 // ── CLOB L1 auth (ClobAuth) ─────────────────────────────────────────────────
 
 sol! {
@@ -52,6 +60,21 @@ pub fn clob_auth_signing_hash(address: Address, timestamp: u64, nonce: u32, chai
     auth.eip712_signing_hash(&clob_auth_domain(chain_id))
 }
 
+pub fn clob_auth_signing_preimage(
+    address: Address,
+    timestamp: u64,
+    nonce: u32,
+    chain_id: u64,
+) -> Vec<u8> {
+    let auth = ClobAuth {
+        address,
+        timestamp: timestamp.to_string(),
+        nonce: U256::from(nonce),
+        message: CLOB_AUTH_MESSAGE.to_owned(),
+    };
+    signing_preimage(&auth, &clob_auth_domain(chain_id))
+}
+
 // ── Relayer `Batch` (deposit-wallet on-chain calls) ─────────────────────────
 
 sol! {
@@ -87,6 +110,10 @@ pub fn deposit_wallet_domain(chain_id: u64, deposit_wallet: Address) -> Eip712Do
 /// EIP-712 signing hash for a relayer `Batch` under the `DepositWallet` domain.
 pub fn batch_signing_hash(batch: &Batch, chain_id: u64, deposit_wallet: Address) -> B256 {
     batch.eip712_signing_hash(&deposit_wallet_domain(chain_id, deposit_wallet))
+}
+
+pub fn batch_signing_preimage(batch: &Batch, chain_id: u64, deposit_wallet: Address) -> Vec<u8> {
+    signing_preimage(batch, &deposit_wallet_domain(chain_id, deposit_wallet))
 }
 
 // ── Deposit-wallet factory + contract addresses (Polygon mainnet, 137) ──────

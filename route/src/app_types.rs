@@ -21,14 +21,8 @@ pub struct TradeNewRequest {
     pub order_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct LocalWalletPolicy {
-    #[serde(default)]
-    pub polymarket: LocalPolymarketPolicy,
-}
-
 #[derive(Debug, Clone, Deserialize)]
-pub struct LocalPolymarketPolicy {
+pub struct PolymarketVenueConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default, with = "local_micro_opt")]
@@ -51,7 +45,7 @@ pub struct LocalPolymarketPolicy {
     pub denied_condition_ids: BTreeSet<String>,
 }
 
-impl Default for LocalPolymarketPolicy {
+impl Default for PolymarketVenueConfig {
     fn default() -> Self {
         Self {
             enabled: false,
