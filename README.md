@@ -11,11 +11,11 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
   Bloom route component and is compiled by the canonical `petal` CLI.
 - `route/src/` contains Polymarket-specific domain code used by those route
   controllers: HTTP/store/signing infrastructure, onboarding, funding, trading,
-  policy, order construction, EIP-712, wallet calls, and typed DTOs.
+  venue preferences, order construction, EIP-712, wallet calls, and typed DTOs.
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 94 route components. Directory endpoints use
+The route tree currently builds 97 route components. Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
@@ -28,6 +28,11 @@ reads mediated wallet/chain state through generic Bloom interfaces, and stages
 funding through the generic EVM outbox. Enso credentials are provisioned
 through the write-only `settings/enso-api-key` route and remain in the Petal
 secret store.
+
+Per-wallet venue preferences live at `settings/<wallet>/venue.toml` in the
+Petal's own state. They are advisory application configuration only. The Petal
+does not read or replace Broker/Signer-authoritative wallet policy, approval
+budgets, or signing limits.
 
 It uses only the Petal route ABI and does not delegate to the legacy native
 `polymarket/...` VFS handler.

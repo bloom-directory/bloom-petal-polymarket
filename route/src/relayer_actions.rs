@@ -95,19 +95,24 @@ pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub fn confirm_redeem(wallet: &str, slug: &str, body: &[u8]) -> DispatchResponse {
-    execute(RelayerAction::Redeem { slug }, wallet, body)
+pub fn confirm_redeem(ctx: &petal::Ctx, wallet: &str, slug: &str, body: &[u8]) -> DispatchResponse {
+    execute(ctx, RelayerAction::Redeem { slug }, wallet, body)
 }
 
-pub fn confirm_revoke(wallet: &str, body: &[u8]) -> DispatchResponse {
-    execute(RelayerAction::RevokeApprovals, wallet, body)
+pub fn confirm_revoke(ctx: &petal::Ctx, wallet: &str, body: &[u8]) -> DispatchResponse {
+    execute(ctx, RelayerAction::RevokeApprovals, wallet, body)
 }
 
-pub fn confirm_withdraw(wallet: &str, body: &[u8]) -> DispatchResponse {
-    execute(RelayerAction::WithdrawPusd, wallet, body)
+pub fn confirm_withdraw(ctx: &petal::Ctx, wallet: &str, body: &[u8]) -> DispatchResponse {
+    execute(ctx, RelayerAction::WithdrawPusd, wallet, body)
 }
 
-fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResponse {
+fn execute(
+    ctx: &petal::Ctx,
+    action: RelayerAction<'_>,
+    wallet: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -171,6 +176,7 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
                 action.operation(),
                 "polymarket.relayer_batch",
                 owner,
+                built.signing_preimage,
                 built.signing_hash,
                 serde_json::json!({
                     "deposit_wallet": deposit.to_checksum(None),
@@ -278,7 +284,7 @@ fn execute(action: RelayerAction<'_>, wallet: &str, body: &[u8]) -> DispatchResp
         }
     }
 
-    let signature = match sign_prepared(wallet, &prepared, &approval_key) {
+    let signature = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
         Ok(signature) => format!("0x{}", hex::encode(signature)),
         Err(resp) => return resp,
     };
