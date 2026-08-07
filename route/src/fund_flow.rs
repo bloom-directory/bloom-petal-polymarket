@@ -215,7 +215,6 @@ pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     session.approval = outcome.approval.map(|approval| {
         serde_json::json!({
             "action_id": approval.action_id,
-            "ceremony_url": approval.ceremony_url,
             "expires_ms": approval.expires_ms,
             "prepared_artifact_digest": prepared.digest(),
             "retry_state": "approval_required",
