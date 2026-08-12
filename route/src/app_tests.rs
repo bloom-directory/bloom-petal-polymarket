@@ -208,7 +208,7 @@ mod tests {
             .expect("canonical route WIT");
         let wit = std::str::from_utf8(wit).expect("route WIT is UTF-8");
         assert!(wit.contains("package bloom:route@0.1.0"));
-        assert!(wit.contains("bloom:sign/signing@0.4.0"));
+        assert!(wit.contains("bloom:sign/signing@0.2.0"));
         assert!(!wit.contains("bloom:sign/signing@0.1.0"));
         assert!(wit.contains("bloom:tx/outbox@0.1.0"));
         assert!(!root.join("route/files/meta/parity.json.rs").exists());
