@@ -33,7 +33,7 @@ jobs:
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Install canonical Petal toolchain
-        run: cargo install --git https://github.com/bloom-directory/petal --rev eda6647c523bba161eaa22812aa0e75ec7782404 --locked bloom-petal-cli
+        run: cargo install --git https://github.com/bloom-directory/petal --rev 61938d0c127cfe03c7e3e55baed0ba1439bc5ca2 --locked bloom-petal-cli
       - name: Build source package
         run: scripts/build.sh
       - name: Checkout Bloom CLI
@@ -65,7 +65,7 @@ jobs:
             'revoke-approvals/<wallet>/request/confirm' \
             'withdraw/<wallet>/pusd/confirm' \
             'obligations/<wallet>.json' \
-            'bloom:sign/signing@0.4.0' \
+            'bloom:sign/signing@0.2.0' \
             'bloom:tx/outbox@0.1.0' \
             'bloom:chain/read@0.1.0'; do
             grep -Fq "$required" "$contract"
