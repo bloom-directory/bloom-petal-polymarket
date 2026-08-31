@@ -20,7 +20,7 @@ pub use status::{
     tradeable_deposit_wallet,
 };
 
-pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
+pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -83,7 +83,7 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
             );
         }
         let deposit = deposit.expect("non-legacy deposit");
-        return match run_onboard_stages(wallet, owner, deposit, &creds) {
+        return match run_onboard_stages(ctx, wallet, owner, deposit, &creds) {
             Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
             Err(resp) => {
                 let _ = persist_onboard_failure(wallet, owner, deposit, &resp);
@@ -116,6 +116,7 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
                 "clob_auth",
                 "polymarket.onboard",
                 owner,
+                action.signing_preimage,
                 action.signing_hash,
                 serde_json::json!({
                     "timestamp": action.timestamp,
@@ -161,7 +162,7 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
                 Err(err) => return sdk_error(err),
             }
         }
-        return begin_onboarding(wallet);
+        return begin_onboarding(ctx, wallet);
     }
     let review_hash = match prepared
         .preimage
@@ -188,11 +189,16 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
         None
     };
     let signature = if let Some(prepared_relayer) = prepared_relayer.as_ref() {
-        let signatures =
-            match sign_prepared_batch(wallet, &[&prepared, prepared_relayer], &approval_key) {
-                Ok(signatures) => signatures,
-                Err(resp) => return resp,
-            };
+        let signatures = match sign_prepared_batch(
+            ctx,
+            wallet,
+            &[&prepared, prepared_relayer],
+            "polymarket.onboard",
+            &approval_key,
+        ) {
+            Ok(signatures) => signatures,
+            Err(resp) => return resp,
+        };
         if let Err(resp) =
             store_prepared_relayer_signature(wallet, prepared_relayer, &signatures[1])
         {
@@ -200,7 +206,7 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
         }
         format!("0x{}", hex::encode(&signatures[0]))
     } else {
-        match sign_prepared(wallet, &prepared, &approval_key) {
+        match sign_prepared(ctx, wallet, &prepared, &approval_key) {
             Ok(signature) => format!("0x{}", hex::encode(signature)),
             Err(resp) => return resp,
         }
@@ -236,7 +242,7 @@ pub fn begin_onboarding(wallet: &str) -> DispatchResponse {
         );
     }
     let deposit = deposit.expect("non-legacy deposit");
-    match run_onboard_stages(wallet, owner, deposit, &creds) {
+    match run_onboard_stages(ctx, wallet, owner, deposit, &creds) {
         Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
         Err(resp) => {
             let _ = persist_onboard_failure(wallet, owner, deposit, &resp);

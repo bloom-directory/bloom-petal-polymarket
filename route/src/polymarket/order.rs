@@ -31,6 +31,7 @@ use alloy::sol_types::SolStruct;
 use serde::{Deserialize, Serialize};
 
 use crate::polymarket::eip712::{CTF_EXCHANGE, NEG_RISK_EXCHANGE};
+#[cfg(test)]
 use crate::polymarket::signer::KeystoreSigner;
 use crate::polymarket::types::Side;
 use crate::polymarket::{PolymarketError, Result};
@@ -450,6 +451,10 @@ const DEPOSIT_WALLET_VERSION: &str = "1";
 /// deposit wallet) and zero salt. Verbatim port of the SDK's
 /// `sign_poly1271_order`.
 pub fn poly1271_digest(order: &Order, chain_id: u64, neg_risk: bool) -> B256 {
+    alloy::primitives::keccak256(poly1271_signing_preimage(order, chain_id, neg_risk))
+}
+
+pub fn poly1271_signing_preimage(order: &Order, chain_id: u64, neg_risk: bool) -> Vec<u8> {
     use alloy::primitives::keccak256;
     use alloy::sol_types::SolValue;
 
@@ -469,12 +474,12 @@ pub fn poly1271_digest(order: &Order, chain_id: u64, neg_risk: bool) -> B256 {
             .abi_encode(),
     );
 
-    let mut digest_input = [0u8; 66];
+    let mut digest_input = vec![0u8; 66];
     digest_input[0] = 0x19;
     digest_input[1] = 0x01;
     digest_input[2..34].copy_from_slice(app_domain_separator.as_slice());
     digest_input[34..66].copy_from_slice(typed_data_sign_struct_hash.as_slice());
-    keccak256(digest_input)
+    digest_input
 }
 
 /// Sign a deposit-wallet order (signatureType 3) and return the **wrapped**
@@ -482,6 +487,7 @@ pub fn poly1271_digest(order: &Order, chain_id: u64, neg_risk: bool) -> B256 {
 /// `0x ‖ inner(65) ‖ APP_DOMAIN_SEPARATOR(32) ‖ contentsHash(32) ‖
 /// contentsType ‖ len(contentsType) as u16 BE` — layout verbatim from the
 /// official SDK.
+#[cfg(test)]
 pub async fn sign_order_poly1271(
     order: &Order,
     signer: &KeystoreSigner,
@@ -501,9 +507,8 @@ pub async fn sign_order_poly1271(
 
 /// Wrap a raw 65-byte owner EOA signature for a POLY_1271 deposit-wallet order.
 ///
-/// This is the synchronous half of [`sign_order_poly1271`], exposed so wasm
-/// petals can ask the host to sign [`poly1271_digest`] without receiving key
-/// material or depending on native keystore types.
+/// This accepts the payload-bearing host signature without receiving key
+/// material or depending on native signer types.
 pub fn wrap_poly1271_signature(
     order: &Order,
     inner_signature: &[u8],
@@ -522,13 +527,28 @@ pub fn wrap_poly1271_signature(
             inner_signature.len()
         )));
     }
+    // Bloom's triad signing boundary uses the normalized recoverable-signature
+    // encoding (0/1), while Ethereum contract signatures use 27/28. Keep that
+    // protocol distinction at the Polymarket adapter boundary. Legacy callers
+    // already supplying the Ethereum form remain byte-for-byte unchanged.
+    let mut ethereum_signature = [0u8; 65];
+    ethereum_signature.copy_from_slice(inner_signature);
+    ethereum_signature[64] = match ethereum_signature[64] {
+        recovery @ 0..=1 => recovery + 27,
+        recovery @ 27..=28 => recovery,
+        recovery => {
+            return Err(PolymarketError::invalid(format!(
+                "POLY_1271 inner signature has invalid recovery byte {recovery}"
+            )));
+        }
+    };
     let contents_hash = order.eip712_hash_struct();
     let app_domain_separator = ctf_exchange_domain(chain_id, neg_risk).hash_struct();
     let type_len =
         u16::try_from(ORDER_TYPE_STRING.len()).expect("order type string length fits in u16");
     let mut wrapped = String::with_capacity(2 + 130 + 64 + 64 + ORDER_TYPE_STRING.len() * 2 + 4);
     wrapped.push_str("0x");
-    wrapped.push_str(&hex::encode(inner_signature));
+    wrapped.push_str(&hex::encode(ethereum_signature));
     wrapped.push_str(&hex::encode(app_domain_separator.as_slice()));
     wrapped.push_str(&hex::encode(contents_hash.as_slice()));
     wrapped.push_str(&hex::encode(ORDER_TYPE_STRING.as_bytes()));
@@ -537,6 +557,7 @@ pub fn wrap_poly1271_signature(
 }
 
 /// Dispatch on the order's signature type.
+#[cfg(test)]
 pub async fn sign_order_for_type(
     order: &Order,
     signer: &KeystoreSigner,
@@ -910,6 +931,14 @@ mod tests {
             poly1271_digest(&order, crate::polymarket::POLYGON, true),
             b256!("3f23a9ec3d94ca14672fa676310a174d8c1e2d43828754173c9c992d8ae3593e"),
         );
+        assert_eq!(
+            alloy::primitives::keccak256(poly1271_signing_preimage(
+                &order,
+                crate::polymarket::POLYGON,
+                false
+            )),
+            poly1271_digest(&order, crate::polymarket::POLYGON, false),
+        );
 
         const EXPECTED_NORMAL: &str = "0xa0e112ede36cedabec052439dd784df883fef0600a4c8c4a3133225fa2d7f44c66dd24dda1ba13ac69e1f567d482fd37f05458c30c3576b19550bfb41350e0e61c3264e159346253e26a64e00b69032db0e7d32f94628de3e6eecb50304d7af3d27dd531d9dd2f514b6cacf11d1ab1dc143297015de23ffea8d9cdb0616d5cf7cf4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba";
         const EXPECTED_NEG_RISK: &str = "0x660b58b44156c18d48f061979bec4f2500915dbd157adc483debe59634494a6b7dfe15e28101097f8e6f3dd271e394349eca19035a265eab3683b6b3847683e71c9b858f53327b0bd13af8ec14cfb35234fb9eb7b0504d1a4e61f433840d30e81a7dd531d9dd2f514b6cacf11d1ab1dc143297015de23ffea8d9cdb0616d5cf7cf4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba";
@@ -924,6 +953,17 @@ mod tests {
             wrap_poly1271_signature(&order, &inner.as_bytes(), crate::polymarket::POLYGON, false)
                 .unwrap();
         assert_eq!(wrapped_from_inner, EXPECTED_NORMAL);
+
+        // The triad Signer returns the same recoverable signature with a
+        // normalized 0/1 recovery byte. The Polymarket envelope must translate
+        // it back to Ethereum's 27/28 form before submission to the CLOB.
+        let mut triad_inner = inner.as_bytes().to_vec();
+        assert!(matches!(triad_inner[64], 27 | 28));
+        triad_inner[64] -= 27;
+        let wrapped_from_triad =
+            wrap_poly1271_signature(&order, &triad_inner, crate::polymarket::POLYGON, false)
+                .unwrap();
+        assert_eq!(wrapped_from_triad, EXPECTED_NORMAL);
 
         let wrapped = sign_order_poly1271(&order, &signer, crate::polymarket::POLYGON, true)
             .await
@@ -951,6 +991,12 @@ mod tests {
         );
         assert!(
             wrap_poly1271_signature(&order, &[7u8; 64], crate::polymarket::POLYGON, false).is_err()
+        );
+        let mut invalid_recovery = inner.as_bytes().to_vec();
+        invalid_recovery[64] = 2;
+        assert!(
+            wrap_poly1271_signature(&order, &invalid_recovery, crate::polymarket::POLYGON, false)
+                .is_err()
         );
     }
 

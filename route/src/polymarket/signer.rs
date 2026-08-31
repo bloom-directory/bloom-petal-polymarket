@@ -1,26 +1,23 @@
-//! The non-custodial signing seam + CLOB auth header construction.
+//! CLOB authentication header construction.
 //!
-//! [`KeystoreSigner`] is a thin wrapper over a pure-alloy `Arc<PrivateKeySigner>`
-//! supplied by the caller (in the daemon, that `Arc` comes from
-//! `Keystore::signer(wallet)?`). This crate never owns key hex and never
-//! serializes the key.
-//!
-//! - **L1** (`clob_auth_headers`): EIP-712-sign `ClobAuth` → the headers needed
-//!   to mint/derive CLOB API credentials.
-//! - **L2** (`l2_headers` / [`l2_message`] / [`l2_hmac`]): HMAC-SHA256 over
+//! Production owner signing uses the payload-bearing Petal host interface.
+//! The local ECDSA helper in this module exists only for protocol-vector tests.
+//! L2 (`l2_headers` / [`l2_message`] / [`l2_hmac`]) is HMAC-SHA256 over
 //!   `{timestamp}{METHOD}{path}{body}` with the API `secret` — no private key
 //!   involved. Byte-exact reference: the Polymarket CLOB SDK `src/auth.rs`.
 
-use std::sync::Arc;
-
 use alloy::primitives::Address;
-use alloy::signers::Signer;
-use alloy::signers::local::PrivateKeySigner;
+#[cfg(test)]
+use alloy::signers::{Signer, local::PrivateKeySigner};
 use base64::prelude::{BASE64_URL_SAFE, Engine as _};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+#[cfg(test)]
+use std::sync::Arc;
 
-use crate::polymarket::{PolymarketError, Result, eip712};
+#[cfg(test)]
+use crate::polymarket::eip712;
+use crate::polymarket::{PolymarketError, Result};
 
 // CLOB auth header names (shared L1/L2 where applicable).
 pub const POLY_ADDRESS: &str = "POLY_ADDRESS";
@@ -30,14 +27,15 @@ pub const POLY_TIMESTAMP: &str = "POLY_TIMESTAMP";
 pub const POLY_API_KEY: &str = "POLY_API_KEY";
 pub const POLY_PASSPHRASE: &str = "POLY_PASSPHRASE";
 
-/// A non-custodial signer: holds only a pure-alloy `PrivateKeySigner` handed in
-/// by the caller. Knows nothing about the bloom keystore.
+/// Test-only signer for checking protocol vectors against a known key.
 #[derive(Clone)]
+#[cfg(test)]
 pub struct KeystoreSigner {
     signer: Arc<PrivateKeySigner>,
     address: Address,
 }
 
+#[cfg(test)]
 impl KeystoreSigner {
     /// Wrap a signer obtained elsewhere (e.g. `keystore.signer(wallet)?`).
     pub fn new(signer: Arc<PrivateKeySigner>) -> Self {

@@ -23,6 +23,7 @@ pub struct ClobAuthAction {
     pub message: String,
     pub headers_no_signature: Vec<L1HeaderView>,
     pub signing_hash: B256,
+    pub signing_preimage: Vec<u8>,
 }
 
 pub fn clob_auth_action_and_hash(
@@ -31,7 +32,8 @@ pub fn clob_auth_action_and_hash(
     nonce: u32,
     chain_id: u64,
 ) -> ClobAuthAction {
-    let signing_hash = eip712::clob_auth_signing_hash(address, timestamp, nonce, chain_id);
+    let signing_preimage = eip712::clob_auth_signing_preimage(address, timestamp, nonce, chain_id);
+    let signing_hash = alloy::primitives::keccak256(&signing_preimage);
     ClobAuthAction {
         address,
         chain_id,
@@ -53,6 +55,7 @@ pub fn clob_auth_action_and_hash(
             },
         ],
         signing_hash,
+        signing_preimage,
     }
 }
 
@@ -63,6 +66,7 @@ pub struct OrderAction {
     pub neg_risk: bool,
     pub signature_type: u8,
     pub signing_hash: B256,
+    pub signing_preimage: Vec<u8>,
 }
 
 pub fn order_action_and_hash(
@@ -94,6 +98,7 @@ pub fn order_action_and_hash(
         neg_risk,
         signature_type: order.signatureType,
         signing_hash: order::poly1271_digest(order, chain_id, neg_risk),
+        signing_preimage: order::poly1271_signing_preimage(order, chain_id, neg_risk),
     }
 }
 
@@ -112,6 +117,7 @@ pub struct WalletBatchAction {
     pub deadline: u64,
     pub calls: Vec<CallView>,
     pub signing_hash: B256,
+    pub signing_preimage: Vec<u8>,
     pub body_excluding_signature: serde_json::Value,
 }
 
@@ -152,6 +158,7 @@ pub fn wallet_batch_action_and_hash(
             })
             .collect(),
         signing_hash: eip712::batch_signing_hash(&batch, chain_id, deposit_wallet),
+        signing_preimage: eip712::batch_signing_preimage(&batch, chain_id, deposit_wallet),
         body_excluding_signature: serde_json::json!({
             "type": "WALLET",
             "to": format!("{:#x}", eip712::FACTORY),
@@ -211,5 +218,21 @@ mod tests {
     #[test]
     fn signature_encoding_rejects_wrong_length() {
         assert!(signature_string_from_raw(&[0; 64]).is_err());
+    }
+
+    #[test]
+    fn payload_preimages_hash_to_the_existing_protocol_digests() {
+        let owner = Address::repeat_byte(0x11);
+        let clob = clob_auth_action_and_hash(owner, 1_700_000_000, 0, 137);
+        assert_eq!(
+            alloy::primitives::keccak256(&clob.signing_preimage),
+            clob.signing_hash
+        );
+
+        let batch = wallet_batch_action_and_hash(owner, 137, 7, 99, &[]);
+        assert_eq!(
+            alloy::primitives::keccak256(&batch.signing_preimage),
+            batch.signing_hash
+        );
     }
 }

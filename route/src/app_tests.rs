@@ -158,7 +158,7 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 95);
+        assert_eq!(routes.len(), 97);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
@@ -208,9 +208,22 @@ mod tests {
             .expect("canonical route WIT");
         let wit = std::str::from_utf8(wit).expect("route WIT is UTF-8");
         assert!(wit.contains("package bloom:route@0.1.0"));
-        assert!(wit.contains("bloom:sign/signing@0.1.0"));
+        assert!(wit.contains("bloom:sign/signing@0.2.0"));
+        assert!(!wit.contains("bloom:sign/signing@0.1.0"));
         assert!(wit.contains("bloom:tx/outbox@0.1.0"));
         assert!(!root.join("route/files/meta/parity.json.rs").exists());
+    }
+
+    #[test]
+    fn venue_configuration_is_petal_owned_not_wallet_policy() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = std::fs::read_to_string(root.join("src/trade_flow_parts/policy.rs"))
+            .expect("venue configuration source");
+        assert!(source.contains("settings/{wallet}/venue.toml"));
+        assert!(source.contains("petal::sdk::store_get"));
+        assert!(!source.contains("wallets/{wallet}/policy.toml"));
+        assert!(!source.contains("petal::sdk::vfs_read"));
+        assert!(root.join("files/settings/[wallet]/venue.toml.rs").is_file());
     }
 
     #[test]
@@ -410,8 +423,8 @@ mod tests {
 
     #[test]
     fn local_policy_defaults_to_disabled() {
-        let policy: LocalWalletPolicy = toml::from_str("").unwrap();
-        let checks = evaluate_local_polymarket_order(&policy.polymarket, &policy_ctx());
+        let policy: PolymarketVenueConfig = toml::from_str("").unwrap();
+        let checks = evaluate_local_polymarket_order(&policy, &policy_ctx());
         assert!(local_policy_has_deny(&checks));
         assert!(checks.iter().any(|check| {
             check.rule == "polymarket.enabled" && check.outcome == LocalPolicyOutcome::Deny
@@ -420,9 +433,8 @@ mod tests {
 
     #[test]
     fn local_policy_parses_decimal_caps() {
-        let policy: LocalWalletPolicy = toml::from_str(
+        let policy: PolymarketVenueConfig = toml::from_str(
             r#"
-[polymarket]
 enabled = true
 max_order_usd = "10"
 max_daily_usd = "25.5"
@@ -433,24 +445,23 @@ denied_slugs = ["blocked-market"]
 "#,
         )
         .unwrap();
-        assert!(policy.polymarket.enabled);
-        assert_eq!(policy.polymarket.max_order_usd, Some(10_000_000));
-        assert_eq!(policy.polymarket.max_daily_usd, Some(25_500_000));
-        assert_eq!(policy.polymarket.require_flag_above_usd, Some(5_000_000));
-        assert_eq!(policy.polymarket.max_price, Some(750_000));
-        assert!(!policy.polymarket.allow_neg_risk);
-        assert!(policy.polymarket.denied_slugs.contains("blocked-market"));
+        assert!(policy.enabled);
+        assert_eq!(policy.max_order_usd, Some(10_000_000));
+        assert_eq!(policy.max_daily_usd, Some(25_500_000));
+        assert_eq!(policy.require_flag_above_usd, Some(5_000_000));
+        assert_eq!(policy.max_price, Some(750_000));
+        assert!(!policy.allow_neg_risk);
+        assert!(policy.denied_slugs.contains("blocked-market"));
 
-        let float_policy: LocalWalletPolicy =
-            toml::from_str("[polymarket]\nenabled = true\nmax_price = 0.1\n").unwrap();
-        assert_eq!(float_policy.polymarket.max_price, Some(100_000));
+        let float_policy: PolymarketVenueConfig =
+            toml::from_str("enabled = true\nmax_price = 0.1\n").unwrap();
+        assert_eq!(float_policy.max_price, Some(100_000));
     }
 
     #[test]
     fn local_policy_daily_cap_fails_closed_when_receipts_unknown() {
-        let policy: LocalWalletPolicy = toml::from_str(
+        let policy: PolymarketVenueConfig = toml::from_str(
             r#"
-[polymarket]
 enabled = true
 max_daily_usd = "100"
 "#,
@@ -458,14 +469,14 @@ max_daily_usd = "100"
         .unwrap();
         let mut ctx = policy_ctx();
         ctx.receipt_store_readable = false;
-        let checks = evaluate_local_polymarket_order(&policy.polymarket, &ctx);
+        let checks = evaluate_local_polymarket_order(&policy, &ctx);
         assert!(checks.iter().any(|check| {
             check.rule == "polymarket.max_daily_usd" && check.outcome == LocalPolicyOutcome::Deny
         }));
 
         ctx.receipt_store_readable = true;
         ctx.daily_posted_microusd = None;
-        let checks = evaluate_local_polymarket_order(&policy.polymarket, &ctx);
+        let checks = evaluate_local_polymarket_order(&policy, &ctx);
         assert!(checks.iter().any(|check| {
             check.rule == "polymarket.max_daily_usd" && check.outcome == LocalPolicyOutcome::Deny
         }));
@@ -477,6 +488,7 @@ max_daily_usd = "100"
             "onboard_approvals",
             "polymarket.onboard",
             Address::ZERO,
+            Vec::new(),
             alloy::primitives::B256::ZERO,
             serde_json::json!({"deadline": 500}),
         );

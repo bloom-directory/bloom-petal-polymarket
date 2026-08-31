@@ -13,6 +13,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "builder_key_revoke": "builder-keys/<wallet>/revoke",
             "enso_settings": "settings/enso-api-key",
             "relayer_settings": "settings/relayer.json",
+            "venue_settings": "settings/<wallet>/venue.toml",
             "fund_new": "fund/<wallet>/new",
             "fund_confirm": "fund/<wallet>/<id>/confirm",
             "trade_post": "trade/<wallet>/drafts/<id>/post",
@@ -23,7 +24,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "obligations": "obligations/<wallet>.json"
         },
         "generic_ipc_only": [
-            "bloom:sign/signing@0.1.0",
+            "bloom:sign/signing@0.2.0",
             "bloom:tx/outbox@0.1.0",
             "bloom:chain/read@0.1.0"
         ]

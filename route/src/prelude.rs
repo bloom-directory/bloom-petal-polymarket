@@ -2,8 +2,8 @@
 
 pub use crate::app_types::{
     FundConfirmRequest, FundNewRequest, LocalPolicyCheck, LocalPolicyOutcome, LocalPolicySide,
-    LocalPolymarketOrderCtx, LocalPolymarketPolicy, LocalWalletPolicy, PreparedEvmTransaction,
-    PreparedFunding, StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
+    LocalPolymarketOrderCtx, PolymarketVenueConfig, PreparedEvmTransaction, PreparedFunding,
+    StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
     TradeCancelRequest, TradeNewRequest, TradePostRequest, TradeRevalidateRequest, TradeSnapshot,
     default_slippage_bps, default_true,
 };
@@ -40,7 +40,7 @@ pub use crate::infra_parts::relayer::{
     parse_relayer_submit_response, parse_relayer_transaction_response, prepare_relayer_batch,
     relayer_batch_body, relayer_get_json, relayer_http_error, relayer_poll_confirmed,
     relayer_submit, relayer_submit_configured, relayer_transaction, relayer_tx_id_matches,
-    relayer_wallet_nonce, sign_hash_hex, store_prepared_relayer_signature,
+    relayer_wallet_nonce, store_prepared_relayer_signature,
 };
 pub use crate::infra_parts::store::{
     StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,
@@ -70,7 +70,7 @@ pub use crate::trade_flow_parts::policy::{
     audited_receipt_ids_since, daily_posted_microusd, enable_trade_posting,
     evaluate_local_polymarket_order, local_policy_check, local_policy_has_deny,
     local_policy_has_warn, local_policy_list_check, parse_api_float_micro, parse_clob_raw_micro,
-    parse_json_f64_micro, position_size_micro, verify_sell_preflight, wallet_policy,
+    parse_json_f64_micro, position_size_micro, venue_config, verify_sell_preflight,
 };
 pub use crate::trade_flow_parts::posting::{
     cancel_trade_receipt, mark_trade_draft_cancelled, post_trade_draft,

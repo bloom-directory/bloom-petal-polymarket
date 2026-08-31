@@ -15,12 +15,60 @@ pub fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) 
     }
 }
 
-pub fn wallet_policy(wallet: &str) -> Result<LocalWalletPolicy, DispatchResponse> {
-    let bytes = petal::sdk::vfs_read(&format!("wallets/{wallet}/policy.toml"), MAX_POLICY_BYTES)
-        .map_err(sdk_error)?;
+fn venue_config_key(wallet: &str) -> String {
+    format!("settings/{wallet}/venue.toml")
+}
+
+/// Read Polymarket-owned venue preferences from this Petal's state namespace.
+/// Broker wallet policy is intentionally neither read nor interpreted here.
+pub fn venue_config(wallet: &str) -> Result<PolymarketVenueConfig, DispatchResponse> {
+    crate::polymarket::validate_wallet_name(wallet)
+        .map_err(|validation_error| error(-3, validation_error.to_string()))?;
+    let bytes = match petal::sdk::store_get(&venue_config_key(wallet), MAX_POLICY_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SdkError::Host(HostStatus::NotFound)) => {
+            return Ok(PolymarketVenueConfig::default());
+        }
+        Err(error) => return Err(sdk_error(error)),
+    };
     let raw = core::str::from_utf8(&bytes)
-        .map_err(|e| error(-4, format!("wallet policy is not utf-8: {e}")))?;
-    toml::from_str(raw).map_err(|e| error(-4, format!("wallet policy parse: {e}")))
+        .map_err(|e| error(-4, format!("venue configuration is not utf-8: {e}")))?;
+    toml::from_str(raw).map_err(|e| error(-4, format!("venue configuration parse: {e}")))
+}
+
+pub fn read_venue_config(wallet: &str) -> DispatchResponse {
+    if let Err(validation_error) = crate::polymarket::validate_wallet_name(wallet) {
+        return error(-3, validation_error.to_string());
+    }
+    match petal::sdk::store_get(&venue_config_key(wallet), MAX_POLICY_BYTES) {
+        Ok(bytes) => DispatchResponse::Read(bytes),
+        Err(SdkError::Host(HostStatus::NotFound)) => {
+            DispatchResponse::Read(b"enabled = false\nallow_neg_risk = true\n".to_vec())
+        }
+        Err(host_error) => sdk_error(host_error),
+    }
+}
+
+pub fn write_venue_config(wallet: &str, body: &[u8]) -> DispatchResponse {
+    if let Err(validation_error) = crate::polymarket::validate_wallet_name(wallet) {
+        return error(-3, validation_error.to_string());
+    }
+    let raw = match core::str::from_utf8(body) {
+        Ok(raw) => raw,
+        Err(parse_error) => {
+            return error(
+                -3,
+                format!("venue configuration is not utf-8: {parse_error}"),
+            );
+        }
+    };
+    if let Err(parse_error) = toml::from_str::<PolymarketVenueConfig>(raw) {
+        return error(-3, format!("venue configuration parse: {parse_error}"));
+    }
+    match petal::sdk::store_put(&venue_config_key(wallet), body, false) {
+        Ok(()) => DispatchResponse::Write,
+        Err(error) => sdk_error(error),
+    }
 }
 
 pub fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
@@ -237,7 +285,7 @@ pub fn parse_json_f64_micro(value: f64) -> Result<u64, DispatchResponse> {
 }
 
 pub fn evaluate_local_polymarket_order(
-    policy: &LocalPolymarketPolicy,
+    policy: &PolymarketVenueConfig,
     ctx: &LocalPolymarketOrderCtx,
 ) -> Vec<LocalPolicyCheck> {
     let mut out = Vec::new();
@@ -245,7 +293,7 @@ pub fn evaluate_local_polymarket_order(
         out.push(local_policy_check(
             "enabled",
             LocalPolicyOutcome::Deny,
-            "Polymarket trading is disabled for this wallet; set [polymarket] enabled = true in the wallet policy to opt in",
+            "Polymarket trading is disabled for this wallet; set enabled = true in this Petal's venue.toml to opt in",
         ));
     } else {
         out.push(local_policy_check(

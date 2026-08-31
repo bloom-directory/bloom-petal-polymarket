@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "bloom-petal-contract"
 version = "0.1.0"
-source = "git+https://github.com/bloom-directory/petal?rev=4f6fb57063a70f95cba288f68bdc139e3ecac7a5#4f6fb57063a70f95cba288f68bdc139e3ecac7a5"
+source = "git+https://github.com/bloom-directory/petal?rev=864a80b407387871bae06aabe77b91865e55f7bc#864a80b407387871bae06aabe77b91865e55f7bc"
 dependencies = [
  "sha2",
 ]
@@ -933,11 +933,13 @@ dependencies = [
 [[package]]
 name = "bloom-petal-sdk"
 version = "0.1.0"
-source = "git+https://github.com/bloom-directory/petal?rev=4f6fb57063a70f95cba288f68bdc139e3ecac7a5#4f6fb57063a70f95cba288f68bdc139e3ecac7a5"
+source = "git+https://github.com/bloom-directory/petal?rev=864a80b407387871bae06aabe77b91865e55f7bc#864a80b407387871bae06aabe77b91865e55f7bc"
 dependencies = [
  "getrandom 0.2.17",
  "serde",
+ "serde_jcs 0.1.0",
  "serde_json",
+ "sha2",
  "wit-bindgen",
 ]
 
@@ -954,6 +956,7 @@ dependencies = [
  "hmac",
  "rand 0.8.7",
  "serde",
+ "serde_jcs 0.2.0",
  "serde_json",
  "sha2",
  "tempfile",
@@ -2523,6 +2526,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu-js"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
 name = "schemars"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2654,6 +2663,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "serde_jcs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cacecf649bc1a7c5f0e299cc813977c6a78116abda2b93b1ee01735b71ead9a8"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "serde_jcs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3a60f3fda61525e439ef6d67422118f11e986566997d9021c56867ad814a0aa"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
