@@ -33,7 +33,7 @@ jobs:
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Install canonical Petal toolchain
-        run: cargo install --git https://github.com/bloom-directory/petal --rev 61938d0c127cfe03c7e3e55baed0ba1439bc5ca2 --locked bloom-petal-cli
+        run: cargo install --git https://github.com/bloom-directory/petal --rev 864a80b407387871bae06aabe77b91865e55f7bc --locked bloom-petal-cli
       - name: Build source package
         run: scripts/build.sh
       - name: Checkout Bloom CLI
@@ -43,19 +43,49 @@ jobs:
           ref: master
           path: bloom
           persist-credentials: false
-      - name: Build Bloom CLI
+      - name: Build key-free debug Bloom CLI for install smoke tests
         run: |
-          cargo build --release --manifest-path bloom/Cargo.toml -p bloom --bin bloom
-          cp bloom/target/release/bloom "$RUNNER_TEMP/bloom"
+          cargo build --manifest-path bloom/Cargo.toml -p bloom --bin bloom
+          cp bloom/target/debug/bloom "$RUNNER_TEMP/bloom"
           rm -rf bloom
       - name: Smoke install and dispatch
         shell: bash
         run: |
           set -euo pipefail
-          home="$(mktemp -d)"
-          "$RUNNER_TEMP/bloom" --home "$home" petal install "$GITHUB_WORKSPACE"
+          smoke_home="$(mktemp -d)"
+          cat > "$smoke_home/config.toml" <<'EOF'
+          default_chain = "local"
+          [chains.local]
+          name = "local"
+          chain_id = 31337
+          rpc_urls = ["http://127.0.0.1:1"]
+          allow_broadcast = false
+          display_name = "Local smoke"
+          native_symbol = "ETH"
+          native_decimals = 18
+          legacy_tx = false
+          [petals]
+          preinstalled = []
+          EOF
+          export BLOOM_MACHINE_IDENTITY="$smoke_home/absent-identity.json"
+          export BLOOM_EDGE_MANIFEST="$smoke_home/absent-edge.json"
+          export BLOOM_BROKER_SOCKET="$smoke_home/absent-broker.sock"
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" serve > "$smoke_home/daemon.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" 2>/dev/null || true; rm -rf "$smoke_home"' EXIT
+          for attempt in {1..60}; do
+            if "$RUNNER_TEMP/bloom" --home "$smoke_home" status >/dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null || [[ "$attempt" == 60 ]]; then
+              cat "$smoke_home/daemon.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" petal install "$GITHUB_WORKSPACE"
           contract="$RUNNER_TEMP/route-contract.json"
-          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /petals/polymarket/meta/route-contract.json > "$contract"
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json > "$contract"
           for required in \
             'bloom.polymarket.petal-route-contract.v1' \
             'settings/enso-api-key' \
@@ -81,6 +111,36 @@ jobs:
             source_url="$(jq -r '.pull_request.head.repo.html_url' "$GITHUB_EVENT_PATH")"
             source_ref="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
           fi
-          home="$(mktemp -d)"
-          "$RUNNER_TEMP/bloom" --home "$home" petal install "$source_url" --ref "$source_ref"
-          "$RUNNER_TEMP/bloom" --home "$home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'
+          smoke_home="$(mktemp -d)"
+          cat > "$smoke_home/config.toml" <<'EOF'
+          default_chain = "local"
+          [chains.local]
+          name = "local"
+          chain_id = 31337
+          rpc_urls = ["http://127.0.0.1:1"]
+          allow_broadcast = false
+          display_name = "Local smoke"
+          native_symbol = "ETH"
+          native_decimals = 18
+          legacy_tx = false
+          [petals]
+          preinstalled = []
+          EOF
+          export BLOOM_MACHINE_IDENTITY="$smoke_home/absent-identity.json"
+          export BLOOM_EDGE_MANIFEST="$smoke_home/absent-edge.json"
+          export BLOOM_BROKER_SOCKET="$smoke_home/absent-broker.sock"
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" serve > "$smoke_home/daemon.log" 2>&1 &
+          daemon_pid=$!
+          trap 'kill "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" 2>/dev/null || true; rm -rf "$smoke_home"' EXIT
+          for attempt in {1..60}; do
+            if "$RUNNER_TEMP/bloom" --home "$smoke_home" status >/dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$daemon_pid" 2>/dev/null || [[ "$attempt" == 60 ]]; then
+              cat "$smoke_home/daemon.log" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" petal install "$source_url" --ref "$source_ref"
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'
