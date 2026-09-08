@@ -385,9 +385,11 @@ pub struct OrderParams {
     /// Funder address: the deposit wallet.
     pub maker: Address,
     pub quote: LimitQuote,
-    /// Builder attribution code. **Must stay zero unless the user explicitly
-    /// opted in** — builder codes are fee-bearing attribution, a separate
-    /// concept from builder API keys (relayer auth).
+    /// Builder attribution code (`bytes32`, assigned by a Polymarket Builder
+    /// Profile — not an address), or `None` for a zero builder field.
+    /// Resolved by [`crate::account_views::resolve_builder_code`]; a
+    /// separate concept from builder API keys (relayer auth, see
+    /// [`crate::polymarket::builder_creds`]).
     pub builder_code: Option<B256>,
     /// Always `SIG_TYPE_POLY_1271`.
     pub signature_type: u8,

@@ -153,6 +153,10 @@ pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -
                 Ok(timestamp_ms) => timestamp_ms,
                 Err(err) => return sdk_error_with_context("read order timestamp", err),
             };
+            let builder_code = match crate::account_views::resolve_builder_code() {
+                Ok(builder_code) => builder_code,
+                Err(resp) => return resp,
+            };
             let order = build_order(
                 &OrderParams {
                     token_id,
@@ -164,7 +168,7 @@ pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -
                         maker_micro: draft.maker_micro,
                         taker_micro: draft.taker_micro,
                     },
-                    builder_code: None,
+                    builder_code,
                     signature_type: SIG_TYPE_POLY_1271,
                 },
                 timestamp_ms,
@@ -187,6 +191,7 @@ pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -
                     "side": order.side,
                     "signature_type": order.signatureType,
                     "timestamp_ms": order.timestamp.to_string(),
+                    "builder": format!("{:#x}", order.builder),
                     "neg_risk": draft.neg_risk,
                     "chain_id": chain_id,
                     "review_intent_hash": review_intent_hash,
@@ -523,7 +528,16 @@ fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchRespo
             .ok_or_else(|| error(-4, "prepared order signature type is invalid"))?,
         timestamp: parse_u256("timestamp_ms")?,
         metadata: B256::ZERO,
-        builder: B256::ZERO,
+        // Absent on prepared signings written before builder attribution was
+        // wired up; those orders were signed with a zero builder field, so
+        // defaulting to zero here keeps them reconstructing byte-identical
+        // to what was actually signed.
+        builder: match value.get("builder").and_then(serde_json::Value::as_str) {
+            Some(text) => text
+                .parse::<B256>()
+                .map_err(|err| error(-4, format!("prepared order builder is invalid: {err}")))?,
+            None => B256::ZERO,
+        },
     })
 }
 
