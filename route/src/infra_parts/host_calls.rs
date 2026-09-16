@@ -10,6 +10,7 @@ use petal::sdk::{DispatchResponse, HostStatus, HttpRequest, SdkError};
 const WALLET_ACCOUNT: u32 = 0;
 
 pub fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
+    petal::validate_wallet_id(wallet).map_err(|message| error(-3, message))?;
     let path = wallet_address_path(wallet);
     let bytes = petal::sdk::vfs_read(&path, 128).map_err(|e| match e {
         SdkError::Host(HostStatus::Denied) => {
