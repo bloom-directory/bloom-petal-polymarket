@@ -285,17 +285,16 @@ pub fn relayer_batch_body(
                     "stored relayer signature does not match prepared batch",
                 ));
             }
-            stored.signature_hex
+            normalize_relayer_signature_hex(&stored.signature_hex)?
         }
-        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => format!(
-            "0x{}",
-            hex::encode(sign_prepared(
+        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {
+            relayer_signature_hex(&sign_prepared(
                 ctx,
                 wallet,
                 &prepared,
                 &format!("onboard/{wallet}/approval.json"),
-            )?)
-        ),
+            )?)?
+        }
         Err(err) => return Err(sdk_error(err)),
     };
     Ok(serde_json::json!({
@@ -310,6 +309,33 @@ pub fn relayer_batch_body(
             "calls": calls_json,
         },
     }))
+}
+
+pub fn relayer_signature_hex(signature: &[u8]) -> Result<String, DispatchResponse> {
+    if signature.len() != 65 {
+        return Err(error(-4, "relayer signature is not 65 bytes"));
+    }
+    let mut normalized = signature.to_vec();
+    normalized[64] = match normalized[64] {
+        recovery @ 0..=1 => recovery + 27,
+        recovery @ 27..=28 => recovery,
+        recovery => {
+            return Err(error(
+                -4,
+                format!("relayer signature has invalid recovery byte {recovery}"),
+            ));
+        }
+    };
+    Ok(format!("0x{}", hex::encode(normalized)))
+}
+
+fn normalize_relayer_signature_hex(signature: &str) -> Result<String, DispatchResponse> {
+    let encoded = signature
+        .strip_prefix("0x")
+        .ok_or_else(|| error(-4, "stored relayer signature is not 0x-prefixed"))?;
+    let decoded = hex::decode(encoded)
+        .map_err(|err| error(-4, format!("stored relayer signature hex: {err}")))?;
+    relayer_signature_hex(&decoded)
 }
 
 pub fn prepare_relayer_batch(
@@ -414,7 +440,7 @@ pub fn store_prepared_relayer_signature(
 ) -> Result<(), DispatchResponse> {
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
-        signature_hex: format!("0x{}", hex::encode(signature)),
+        signature_hex: relayer_signature_hex(signature)?,
     };
     match store_put_json(
         &format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
@@ -584,5 +610,26 @@ mod tests {
                 ("RELAYER_API_KEY_ADDRESS".into(), "0xowner".into()),
             ]
         );
+    }
+
+    #[test]
+    fn relayer_signature_normalizes_recovery_byte() {
+        let mut signature = [0x11; 65];
+        signature[64] = 0;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
+        signature[64] = 1;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
+        signature[64] = 27;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
+        signature[64] = 28;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
+    }
+
+    #[test]
+    fn relayer_signature_rejects_invalid_shape() {
+        assert!(relayer_signature_hex(&[0; 64]).is_err());
+        let mut signature = [0; 65];
+        signature[64] = 2;
+        assert!(relayer_signature_hex(&signature).is_err());
     }
 }
