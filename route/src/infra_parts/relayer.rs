@@ -274,29 +274,7 @@ pub fn relayer_batch_body(
         .get("nonce")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
-    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
-    let signature = match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
-        Ok(bytes) => {
-            let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
-                .map_err(|err| error(-4, format!("stored relayer signature: {err}")))?;
-            if stored.prepared_digest != prepared.digest()? {
-                return Err(error(
-                    -4,
-                    "stored relayer signature does not match prepared batch",
-                ));
-            }
-            normalize_relayer_signature_hex(&stored.signature_hex)?
-        }
-        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {
-            relayer_signature_hex(&sign_prepared(
-                ctx,
-                wallet,
-                &prepared,
-                &format!("onboard/{wallet}/approval.json"),
-            )?)?
-        }
-        Err(err) => return Err(sdk_error(err)),
-    };
+    let signature = relayer_batch_signature(ctx, wallet, &prepared)?;
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
@@ -433,21 +411,42 @@ pub fn prepare_relayer_batch(
     Ok(prepared)
 }
 
-pub fn store_prepared_relayer_signature(
+/// Return the owner signature for a prepared deposit-wallet approval batch.
+/// The batch carries a long deadline, so its approval stays bound to the exact
+/// reviewed bytes; the signature is stored so later stages reuse it.
+pub fn relayer_batch_signature(
+    ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
-    signature: &[u8],
-) -> Result<(), DispatchResponse> {
+) -> Result<String, DispatchResponse> {
+    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
+    match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
+        Ok(bytes) => {
+            let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
+                .map_err(|err| error(-4, format!("stored relayer signature: {err}")))?;
+            if stored.prepared_digest != prepared.digest()? {
+                return Err(error(
+                    -4,
+                    "stored relayer signature does not match prepared batch",
+                ));
+            }
+            return normalize_relayer_signature_hex(&stored.signature_hex);
+        }
+        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+        Err(err) => return Err(sdk_error(err)),
+    }
+    let signature = relayer_signature_hex(&sign_prepared(
+        ctx,
+        wallet,
+        prepared,
+        &format!("onboard/{wallet}/approval.json"),
+    )?)?;
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
-        signature_hex: relayer_signature_hex(signature)?,
+        signature_hex: signature.clone(),
     };
-    match store_put_json(
-        &format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
-        &value,
-        true,
-    ) {
-        DispatchResponse::Write => Ok(()),
+    match store_put_json(&signature_key, &value, true) {
+        DispatchResponse::Write => Ok(signature),
         response => Err(response),
     }
 }

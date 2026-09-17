@@ -65,12 +65,13 @@ impl PreparedSigning {
     }
 }
 
-pub fn sign_prepared_batch(
+fn sign_prepared_items(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &[&PreparedSigning],
     operation_class: &str,
     approval_key: &str,
+    selector: petal::SignSelector,
 ) -> Result<Vec<Vec<u8>>, DispatchResponse> {
     if prepared.is_empty() {
         return Err(error(-3, "prepared signing batch is empty"));
@@ -86,7 +87,7 @@ pub fn sign_prepared_batch(
         .collect::<Result<Vec<_>, DispatchResponse>>()?;
     let prepared_bytes = serde_json::to_vec(prepared)
         .map_err(|err| error(-4, format!("encode signing batch: {err}")))?;
-    let prepared_artifact_digest = blake3_hex(&prepared_bytes);
+    let prepared_artifact_digest = approval_binding_digest(prepared, &selector)?;
     let approval_hint = existing_approval_hint(approval_key, &prepared_artifact_digest)?;
     let claim = batch_claim(ctx, operation_class, &payloads)?;
     match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
@@ -99,7 +100,7 @@ pub fn sign_prepared_batch(
         approval_hint,
         action: Some(prepared_bytes),
         advisory: None,
-        selector: petal::SignSelector::Exact,
+        selector: selector.clone(),
         key_ref_jcs: None,
     }) {
         Ok(SignBatchOutcome::Signatures(signatures)) if signatures.len() == prepared.len() => {
@@ -137,6 +138,10 @@ pub fn sign_prepared_batch(
                 "prepared_artifact_digest": prepared_artifact_digest,
                 "retry_state": "approval_required",
                 "operation": "signing_batch",
+                "selector": match selector {
+                    petal::SignSelector::Exact => "exact",
+                    petal::SignSelector::Reusable => "reusable",
+                },
                 "request_count": prepared.len(),
             });
             match store_put_json(approval_key, &artifact, false) {
@@ -207,16 +212,73 @@ pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), Dispat
     Ok(())
 }
 
+/// Sign one prepared payload under an owner approval bound to its exact bytes.
 pub fn sign_prepared(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
     approval_key: &str,
 ) -> Result<Vec<u8>, DispatchResponse> {
-    sign_prepared_batch(ctx, wallet, &[prepared], &prepared.intent, approval_key)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| error(-4, "payload batch returned no signature"))
+    sign_prepared_items(
+        ctx,
+        wallet,
+        &[prepared],
+        &prepared.intent,
+        approval_key,
+        petal::SignSelector::Exact,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| error(-4, "payload batch returned no signature"))
+}
+
+/// Sign one prepared payload under a single-use owner approval that is not
+/// bound to its bytes. Use this only for payloads carrying a short-lived venue
+/// field (such as a server timestamp) that must be rebuilt after the owner
+/// approves; the approval stays bound to this Petal, route, wallet, operation
+/// class and signature count.
+pub fn sign_prepared_reusable(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    prepared: &PreparedSigning,
+    approval_key: &str,
+) -> Result<Vec<u8>, DispatchResponse> {
+    sign_prepared_items(
+        ctx,
+        wallet,
+        &[prepared],
+        &prepared.intent,
+        approval_key,
+        petal::SignSelector::Reusable,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| error(-4, "payload batch returned no signature"))
+}
+
+/// Identity a stored approval artifact must match before its action is reused.
+/// Exact approvals bind the full prepared payloads. Reusable approvals bind only
+/// the fields that stay stable when the payload is rebuilt.
+fn approval_binding_digest(
+    prepared: &[&PreparedSigning],
+    selector: &petal::SignSelector,
+) -> Result<String, DispatchResponse> {
+    let bytes = match selector {
+        petal::SignSelector::Exact => serde_json::to_vec(prepared),
+        petal::SignSelector::Reusable => serde_json::to_vec(&serde_json::json!({
+            "selector": "reusable",
+            "items": prepared
+                .iter()
+                .map(|item| serde_json::json!({
+                    "operation": item.operation,
+                    "intent": item.intent,
+                    "owner": item.owner,
+                }))
+                .collect::<Vec<_>>(),
+        })),
+    }
+    .map_err(|err| error(-4, format!("encode approval binding: {err}")))?;
+    Ok(blake3_hex(&bytes))
 }
 
 fn existing_approval_hint(
@@ -304,5 +366,57 @@ mod tests {
             serde_json::json!({"amount": "2"}),
         );
         assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+    }
+
+    fn clob_auth_at(timestamp: u64) -> PreparedSigning {
+        let signing_preimage = timestamp.to_be_bytes().to_vec();
+        PreparedSigning::new(
+            "clob_auth",
+            "polymarket.onboard",
+            Address::ZERO,
+            signing_preimage.clone(),
+            alloy::primitives::keccak256(&signing_preimage),
+            serde_json::json!({"timestamp": timestamp}),
+        )
+    }
+
+    #[test]
+    fn exact_approval_binding_changes_with_rebuilt_payload() {
+        let first = clob_auth_at(1_000);
+        let rebuilt = clob_auth_at(1_300);
+        assert_ne!(
+            approval_binding_digest(&[&first], &petal::SignSelector::Exact).unwrap(),
+            approval_binding_digest(&[&rebuilt], &petal::SignSelector::Exact).unwrap()
+        );
+    }
+
+    #[test]
+    fn reusable_approval_binding_survives_rebuilt_payload() {
+        let first = clob_auth_at(1_000);
+        let rebuilt = clob_auth_at(1_300);
+        assert_eq!(
+            approval_binding_digest(&[&first], &petal::SignSelector::Reusable).unwrap(),
+            approval_binding_digest(&[&rebuilt], &petal::SignSelector::Reusable).unwrap()
+        );
+        assert_ne!(
+            approval_binding_digest(&[&first], &petal::SignSelector::Reusable).unwrap(),
+            approval_binding_digest(&[&first], &petal::SignSelector::Exact).unwrap()
+        );
+    }
+
+    #[test]
+    fn reusable_approval_binding_keeps_operation_and_owner() {
+        let clob = clob_auth_at(1_000);
+        let mut other_owner = clob.clone();
+        other_owner.owner = "0x0000000000000000000000000000000000000001".into();
+        let mut other_operation = clob.clone();
+        other_operation.operation = "onboard_approvals".into();
+        let base = approval_binding_digest(&[&clob], &petal::SignSelector::Reusable).unwrap();
+        for changed in [other_owner, other_operation] {
+            assert_ne!(
+                base,
+                approval_binding_digest(&[&changed], &petal::SignSelector::Reusable).unwrap()
+            );
+        }
     }
 }

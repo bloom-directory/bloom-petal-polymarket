@@ -8,7 +8,7 @@ pub use crate::app_types::{
     default_slippage_bps, default_true,
 };
 pub use crate::approval::{
-    PreparedSigning, load_prepared_signing, sign_prepared, sign_prepared_batch,
+    PreparedSigning, load_prepared_signing, sign_prepared, sign_prepared_reusable,
     store_prepared_signing, store_review_intent, verify_review_intent,
 };
 pub use crate::constants::{
@@ -38,9 +38,9 @@ pub use crate::infra_parts::relayer::{
     LocalRelayerTx, RelayerHttpError, builder_headers, builder_hmac_signature,
     dispatch_error_message, onboard_in_flight_deadline_ms, parse_json_u64,
     parse_relayer_submit_response, parse_relayer_transaction_response, prepare_relayer_batch,
-    relayer_batch_body, relayer_get_json, relayer_http_error, relayer_poll_confirmed,
-    relayer_signature_hex, relayer_submit, relayer_submit_configured, relayer_transaction,
-    relayer_tx_id_matches, relayer_wallet_nonce, store_prepared_relayer_signature,
+    relayer_batch_body, relayer_batch_signature, relayer_get_json, relayer_http_error,
+    relayer_poll_confirmed, relayer_signature_hex, relayer_submit, relayer_submit_configured,
+    relayer_transaction, relayer_tx_id_matches, relayer_wallet_nonce,
 };
 pub use crate::infra_parts::store::{
     StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,

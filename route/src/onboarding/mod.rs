@@ -9,8 +9,6 @@ mod flow;
 mod persistence;
 mod status;
 
-const CLOB_AUTH_PREPARED_MAX_AGE_SECS: u64 = 45;
-
 pub use flow::run_onboard_stages;
 pub use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
 pub use status::{
@@ -91,125 +89,64 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
             }
         };
     }
-    let prepared = match load_prepared_signing(&prepared_key) {
-        Ok(Some(prepared)) => prepared,
-        Ok(None) => {
-            let timestamp = match clob_server_time() {
-                Ok(timestamp) => timestamp,
-                Err(resp) => return resp,
-            };
-            let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, chain_id);
-            let review = serde_json::json!({
-                "operation": "clob_auth",
-                "owner": owner.to_checksum(None),
-                "chain_id": chain_id,
-                "timestamp": action.timestamp,
-                "nonce": action.nonce,
-                "message": action.message,
-                "signing_hash": format!("{:#x}", action.signing_hash),
-            });
-            let review_hash = match store_review_intent(&review_key, &review) {
-                Ok(hash) => hash,
-                Err(resp) => return resp,
-            };
-            let prepared = PreparedSigning::new(
-                "clob_auth",
-                "polymarket.onboard",
-                owner,
-                action.signing_preimage,
-                action.signing_hash,
-                serde_json::json!({
-                    "timestamp": action.timestamp,
-                    "nonce": action.nonce,
-                    "chain_id": chain_id,
-                    "review_intent_hash": review_hash,
-                }),
-            );
-            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
-                return resp;
-            }
-            prepared
-        }
-        Err(resp) => return resp,
-    };
-    if prepared.operation != "clob_auth" || prepared.owner != owner.to_checksum(None) {
-        return error(-4, "prepared CLOB auth does not match wallet");
-    }
-    if prepared
-        .preimage
-        .get("chain_id")
-        .and_then(serde_json::Value::as_u64)
-        != Some(chain_id)
-    {
-        return error(-4, "prepared CLOB auth does not match configured chain");
-    }
-    let timestamp = match prepared
-        .preimage
-        .get("timestamp")
-        .and_then(serde_json::Value::as_u64)
-    {
-        Some(timestamp) => timestamp,
-        None => return error(-4, "prepared CLOB auth is missing timestamp"),
-    };
-    let current_clob_time = match clob_server_time() {
-        Ok(timestamp) => timestamp,
-        Err(resp) => return resp,
-    };
-    if !clob_auth_timestamp_is_fresh(timestamp, current_clob_time) {
-        for key in [&prepared_key, &approval_key, &review_key] {
-            match petal::sdk::store_del(key) {
-                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                Err(err) => return sdk_error(err),
-            }
-        }
-        return begin_onboarding(ctx, wallet);
-    }
-    let review_hash = match prepared
-        .preimage
-        .get("review_intent_hash")
-        .and_then(serde_json::Value::as_str)
-    {
-        Some(hash) => hash,
-        None => return error(-4, "prepared CLOB auth is missing review intent hash"),
-    };
-    if let Err(resp) = verify_review_intent(&review_key, review_hash) {
-        return resp;
-    }
-    let prepared_relayer = if let Some(deposit) = deposit {
+    // Deposit-wallet approvals first. The batch has a long deadline, so its
+    // owner approval stays bound to the exact reviewed bytes and the signature
+    // is stored for the funded approval stage.
+    if let Some(deposit) = deposit {
         let nonce = match relayer_wallet_nonce(owner) {
             Ok(nonce) => nonce,
             Err(resp) => return resp,
         };
         let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-        match prepare_relayer_batch(wallet, owner, deposit, nonce, deadline) {
-            Ok(prepared) => Some(prepared),
-            Err(resp) => return resp,
-        }
-    } else {
-        None
-    };
-    let signature = if let Some(prepared_relayer) = prepared_relayer.as_ref() {
-        let signatures = match sign_prepared_batch(
-            ctx,
-            wallet,
-            &[&prepared, prepared_relayer],
-            "polymarket.onboard",
-            &approval_key,
-        ) {
-            Ok(signatures) => signatures,
+        let prepared_relayer = match prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)
+        {
+            Ok(prepared) => prepared,
             Err(resp) => return resp,
         };
-        if let Err(resp) =
-            store_prepared_relayer_signature(wallet, prepared_relayer, &signatures[1])
-        {
+        if let Err(resp) = relayer_batch_signature(ctx, wallet, &prepared_relayer) {
             return resp;
         }
-        format!("0x{}", hex::encode(&signatures[0]))
-    } else {
-        match sign_prepared(ctx, wallet, &prepared, &approval_key) {
-            Ok(signature) => format!("0x{}", hex::encode(signature)),
-            Err(resp) => return resp,
-        }
+    }
+    // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
+    // faster than an owner ceremony completes. Build it fresh on every attempt
+    // and sign it under a single-use approval that is not bound to the bytes.
+    let timestamp = match clob_server_time() {
+        Ok(timestamp) => timestamp,
+        Err(resp) => return resp,
+    };
+    let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, chain_id);
+    let review = serde_json::json!({
+        "operation": "clob_auth",
+        "owner": owner.to_checksum(None),
+        "chain_id": chain_id,
+        "timestamp": action.timestamp,
+        "nonce": action.nonce,
+        "message": action.message,
+        "signing_hash": format!("{:#x}", action.signing_hash),
+    });
+    let review_hash = match store_review_intent(&review_key, &review) {
+        Ok(hash) => hash,
+        Err(resp) => return resp,
+    };
+    let prepared = PreparedSigning::new(
+        "clob_auth",
+        "polymarket.onboard",
+        owner,
+        action.signing_preimage,
+        action.signing_hash,
+        serde_json::json!({
+            "timestamp": action.timestamp,
+            "nonce": action.nonce,
+            "chain_id": chain_id,
+            "review_intent_hash": review_hash,
+        }),
+    );
+    if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
+        return resp;
+    }
+    let signature = match sign_prepared_reusable(ctx, wallet, &prepared, &approval_key) {
+        Ok(signature) => format!("0x{}", hex::encode(signature)),
+        Err(resp) => return resp,
     };
     let headers = [
         (POLY_ADDRESS, format!("{owner:#x}")),
@@ -248,21 +185,5 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
             let _ = persist_onboard_failure(wallet, owner, deposit, &resp);
             resp
         }
-    }
-}
-
-fn clob_auth_timestamp_is_fresh(prepared: u64, current: u64) -> bool {
-    current.saturating_sub(prepared) <= CLOB_AUTH_PREPARED_MAX_AGE_SECS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prepared_clob_auth_expires_before_server_rejects_it() {
-        assert!(clob_auth_timestamp_is_fresh(1_000, 1_045));
-        assert!(!clob_auth_timestamp_is_fresh(1_000, 1_046));
-        assert!(clob_auth_timestamp_is_fresh(1_001, 1_000));
     }
 }
