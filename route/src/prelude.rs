@@ -8,8 +8,8 @@ pub use crate::app_types::{
     default_slippage_bps, default_true,
 };
 pub use crate::approval::{
-    PreparedSigning, load_prepared_signing, sign_prepared, sign_prepared_reusable,
-    store_prepared_signing, store_review_intent, verify_review_intent,
+    PreparedSigning, load_prepared_signing, pending_approval_selector, sign_prepared,
+    sign_prepared_reusable, store_prepared_signing, store_review_intent, verify_review_intent,
 };
 pub use crate::constants::{
     BATCH_DEADLINE_SECS, CLOB, CLOB_AUTH_NONCE, DATA, GAMMA, MARKETS_LIST_LIMIT,

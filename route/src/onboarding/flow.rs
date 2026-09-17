@@ -132,7 +132,7 @@ pub fn run_onboard_stages(
                 for key in [
                     format!("onboard/{wallet}/prepared_relayer_batch.json"),
                     format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
-                    format!("onboard/{wallet}/approval.json"),
+                    super::approval_key(wallet),
                 ] {
                     match petal::sdk::store_del(&key) {
                         Ok(()) | Err(petal::sdk::SdkError::Host(HostStatus::NotFound)) => {}
@@ -150,7 +150,15 @@ pub fn run_onboard_stages(
                 wallet,
                 owner,
                 creds,
-                relayer_batch_body(ctx, wallet, owner, deposit, nonce, deadline)?,
+                relayer_batch_body(
+                    ctx,
+                    wallet,
+                    owner,
+                    deposit,
+                    nonce,
+                    deadline,
+                    &super::approval_key(wallet),
+                )?,
             )?;
             approve_tx_id = Some(tx.id.clone());
             persist_onboard_status(
@@ -195,7 +203,7 @@ pub fn run_onboard_stages(
         let _ = petal::sdk::store_del(&format!(
             "creds/onboard/{wallet}/prepared_relayer_signature.json"
         ));
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/approval.json"));
+        let _ = petal::sdk::store_del(&super::approval_key(wallet));
         if !read_chain_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
             persist_onboard_status(

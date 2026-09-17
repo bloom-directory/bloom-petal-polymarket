@@ -247,6 +247,7 @@ pub fn relayer_batch_body(
     deposit: Address,
     nonce: u64,
     deadline: u64,
+    approval_key: &str,
 ) -> Result<serde_json::Value, DispatchResponse> {
     let prepared = prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)?;
     let prepared_deadline = prepared
@@ -274,7 +275,7 @@ pub fn relayer_batch_body(
         .get("nonce")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
-    let signature = relayer_batch_signature(ctx, wallet, &prepared)?;
+    let signature = relayer_batch_signature(ctx, wallet, &prepared, approval_key)?;
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
@@ -418,29 +419,29 @@ pub fn relayer_batch_signature(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
+    approval_key: &str,
 ) -> Result<String, DispatchResponse> {
     let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
     match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
         Ok(bytes) => {
-            let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
-                .map_err(|err| error(-4, format!("stored relayer signature: {err}")))?;
-            if stored.prepared_digest != prepared.digest()? {
-                return Err(error(
-                    -4,
-                    "stored relayer signature does not match prepared batch",
-                ));
+            // A stored signature that no longer matches the prepared batch (or
+            // no longer parses) is useless; retire it and sign the current
+            // batch instead of failing on every retry.
+            let usable = serde_json::from_slice::<PreparedRelayerSignature>(&bytes)
+                .ok()
+                .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref());
+            match usable {
+                Some(stored) => return normalize_relayer_signature_hex(&stored.signature_hex),
+                None => match petal::sdk::store_del(&signature_key) {
+                    Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+                    Err(err) => return Err(sdk_error(err)),
+                },
             }
-            return normalize_relayer_signature_hex(&stored.signature_hex);
         }
         Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
         Err(err) => return Err(sdk_error(err)),
     }
-    let signature = relayer_signature_hex(&sign_prepared(
-        ctx,
-        wallet,
-        prepared,
-        &format!("onboard/{wallet}/approval.json"),
-    )?)?;
+    let signature = relayer_signature_hex(&sign_prepared(ctx, wallet, prepared, approval_key)?)?;
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
         signature_hex: signature.clone(),

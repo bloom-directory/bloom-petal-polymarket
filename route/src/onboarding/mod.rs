@@ -10,6 +10,12 @@ mod persistence;
 mod status;
 
 pub use flow::run_onboard_stages;
+
+/// Store key of the owner-visible approval artifact shared by the onboarding
+/// signatures; only one of them is ever pending at a time.
+pub fn approval_key(wallet: &str) -> String {
+    format!("onboard/{wallet}/approval.json")
+}
 pub use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
 pub use status::{
     LiveOnboardStatus, fundable_deposit_wallet, fundable_deposit_wallet_from_status,
@@ -47,8 +53,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
             Err(resp) => return resp,
         }
     };
-    let prepared_key = format!("onboard/{wallet}/prepared_clob_auth.json");
-    let approval_key = format!("onboard/{wallet}/approval.json");
+    let approval_key = approval_key(wallet);
     let review_key = format!("onboard/{wallet}/review_intent.json");
     let existing_creds: Option<Credentials> =
         match petal::sdk::store_get(&format!("creds/{wallet}/clob.json"), MAX_STORE_BYTES) {
@@ -61,12 +66,15 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
         };
     if let Some(creds) = existing_creds {
         // CLOB credentials are durable. Once they exist, onboarding resumes at
-        // the live wallet stages instead of preparing another timestamp-bound
-        // L1 authentication signature. Retire only stale CLOB-auth artifacts;
-        // relayer approval artifacts remain available for the later funded
-        // stage.
-        if store_get(&prepared_key).is_some() {
-            for key in [&prepared_key, &approval_key, &review_key] {
+        // the live wallet stages instead of preparing another L1 authentication
+        // signature. Retire a stale CLOB-auth approval or an unreadable one; a
+        // pending deposit-wallet batch approval belongs to the funded stage.
+        let stale_clob_approval = match pending_approval_selector(&approval_key) {
+            Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
+            Err(resp) => return resp,
+        };
+        if stale_clob_approval {
+            for key in [&approval_key, &review_key] {
                 match petal::sdk::store_del(key) {
                     Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
                     Err(err) => return sdk_error(err),
@@ -89,27 +97,11 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
             }
         };
     }
-    // Deposit-wallet approvals first. The batch has a long deadline, so its
-    // owner approval stays bound to the exact reviewed bytes and the signature
-    // is stored for the funded approval stage.
-    if let Some(deposit) = deposit {
-        let nonce = match relayer_wallet_nonce(owner) {
-            Ok(nonce) => nonce,
-            Err(resp) => return resp,
-        };
-        let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-        let prepared_relayer = match prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)
-        {
-            Ok(prepared) => prepared,
-            Err(resp) => return resp,
-        };
-        if let Err(resp) = relayer_batch_signature(ctx, wallet, &prepared_relayer) {
-            return resp;
-        }
-    }
     // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
     // faster than an owner ceremony completes. Build it fresh on every attempt
     // and sign it under a single-use approval that is not bound to the bytes.
+    // The deposit-wallet approval batch is prepared and approved later, in the
+    // funded stage, so its one-hour deadline starts when it can be submitted.
     let timestamp = match clob_server_time() {
         Ok(timestamp) => timestamp,
         Err(resp) => return resp,
@@ -141,9 +133,6 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
             "review_intent_hash": review_hash,
         }),
     );
-    if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
-        return resp;
-    }
     let signature = match sign_prepared_reusable(ctx, wallet, &prepared, &approval_key) {
         Ok(signature) => format!("0x{}", hex::encode(signature)),
         Err(resp) => return resp,
@@ -169,7 +158,6 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
     {
         return error(-4, "failed to store CLOB credentials");
     }
-    let _ = petal::sdk::store_del(&prepared_key);
     let _ = petal::sdk::store_del(&approval_key);
     if relayer_config.legacy_eoa_mode {
         return store_put_json(

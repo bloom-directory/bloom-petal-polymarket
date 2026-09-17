@@ -88,7 +88,10 @@ fn sign_prepared_items(
     let prepared_bytes = serde_json::to_vec(prepared)
         .map_err(|err| error(-4, format!("encode signing batch: {err}")))?;
     let prepared_artifact_digest = approval_binding_digest(prepared, &selector)?;
-    let approval_hint = existing_approval_hint(approval_key, &prepared_artifact_digest)?;
+    let selector_label = selector_label(&selector);
+    let approval_hint =
+        existing_approval_hint(approval_key, &prepared_artifact_digest, selector_label)?;
+    let sent_hint = approval_hint.is_some();
     let claim = batch_claim(ctx, operation_class, &payloads)?;
     match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
         wallet: wallet.into(),
@@ -138,10 +141,7 @@ fn sign_prepared_items(
                 "prepared_artifact_digest": prepared_artifact_digest,
                 "retry_state": "approval_required",
                 "operation": "signing_batch",
-                "selector": match selector {
-                    petal::SignSelector::Exact => "exact",
-                    petal::SignSelector::Reusable => "reusable",
-                },
+                "selector": selector_label,
                 "request_count": prepared.len(),
             });
             match store_put_json(approval_key, &artifact, false) {
@@ -155,7 +155,43 @@ fn sign_prepared_items(
                 response => Err(response),
             }
         }
+        Err(SdkError::Host(HostStatus::Denied)) if sent_hint => {
+            // The host keeps its own authorization state keyed by the request
+            // identity; the stored hint is advisory. A hint the host rejects
+            // (for example the policy-eligibility action recorded on first
+            // use) would otherwise be resent on every retry, so retire it and
+            // let the retry go without one.
+            match petal::sdk::store_del(approval_key) {
+                Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
+                Err(err) => return Err(sdk_error(err)),
+            }
+            Err(error(
+                -2,
+                "host rejected the stored approval hint; it was retired, retry the exact write",
+            ))
+        }
+        Err(SdkError::Host(HostStatus::Denied)) => Err(error(
+            -2,
+            match selector {
+                petal::SignSelector::Exact => {
+                    "signing denied: the owner may have rejected the ceremony, the wallet policy may not allow this Petal, or the Broker may be unavailable"
+                }
+                // A single-use approval is consumed when it signs. If the step
+                // after signing failed, the retry reaches the host with the
+                // same consumed approval until it expires.
+                petal::SignSelector::Reusable => {
+                    "signing denied: the owner may have rejected the ceremony, the Broker may be unavailable, or an earlier attempt signed but failed afterwards and its single-use approval is spent (wait up to 5 minutes, then retry the exact write)"
+                }
+            },
+        )),
         Err(err) => Err(sdk_error_with_context("sign prepared batch", err)),
+    }
+}
+
+fn selector_label(selector: &petal::SignSelector) -> &'static str {
+    match selector {
+        petal::SignSelector::Exact => "exact",
+        petal::SignSelector::Reusable => "reusable",
     }
 }
 
@@ -166,6 +202,32 @@ struct ApprovalArtifact {
     prepared_artifact_digest: String,
     retry_state: String,
     operation: String,
+    /// Absent on artifacts written before the selector was recorded; those
+    /// were always exact.
+    #[serde(default)]
+    selector: Option<String>,
+}
+
+impl ApprovalArtifact {
+    fn selector_label(&self) -> &str {
+        self.selector.as_deref().unwrap_or("exact")
+    }
+}
+
+/// Which kind of owner approval, if any, a stored approval artifact is waiting
+/// on: `Some("exact")`, `Some("reusable")`, `Some("unreadable")` for an
+/// artifact that no longer parses, or `None` when nothing is pending.
+pub fn pending_approval_selector(key: &str) -> Result<Option<String>, DispatchResponse> {
+    let bytes = match petal::sdk::store_get(key, MAX_STORE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SdkError::Host(HostStatus::NotFound)) => return Ok(None),
+        Err(error) => return Err(sdk_error(error)),
+    };
+    Ok(Some(
+        serde_json::from_slice::<ApprovalArtifact>(&bytes)
+            .map(|existing| existing.selector_label().to_string())
+            .unwrap_or_else(|_| "unreadable".to_string()),
+    ))
 }
 
 pub fn store_prepared_signing(
@@ -281,23 +343,34 @@ fn approval_binding_digest(
     Ok(blake3_hex(&bytes))
 }
 
+/// Return the pending approval action for this exact operation, if the stored
+/// artifact still describes it. The artifact is a Petal-local hint: the host
+/// independently checks it against its own authorization state, so a stale
+/// or mismatched artifact is retired here and a fresh request is made rather
+/// than leaving the route stuck on an artifact the owner cannot clear.
 fn existing_approval_hint(
     key: &str,
     prepared_artifact_digest: &str,
+    selector_label: &str,
 ) -> Result<Option<String>, DispatchResponse> {
     let bytes = match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => bytes,
         Err(SdkError::Host(HostStatus::NotFound)) => return Ok(None),
         Err(error) => return Err(sdk_error(error)),
     };
-    let existing: ApprovalArtifact = serde_json::from_slice(&bytes)
-        .map_err(|err| error(-4, format!("corrupt approval artifact: {err}")))?;
-    if existing.prepared_artifact_digest != prepared_artifact_digest {
-        return Err(error(
-            -4,
-            "approval artifact does not match prepared operation",
-        ));
-    }
+    let matches = serde_json::from_slice::<ApprovalArtifact>(&bytes)
+        .ok()
+        .filter(|existing| {
+            existing.prepared_artifact_digest == prepared_artifact_digest
+                && existing.selector_label() == selector_label
+        });
+    let Some(existing) = matches else {
+        match petal::sdk::store_del(key) {
+            Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
+            Err(error) => return Err(sdk_error(error)),
+        }
+        return Ok(None);
+    };
     Ok((existing.expires_ms > now_millis() as u64).then_some(existing.action_id))
 }
 
@@ -368,6 +441,29 @@ mod tests {
         assert_ne!(first.digest().unwrap(), second.digest().unwrap());
     }
 
+    #[test]
+    fn approval_artifact_without_selector_reads_as_exact() {
+        let legacy: ApprovalArtifact = serde_json::from_value(serde_json::json!({
+            "action_id": "a",
+            "expires_ms": 1,
+            "prepared_artifact_digest": "d",
+            "retry_state": "approval_required",
+            "operation": "signing_batch",
+        }))
+        .unwrap();
+        assert_eq!(legacy.selector_label(), "exact");
+        let reusable: ApprovalArtifact = serde_json::from_value(serde_json::json!({
+            "action_id": "a",
+            "expires_ms": 1,
+            "prepared_artifact_digest": "d",
+            "retry_state": "approval_required",
+            "operation": "signing_batch",
+            "selector": "reusable",
+        }))
+        .unwrap();
+        assert_eq!(reusable.selector_label(), "reusable");
+    }
+
     fn clob_auth_at(timestamp: u64) -> PreparedSigning {
         let signing_preimage = timestamp.to_be_bytes().to_vec();
         PreparedSigning::new(
@@ -404,8 +500,12 @@ mod tests {
         );
     }
 
+    /// The Petal-local hint distinguishes operation and owner so a pending
+    /// CLOB-auth artifact is never presented as the hint for another prepared
+    /// operation. This is advisory only: the Broker's reusable approval scope
+    /// is keyed on the operation class, which both onboarding payloads share.
     #[test]
-    fn reusable_approval_binding_keeps_operation_and_owner() {
+    fn reusable_approval_hint_distinguishes_operation_and_owner() {
         let clob = clob_auth_at(1_000);
         let mut other_owner = clob.clone();
         other_owner.owner = "0x0000000000000000000000000000000000000001".into();
