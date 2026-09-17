@@ -285,7 +285,10 @@ fn execute(
     }
 
     let signature = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
-        Ok(signature) => format!("0x{}", hex::encode(signature)),
+        Ok(signature) => match relayer_signature_hex(&signature) {
+            Ok(signature) => signature,
+            Err(resp) => return resp,
+        },
         Err(resp) => return resp,
     };
     let calls = match prepared
