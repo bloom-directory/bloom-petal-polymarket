@@ -21,6 +21,10 @@
   release implementation in this repository.
 - Release tags use `vMAJOR.MINOR.PATCH`. Published assets are immutable; use a
   new patch version rather than moving a tag or replacing an archive.
+- The package is wallet-scoped and supports account 0. Resolve `[wallet]`
+  route parameters with `petal::wallet_param(ctx)` and read the owner EOA from
+  `wallets/<wallet>/0/address.evm`. Never read the retired wallet-root
+  `address`, `public_key`, or `addresses.json` leaves.
 
 ## Route/controller/module shape
 

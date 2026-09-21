@@ -1,5 +1,5 @@
 petal::route_file!(spec: petal::wallet_http_read_spec(10_000), read: |ctx: &petal::Ctx| {
-    let wallet = match petal::param(ctx, "wallet") {
+    let wallet = match petal::wallet_param(ctx) {
         Ok(value) => value,
         Err(resp) => return resp,
     };

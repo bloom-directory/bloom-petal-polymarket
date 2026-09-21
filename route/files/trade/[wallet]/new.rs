@@ -3,7 +3,7 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store"]
 {"slug":"will-canada-win-the-2026-fifa-world-cup-755","outcome":"yes","amount":"1","max_price":"0.01"}
 "#.to_vec()),
     write: |ctx: &petal::Ctx, body: &[u8]| {
-        let wallet = match petal::param(ctx, "wallet") {
+        let wallet = match petal::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };

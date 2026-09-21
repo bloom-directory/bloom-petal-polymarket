@@ -34,6 +34,12 @@ Petal's own state. They are advisory application configuration only. The Petal
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
 
+The Petal is wallet-scoped and supports **account 0** only. `[wallet]` route
+parameters are Bloom wallet ids, and the owner EOA is read from
+`wallets/<wallet>/0/address.evm`. The retired wallet-root `address`,
+`public_key`, and `addresses.json` leaves are never read. A missing address
+leaf fails with an error that names the path.
+
 It uses only the Petal route ABI and does not delegate to the legacy native
 `polymarket/...` VFS handler.
 
