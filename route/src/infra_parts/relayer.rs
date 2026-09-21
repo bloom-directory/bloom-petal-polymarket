@@ -429,9 +429,10 @@ pub fn relayer_batch_signature(
             // batch instead of failing on every retry.
             let usable = serde_json::from_slice::<PreparedRelayerSignature>(&bytes)
                 .ok()
-                .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref());
+                .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref())
+                .and_then(|stored| normalize_relayer_signature_hex(&stored.signature_hex).ok());
             match usable {
-                Some(stored) => return normalize_relayer_signature_hex(&stored.signature_hex),
+                Some(signature) => return Ok(signature),
                 None => match petal::sdk::store_del(&signature_key) {
                     Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
                     Err(err) => return Err(sdk_error(err)),
@@ -631,5 +632,6 @@ mod tests {
         let mut signature = [0; 65];
         signature[64] = 2;
         assert!(relayer_signature_hex(&signature).is_err());
+        assert!(normalize_relayer_signature_hex("0xnot-hex").is_err());
     }
 }
