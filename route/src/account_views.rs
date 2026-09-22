@@ -1,4 +1,4 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use serde::Deserialize;
 
 use crate::polymarket::builder_creds::BuilderApiKeyInfo;
@@ -336,6 +336,68 @@ pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
         other => sdk_error(other),
     })?;
     String::from_utf8(bytes).map_err(|_| error(-4, "stored Enso API key is not valid UTF-8"))
+}
+
+fn load_builder_code_override() -> Result<Option<String>, DispatchResponse> {
+    match petal::sdk::store_get("settings/builder-code", 128) {
+        Ok(bytes) => {
+            let raw = core::str::from_utf8(&bytes)
+                .map_err(|_| error(-4, "stored builder code is not valid UTF-8"))?;
+            Ok(Some(raw.to_string()))
+        }
+        Err(SdkError::Host(HostStatus::NotFound)) => Ok(None),
+        Err(err) => Err(sdk_error(err)),
+    }
+}
+
+pub fn read_builder_code_status() -> DispatchResponse {
+    let override_code = match load_builder_code_override() {
+        Ok(code) => code,
+        Err(resp) => return resp,
+    };
+    petal::read_json_value(&crate::builder_code::builder_code_status(
+        override_code.as_deref(),
+    ))
+}
+
+pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
+    let text = match core::str::from_utf8(body) {
+        Ok(value) => value.trim(),
+        Err(_) => return error(-3, "builder code must be UTF-8"),
+    };
+    if text.is_empty() {
+        return match petal::sdk::store_del("settings/builder-code") {
+            Ok(()) => DispatchResponse::Write,
+            Err(err) => sdk_error(err),
+        };
+    }
+    let parsed = match crate::builder_code::parse_builder_code(text) {
+        Ok(parsed) => parsed,
+        Err(err) => return error(-3, format!("builder code: {err}")),
+    };
+    match petal::sdk::store_put(
+        "settings/builder-code",
+        format!("0x{}", hex::encode(parsed.0)).as_bytes(),
+        false,
+    ) {
+        Ok(()) => DispatchResponse::Write,
+        Err(err) => sdk_error(err),
+    }
+}
+
+/// The builder attribution code every order should carry: the resolved
+/// default (operator store override, else this release's embedded default),
+/// or `None` if nothing is configured — orders then carry a zero builder
+/// field, same as before this was wired up.
+pub fn resolve_builder_code() -> Result<Option<B256>, DispatchResponse> {
+    let override_code = load_builder_code_override()?;
+    let Some(code) = crate::builder_code::resolve_default_builder_code(override_code.as_deref())
+    else {
+        return Ok(None);
+    };
+    crate::builder_code::parse_builder_code(&code)
+        .map(Some)
+        .map_err(|err| error(-4, format!("configured builder code: {err}")))
 }
 
 fn wallet_status(wallet: &str) -> Result<(Address, serde_json::Value), DispatchResponse> {

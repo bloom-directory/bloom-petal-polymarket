@@ -13,6 +13,8 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "builder_key_revoke": "builder-keys/<wallet>/revoke",
             "enso_settings": "settings/enso-api-key",
             "relayer_settings": "settings/relayer.json",
+            "builder_code_settings": "settings/builder-code",
+            "builder_code_status": "settings/builder-code-status.json",
             "venue_settings": "settings/<wallet>/venue.toml",
             "fund_new": "fund/<wallet>/new",
             "fund_confirm": "fund/<wallet>/<id>/confirm",
