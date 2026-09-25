@@ -76,7 +76,7 @@ pub fn buying_power(wallet: &str) -> DispatchResponse {
         "can_trade_now": !legacy_eoa && tradeable && has_balance,
         "credentials_read_only": legacy_eoa,
         "funding_needed": !has_balance,
-        "funding_options_ref": format!("account/{wallet}/funding_options.json"),
+        "funding_options_ref": crate::account::link(wallet, &format!("account/{wallet}/funding_options.json")),
     }))
 }
 
@@ -95,13 +95,13 @@ pub fn funding_options(wallet: &str) -> DispatchResponse {
             "from": "pUSD",
             "supported": !legacy_eoa,
             "review_required": true,
-            "fund_route": format!("fund/{wallet}/new"),
+            "fund_route": crate::account::link(wallet, &format!("fund/{wallet}/new")),
             "execution": "generic_evm_outbox_direct_erc20_transfer",
         }, {
             "from": "native_or_other_erc20",
             "supported": !legacy_eoa,
             "review_required": true,
-            "fund_route": format!("fund/{wallet}/new"),
+            "fund_route": crate::account::link(wallet, &format!("fund/{wallet}/new")),
             "execution": "enso_quote_then_generic_evm_outbox",
             "enso_key_configured": load_enso_api_key().is_ok(),
             "enso_router_configured": load_enso_router().is_ok(),

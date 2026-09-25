@@ -21,9 +21,9 @@
   release implementation in this repository.
 - Release tags use `vMAJOR.MINOR.PATCH`. Published assets are immutable; use a
   new patch version rather than moving a tag or replacing an archive.
-- The package is wallet-scoped and supports account 0. Resolve `[wallet]`
+- The package is wallet-scoped and supports numbered accounts. Resolve `[wallet]`
   route parameters with `petal::wallet_param(ctx)` and read the owner EOA from
-  `wallets/<wallet>/0/address.evm`. Never read the retired wallet-root
+  `wallets/<wallet>/<account>/address.evm`. Never read the retired wallet-root
   `address`, `public_key`, or `addresses.json` leaves.
 
 ## Route/controller/module shape
@@ -81,3 +81,7 @@
   focused modules implement reusable workflows or infrastructure; Polymarket
   modules implement protocol details. If a module starts looking like an index
   of route handlers, move that behavior back into the corresponding route files.
+
+## Account-scoped routes
+
+Select a wallet and numbered account under `/petals/polymarket/wallets/<wallet>/<account>/`. Petal operations and settings live below that directory. Account 0 keeps its existing private records; other accounts have separate stores. The core wallet tree remains `/wallets/<wallet>/<account>/`.

@@ -4,11 +4,7 @@ use crate::polymarket::Result;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, HttpRequest, SdkError};
 
-/// Bloom account whose EVM key owns the Polymarket deposit wallet. The Petal is
-/// mounted at `petals/polymarket/`, not under an account, so it uses the
-/// wallet's root account.
-const WALLET_ACCOUNT: u32 = 0;
-
+/// Resolve the selected account EVM owner of the Polymarket deposit wallet.
 pub fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
     petal::validate_wallet_id(wallet).map_err(|message| error(-3, message))?;
     let path = wallet_address_path(wallet);
@@ -30,8 +26,8 @@ pub fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
         .map_err(|message| error(-4, format!("wallet {wallet}: {message}")))
 }
 
-fn wallet_address_path(wallet: &str) -> String {
-    format!("wallets/{wallet}/{WALLET_ACCOUNT}/address.evm")
+pub(crate) fn wallet_address_path(wallet: &str) -> String {
+    format!("wallets/{wallet}/{}/address.evm", crate::account::number())
 }
 
 fn parse_wallet_address(path: &str, bytes: &[u8]) -> Result<Address, String> {

@@ -1,5 +1,5 @@
 petal::route_file!(spec: petal::static_read_spec(), read: |ctx: &petal::Ctx| {
-    let wallet = match petal::wallet_param(ctx) {
+    let wallet = match crate::account::wallet_param(ctx) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
