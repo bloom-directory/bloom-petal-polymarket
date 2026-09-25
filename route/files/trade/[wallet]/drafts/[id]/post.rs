@@ -3,7 +3,7 @@ petal::route_file!(spec: petal::signing_write_spec("polymarket.order.poly1271").
         petal::DispatchResponse::Read(b"write {\"post\":true} to sign and post a revalidated draft, then write a private receipt. This performs a value-moving CLOB POST /order.\n".to_vec())
     },
     write: |ctx: &petal::Ctx, body: &[u8]| {
-        let wallet = match petal::wallet_param(ctx) {
+        let wallet = match crate::account::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };

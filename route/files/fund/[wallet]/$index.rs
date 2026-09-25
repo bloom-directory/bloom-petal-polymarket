@@ -1,5 +1,5 @@
 petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_list: |ctx: &petal::Ctx| {
-    let wallet = petal::wallet_param(ctx)?;
+    let wallet = crate::account::wallet_param(ctx)?;
     let mut out = vec![petal::writable("new")];
     out.extend(petal::dirs(crate::infra_parts::lists::store_ids(
         &format!("fund/{wallet}/requests/"),

@@ -32,7 +32,7 @@ pub fn local_onboard_status(
         },
         "approvals": {
             "required": true,
-            "preview_path": format!("onboard/{wallet}/approvals.json")
+            "preview_path": crate::account::link(wallet, &format!("onboard/{wallet}/approvals.json"))
         },
         "message": message
     })
@@ -66,7 +66,7 @@ pub fn local_onboard_status_with_live_deposit(status: LiveOnboardStatus<'_>) -> 
         },
         "approvals": {
             "required": true,
-            "preview_path": format!("onboard/{}/approvals.json", status.wallet)
+            "preview_path": crate::account::link(status.wallet, &format!("onboard/{}/approvals.json", status.wallet))
         },
         "probes": status.probes,
         "message": status.message

@@ -29,14 +29,14 @@ funding through the generic EVM outbox. Enso credentials are provisioned
 through the write-only `settings/enso-api-key` route and remain in the Petal
 secret store.
 
-Per-wallet venue preferences live at `settings/<wallet>/venue.toml` in the
-Petal's own state. They are advisory application configuration only. The Petal
+Per-account venue preferences are read at `settings/venue.toml` below the
+selected account directory and stored in the Petal's own state. They are advisory application configuration only. The Petal
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
 
-The Petal is wallet-scoped and supports **account 0** only. `[wallet]` route
+The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
-`wallets/<wallet>/0/address.evm`. The retired wallet-root `address`,
+`wallets/<wallet>/<account>/address.evm`. The retired wallet-root `address`,
 `public_key`, and `addresses.json` leaves are never read. A missing address
 leaf fails with an error that names the path.
 
@@ -96,3 +96,7 @@ To publish a release:
 
 Do not retag or replace an existing release asset. Publish a new patch release
 for packaging-only corrections.
+
+## Account-scoped routes
+
+Select a wallet and numbered account under `/petals/polymarket/wallets/<wallet>/<account>/`. Petal operations and settings live below that directory. Account 0 keeps its existing private records; other accounts have separate stores. The core wallet tree remains `/wallets/<wallet>/<account>/`.
