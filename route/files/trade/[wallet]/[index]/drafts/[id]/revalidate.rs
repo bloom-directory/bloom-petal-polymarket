@@ -3,7 +3,8 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store",
         petal::DispatchResponse::Read(b"write {\"revalidate\":true} to revalidate this draft and stage the final review artifact. Revalidated drafts can then be posted by writing {\"post\":true} to post; resting GTC orders can be cancelled from their receipt.\n".to_vec())
     },
     write: |ctx: &petal::Ctx, body: &[u8]| {
-        let wallet = match crate::account::wallet_param(ctx) {
+    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+        let wallet = match petal::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };
@@ -11,6 +12,6 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store",
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::trade_flow_parts::revalidate::revalidate_trade_draft(wallet, id, body)
+        crate::trade_flow_parts::revalidate::revalidate_trade_draft(wallet, account, id, body)
     }
 );

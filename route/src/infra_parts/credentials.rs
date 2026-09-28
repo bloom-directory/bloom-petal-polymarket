@@ -8,8 +8,7 @@ pub fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> {
         return Err(error(
             -3,
             format!(
-                "wallet '{wallet}' is not onboarded; write {} first",
-                crate::account::link(wallet, &format!("onboard/{wallet}/begin"))
+                "wallet '{wallet}' is not onboarded; begin onboarding for the selected account first"
             ),
         ));
     };

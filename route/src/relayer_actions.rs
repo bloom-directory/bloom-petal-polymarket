@@ -73,11 +73,11 @@ pub fn revoke_plan(wallet: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
+pub fn withdraw_plan(wallet: &str, account: u32) -> DispatchResponse {
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -95,22 +95,39 @@ pub fn withdraw_plan(wallet: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub fn confirm_redeem(ctx: &petal::Ctx, wallet: &str, slug: &str, body: &[u8]) -> DispatchResponse {
-    execute(ctx, RelayerAction::Redeem { slug }, wallet, body)
+pub fn confirm_redeem(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    slug: &str,
+    body: &[u8],
+) -> DispatchResponse {
+    execute(ctx, RelayerAction::Redeem { slug }, wallet, account, body)
 }
 
-pub fn confirm_revoke(ctx: &petal::Ctx, wallet: &str, body: &[u8]) -> DispatchResponse {
-    execute(ctx, RelayerAction::RevokeApprovals, wallet, body)
+pub fn confirm_revoke(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    body: &[u8],
+) -> DispatchResponse {
+    execute(ctx, RelayerAction::RevokeApprovals, wallet, account, body)
 }
 
-pub fn confirm_withdraw(ctx: &petal::Ctx, wallet: &str, body: &[u8]) -> DispatchResponse {
-    execute(ctx, RelayerAction::WithdrawPusd, wallet, body)
+pub fn confirm_withdraw(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    body: &[u8],
+) -> DispatchResponse {
+    execute(ctx, RelayerAction::WithdrawPusd, wallet, account, body)
 }
 
 fn execute(
     ctx: &petal::Ctx,
     action: RelayerAction<'_>,
     wallet: &str,
+    account: u32,
     body: &[u8],
 ) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
@@ -129,7 +146,7 @@ fn execute(
             "confirmation requires confirm, y, or {\"confirm\":true}",
         );
     }
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };

@@ -31,8 +31,7 @@ pub fn local_onboard_status(
             "warning": "do not fund this local estimate; full onboarding must resolve the live factory address first"
         },
         "approvals": {
-            "required": true,
-            "preview_path": crate::account::link(wallet, &format!("onboard/{wallet}/approvals.json"))
+            "required": true
         },
         "message": message
     })
@@ -65,8 +64,7 @@ pub fn local_onboard_status_with_live_deposit(status: LiveOnboardStatus<'_>) -> 
             "warning": serde_json::Value::Null
         },
         "approvals": {
-            "required": true,
-            "preview_path": crate::account::link(status.wallet, &format!("onboard/{}/approvals.json", status.wallet))
+            "required": true
         },
         "probes": status.probes,
         "message": status.message

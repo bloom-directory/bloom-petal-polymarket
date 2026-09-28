@@ -24,7 +24,7 @@ pub use status::{
     tradeable_deposit_wallet,
 };
 
-pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
+pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -32,7 +32,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str) -> DispatchResponse {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };

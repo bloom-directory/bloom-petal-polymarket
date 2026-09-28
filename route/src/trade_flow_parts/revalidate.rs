@@ -5,7 +5,12 @@ use crate::polymarket::{Result, Side, validate_wallet_name};
 use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn revalidate_trade_draft(
+    wallet: &str,
+    account: u32,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -99,7 +104,7 @@ pub fn revalidate_trade_draft(wallet: &str, id: &str, body: &[u8]) -> DispatchRe
         Err(resp) => return resp,
     };
 
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };

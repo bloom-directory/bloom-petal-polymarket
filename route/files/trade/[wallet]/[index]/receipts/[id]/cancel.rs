@@ -3,7 +3,8 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store",
         petal::DispatchResponse::Read(b"write {\"cancel\":true} to cancel the posted CLOB order recorded by this receipt. Cancelling uses CLOB DELETE /order and updates the private receipt/draft status.\n".to_vec())
     },
     write: |ctx: &petal::Ctx, body: &[u8]| {
-        let wallet = match crate::account::wallet_param(ctx) {
+    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+        let wallet = match petal::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };
@@ -11,6 +12,6 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:http", "bloom:store",
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::trade_flow_parts::posting::cancel_trade_receipt(wallet, id, body)
+        crate::trade_flow_parts::posting::cancel_trade_receipt(wallet, account, id, body)
     }
 );

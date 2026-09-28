@@ -6,12 +6,12 @@ use crate::polymarket::{Position, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn status(wallet: &str) -> DispatchResponse {
+pub fn status(wallet: &str, account: u32) -> DispatchResponse {
     let legacy_eoa = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config.legacy_eoa_mode,
         Err(resp) => return resp,
     };
-    let (owner, status) = match wallet_status(wallet) {
+    let (owner, status) = match wallet_status(wallet, account) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
@@ -32,90 +32,12 @@ pub fn status(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub fn buying_power(wallet: &str) -> DispatchResponse {
+pub fn obligations(wallet: &str, account: u32) -> DispatchResponse {
     let legacy_eoa = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config.legacy_eoa_mode,
         Err(resp) => return resp,
     };
-    let (owner, status) = match wallet_status(wallet) {
-        Ok(value) => value,
-        Err(resp) => return resp,
-    };
-    let creds = match load_creds(wallet) {
-        Ok(creds) => creds,
-        Err(resp) => return resp,
-    };
-    let balance_allowance = match clob_l2_get_json(
-        owner,
-        &creds,
-        "/balance-allowance",
-        &[
-            ("asset_type", "COLLATERAL"),
-            ("signature_type", if legacy_eoa { "0" } else { "3" }),
-        ],
-    ) {
-        Ok(value) => value,
-        Err(resp) => return resp,
-    };
-    let has_balance = balance_allowance
-        .get("balance")
-        .and_then(parse_json_u256)
-        .is_some_and(|balance| !balance.is_zero());
-    let tradeable = status
-        .get("tradeable")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    petal::read_json_value(&serde_json::json!({
-        "wallet": wallet,
-        "spendable": {
-            "asset": "pUSD",
-            "raw": balance_allowance.get("balance").cloned().unwrap_or(serde_json::Value::Null),
-            "source": "clob_balance_allowance",
-            "clob_balance_allowance": balance_allowance,
-        },
-        "can_trade_now": !legacy_eoa && tradeable && has_balance,
-        "credentials_read_only": legacy_eoa,
-        "funding_needed": !has_balance,
-        "funding_options_ref": crate::account::link(wallet, &format!("account/{wallet}/funding_options.json")),
-    }))
-}
-
-pub fn funding_options(wallet: &str) -> DispatchResponse {
-    if let Err(err) = validate_wallet_name(wallet) {
-        return error(-3, err.to_string());
-    }
-    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
-        Ok(config) => config.legacy_eoa_mode,
-        Err(resp) => return resp,
-    };
-    petal::read_json_value(&serde_json::json!({
-        "wallet": wallet,
-        "target_asset": "pUSD",
-        "options": [{
-            "from": "pUSD",
-            "supported": !legacy_eoa,
-            "review_required": true,
-            "fund_route": crate::account::link(wallet, &format!("fund/{wallet}/new")),
-            "execution": "generic_evm_outbox_direct_erc20_transfer",
-        }, {
-            "from": "native_or_other_erc20",
-            "supported": !legacy_eoa,
-            "review_required": true,
-            "fund_route": crate::account::link(wallet, &format!("fund/{wallet}/new")),
-            "execution": "enso_quote_then_generic_evm_outbox",
-            "enso_key_configured": load_enso_api_key().is_ok(),
-            "enso_router_configured": load_enso_router().is_ok(),
-        }],
-        "credentials_read_only": legacy_eoa,
-    }))
-}
-
-pub fn obligations(wallet: &str) -> DispatchResponse {
-    let legacy_eoa = match crate::relayer_config::load_relayer_config() {
-        Ok(config) => config.legacy_eoa_mode,
-        Err(resp) => return resp,
-    };
-    let (owner, status) = match wallet_status(wallet) {
+    let (owner, status) = match wallet_status(wallet, account) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
@@ -162,11 +84,11 @@ pub fn obligations(wallet: &str) -> DispatchResponse {
     }))
 }
 
-pub fn builder_keys(wallet: &str) -> DispatchResponse {
+pub fn builder_keys(wallet: &str, account: u32) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -214,7 +136,7 @@ struct RevokeBuilderKey {
     key: Option<String>,
 }
 
-pub fn revoke_builder_key(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn revoke_builder_key(wallet: &str, account: u32, body: &[u8]) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -241,7 +163,7 @@ pub fn revoke_builder_key(wallet: &str, body: &[u8]) -> DispatchResponse {
         }
         request.key
     };
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -338,8 +260,11 @@ pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
     String::from_utf8(bytes).map_err(|_| error(-4, "stored Enso API key is not valid UTF-8"))
 }
 
-fn wallet_status(wallet: &str) -> Result<(Address, serde_json::Value), DispatchResponse> {
+pub fn wallet_status(
+    wallet: &str,
+    account: u32,
+) -> Result<(Address, serde_json::Value), DispatchResponse> {
     validate_wallet_name(wallet).map_err(polymarket_error)?;
-    let owner = wallet_address(wallet)?;
+    let owner = wallet_address(wallet, account)?;
     Ok((owner, local_status_for_wallet(wallet, owner)?))
 }

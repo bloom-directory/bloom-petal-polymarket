@@ -3,10 +3,11 @@ petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard").caps(&[
         petal::DispatchResponse::Read(b"write anything here to begin Broker-authorized CLOB credential signing\n".to_vec())
     },
     write: |ctx: &petal::Ctx, _body: &[u8]| {
-        let wallet = match crate::account::wallet_param(ctx) {
+        let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+        let wallet = match petal::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::onboarding::begin_onboarding(ctx, wallet)
+        crate::onboarding::begin_onboarding(ctx, wallet, account)
     }
 );

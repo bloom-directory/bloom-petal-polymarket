@@ -5,9 +5,9 @@ use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, HttpRequest, SdkError};
 
 /// Resolve the selected account EVM owner of the Polymarket deposit wallet.
-pub fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
+pub fn wallet_address(wallet: &str, account: u32) -> Result<Address, DispatchResponse> {
     petal::validate_wallet_id(wallet).map_err(|message| error(-3, message))?;
-    let path = wallet_address_path(wallet);
+    let path = wallet_address_path(wallet, account);
     let bytes = petal::sdk::vfs_read(&path, 128).map_err(|e| match e {
         SdkError::Host(HostStatus::Denied) => {
             error(-2, format!("wallet {wallet}: read of {path} was denied"))
@@ -26,8 +26,8 @@ pub fn wallet_address(wallet: &str) -> Result<Address, DispatchResponse> {
         .map_err(|message| error(-4, format!("wallet {wallet}: {message}")))
 }
 
-pub(crate) fn wallet_address_path(wallet: &str) -> String {
-    format!("wallets/{wallet}/{}/address.evm", crate::account::number())
+pub(crate) fn wallet_address_path(wallet: &str, account: u32) -> String {
+    format!("wallets/{wallet}/{account}/address.evm")
 }
 
 fn parse_wallet_address(path: &str, bytes: &[u8]) -> Result<Address, String> {
@@ -65,12 +65,14 @@ mod tests {
 
     #[test]
     fn wallet_address_reads_account_scoped_evm_leaf() {
-        assert_eq!(wallet_address_path("main"), "wallets/main/0/address.evm");
+        assert_eq!(wallet_address_path("main", 0), "wallets/main/0/address.evm");
+        assert_eq!(wallet_address_path("main", 1), "wallets/main/1/address.evm");
+        assert_eq!(wallet_address_path("main", 0), "wallets/main/0/address.evm");
     }
 
     #[test]
     fn wallet_address_parses_trimmed_checksummed_address() {
-        let path = wallet_address_path("main");
+        let path = wallet_address_path("main", 0);
         let address = parse_wallet_address(&path, b"0x52908400098527886E0F7030069857D2E4169EE7\n")
             .expect("valid address");
         assert_eq!(
@@ -81,7 +83,7 @@ mod tests {
 
     #[test]
     fn wallet_address_errors_name_the_path() {
-        let path = wallet_address_path("main");
+        let path = wallet_address_path("main", 0);
         let err = parse_wallet_address(&path, b"not-an-address").unwrap_err();
         assert!(err.contains("wallets/main/0/address.evm"), "{err}");
         let err = parse_wallet_address(&path, &[0xff, 0xfe]).unwrap_err();

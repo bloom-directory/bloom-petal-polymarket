@@ -1,35 +1,47 @@
-//! Trusted numbered account context for explicit wallet/index routes.
-use std::cell::Cell;
-thread_local! { static SELECTED: Cell<u32> = const { Cell::new(0) }; }
-pub fn wallet_param(ctx: &petal::Ctx) -> Result<&str, petal::DispatchResponse> {
-    let wallet = petal::wallet_param(ctx)?;
-    if petal::route_param(ctx, "bloom.wallet") != Some(wallet) {
+//! Trusted numbered account context, passed explicitly into domain operations.
+pub fn number(ctx: &petal::Ctx) -> Result<u32, petal::DispatchResponse> {
+    if petal::route_param(ctx, "bloom.wallet") != petal::route_param(ctx, "wallet") {
         return Err(petal::error(-2, "Bloom did not select this wallet"));
     }
-    let account = petal::route_param(ctx, "bloom.account")
+    petal::route_param(ctx, "bloom.account")
         .ok_or_else(|| petal::error(-2, "Bloom did not select an account"))?
         .parse::<u32>()
-        .map_err(|_| petal::error(-3, "invalid selected account"))?;
-    SELECTED.with(|selected| selected.set(account));
-    Ok(wallet)
+        .map_err(|_| petal::error(-3, "invalid selected account"))
 }
-pub fn number() -> u32 {
-    SELECTED.with(Cell::get)
-}
-pub fn link(wallet: &str, path: &str) -> String {
-    path.replacen(
-        &format!("/{wallet}/"),
-        &format!("/{wallet}/{}/", number()),
-        1,
-    )
-}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Route;
+    impl petal::RouteIdentity for Route {
+        const PATH: &'static str = "trade/[wallet]/[index]/new";
+        const CANONICAL_PATH: &'static str = "trade/[wallet]/[index]/new";
+        const PARAMS: &'static [(&'static str, usize)] = &[("wallet", 1), ("index", 2)];
+    }
+    fn context(account: Option<&str>) -> petal::Ctx {
+        let mut params = vec![
+            ("wallet".into(), "alice".into()),
+            ("bloom.wallet".into(), "alice".into()),
+        ];
+        if let Some(account) = account {
+            params.push(("bloom.account".into(), account.into()));
+        }
+        petal::Ctx::bind::<Route>(petal::RawCtx {
+            petal_root: "polymarket".into(),
+            package_hash: "test".into(),
+            path: "trade/alice/1/new".into(),
+            params,
+            actor: None,
+        })
+    }
     #[test]
-    fn links_keep_feature_subtree() {
-        SELECTED.with(|n| n.set(1));
-        assert_eq!(link("alice", "fund/alice/new"), "fund/alice/1/new");
-        SELECTED.with(|n| n.set(0));
+    fn selected_accounts_are_independent_and_missing_context_fails() {
+        let zero = context(Some("0"));
+        let one = context(Some("1"));
+        assert_eq!(number(&zero), Ok(0));
+        assert_eq!(number(&one), Ok(1));
+        assert_eq!(number(&zero), Ok(0));
+        assert!(number(&context(None)).is_err());
+        assert!(number(&context(Some("bad"))).is_err());
     }
 }
