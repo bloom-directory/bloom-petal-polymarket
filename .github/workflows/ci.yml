@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bloom-directory/bloom
-          ref: master
+          ref: b751087b4d7bb65a0f2796a00cf49237e20d9cda
           path: bloom
           persist-credentials: false
       - name: Build key-free debug Bloom CLI for install smoke tests
@@ -88,7 +88,7 @@ jobs:
           "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json > "$contract"
           for required in \
             'bloom.polymarket.petal-route-contract.v1' \
-            'settings/<wallet>/<index>/enso-api-key' \
+            'settings/enso-api-key' \
             'fund/<wallet>/<index>/<id>/confirm' \
             'trade/<wallet>/<index>/orders/<clob-order-id>/cancel' \
             'redeem/<wallet>/<index>/<slug>/confirm' \
@@ -143,4 +143,4 @@ jobs:
             sleep 1
           done
           "$RUNNER_TEMP/bloom" --home "$smoke_home" petal install "$source_url" --ref "$source_ref"
-          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/<wallet>/<index>/enso-api-key'
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'
