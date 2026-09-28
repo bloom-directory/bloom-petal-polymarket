@@ -11,7 +11,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "buying_power": "account/<wallet>/<index>/buying_power.json",
             "builder_keys": "builder-keys/<wallet>/<index>/keys.json",
             "builder_key_revoke": "builder-keys/<wallet>/<index>/revoke",
-            "enso_settings": "settings/<wallet>/<index>/enso-api-key",
+            "enso_settings": "settings/enso-api-key",
             "relayer_settings": "settings/<wallet>/<index>/relayer.json",
             "venue_settings": "settings/<wallet>/<index>/venue.toml",
             "fund_new": "fund/<wallet>/<index>/new",

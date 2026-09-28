@@ -44,3 +44,6 @@ pub mod trade_flow_parts {
 
 #[cfg(test)]
 mod app_tests;
+
+#[cfg(test)]
+mod global_settings_tests;

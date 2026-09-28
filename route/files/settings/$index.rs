@@ -1,2 +1,2 @@
-// Bloom supplies live wallet/index directory inventory from the core projection.
-petal::route_file!(spec: petal::static_dir_spec(), list: Vec::new());
+// Bloom also synthesizes authenticated wallet children for account settings.
+petal::route_file!(spec: petal::static_dir_spec(), list: vec![petal::writable("enso-api-key")]);

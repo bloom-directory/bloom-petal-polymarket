@@ -15,7 +15,7 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 97 route components. Directory endpoints use
+The route tree currently builds 109 route components. Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
@@ -26,8 +26,8 @@ directly through the HTTP import, persists petal-owned state through the
 private store import, uses signing intents for CLOB and relayer signatures,
 reads mediated wallet/chain state through generic Bloom interfaces, and stages
 funding through the generic EVM outbox. Enso credentials are provisioned
-through the write-only `settings/<wallet>/<index>/enso-api-key` route and remain in the Petal
-secret store.
+through the write-only `settings/enso-api-key` route and remain in the Petal
+package-global secret store. The trusted Enso router value is also shared across accounts.
 
 Per-account venue preferences are read at `settings/venue.toml` below the
 selected account directory and stored in the Petal's own state. They are advisory application configuration only. The Petal
@@ -101,7 +101,7 @@ for packaging-only corrections.
 
 Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,account,positions,fund,trade,builder-keys,redeem,withdraw,revoke-approvals}/<wallet>/<index>/`. Obligations use `/petals/polymarket/obligations/<wallet>/<index>/status.json`.
 
-`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
+`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store for account state. The manifest shares only the Enso API key and router through the package-global store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
 
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.

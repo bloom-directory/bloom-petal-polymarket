@@ -317,7 +317,7 @@ pub fn load_enso_router() -> Result<Address, DispatchResponse> {
     let bytes = petal::sdk::store_get("settings/enso-router", 128).map_err(|err| match err {
         SdkError::Host(HostStatus::NotFound) => error(
             -3,
-            "trusted Enso router is not configured; write {\"api_key\":\"...\",\"router\":\"0x...\"} to settings/<wallet>/<index>/enso-api-key",
+            "trusted Enso router is not configured; write {\"api_key\":\"...\",\"router\":\"0x...\"} to settings/enso-api-key",
         ),
         other => sdk_error(other),
     })?;
@@ -331,7 +331,7 @@ pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
     let bytes = petal::sdk::store_get("creds/enso-api-key", 4096).map_err(|err| match err {
         SdkError::Host(HostStatus::NotFound) => error(
             -3,
-            "Enso API key is not configured; write it to settings/<wallet>/<index>/enso-api-key",
+            "Enso API key is not configured; write it to settings/enso-api-key",
         ),
         other => sdk_error(other),
     })?;
