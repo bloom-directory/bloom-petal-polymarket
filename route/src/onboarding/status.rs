@@ -263,7 +263,7 @@ pub fn fundable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, 
     fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/begin before funding",
+            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before funding",
         )
     })
 }
@@ -273,7 +273,7 @@ pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address,
     let deposit = fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/begin before posting",
+            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before posting",
         )
     })?;
     if status.get("stage").and_then(serde_json::Value::as_str) != Some("complete")
@@ -284,7 +284,7 @@ pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address,
     {
         return Err(error(
             -3,
-            "wallet onboarding is not complete; read onboard/<wallet>/status.json and complete deploy, fund, approve, credentials, and CLOB sync before posting",
+            "wallet onboarding is not complete; read onboard/<wallet>/<index>/status.json and complete deploy, fund, approve, credentials, and CLOB sync before posting",
         ));
     }
     Ok(deposit)

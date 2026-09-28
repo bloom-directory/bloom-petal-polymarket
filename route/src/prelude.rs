@@ -24,9 +24,7 @@ pub use crate::infra_parts::credentials::{
 };
 pub use crate::infra_parts::host_calls::{http, wallet_address};
 pub use crate::infra_parts::http::{clob_auth_request, clob_server_time, get_json};
-pub use crate::infra_parts::lists::{
-    next_id, safe_wallet_names, store_ids, store_wallets, vfs_wallets_or_store,
-};
+pub use crate::infra_parts::lists::{next_id, safe_wallet_names, store_ids};
 pub use crate::infra_parts::reconcile::{
     address_strings_equal, blake3_hex, clob_cancel_confirmed, clob_order_field_strings,
     clob_order_field_u64s, clob_order_fields, clob_reconciled_public_summary,

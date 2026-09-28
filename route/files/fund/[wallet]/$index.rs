@@ -1,9 +1,5 @@
-petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_list: |ctx: &petal::Ctx| {
-    let wallet = crate::account::wallet_param(ctx)?;
-    let mut out = vec![petal::writable("new")];
-    out.extend(petal::dirs(crate::infra_parts::lists::store_ids(
-        &format!("fund/{wallet}/requests/"),
-        ".json",
-    )));
-    Ok(out)
+petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:vfs.read"]), ctx_list: |ctx: &petal::Ctx| {
+    let wallet = petal::wallet_param(ctx)?;
+    let names = petal::sdk::vfs_list(&format!("wallets/{wallet}"), 65536).map_err(|e| petal::error(-4, e.message()))?;
+    Ok(petal::dirs(names.into_iter().filter(|n| n.parse::<u32>().is_ok() && (n == "0" || !n.starts_with("0"))).collect()))
 });

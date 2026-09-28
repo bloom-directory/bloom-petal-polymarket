@@ -84,4 +84,10 @@
 
 ## Account-scoped routes
 
-Select a wallet and numbered account under `/petals/polymarket/wallets/<wallet>/<account>/`. Petal operations and settings live below that directory. Account 0 keeps its existing private records; other accounts have separate stores. The core wallet tree remains `/wallets/<wallet>/<account>/`.
+Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,account,positions,fund,trade,builder-keys,redeem,withdraw,revoke-approvals}/<wallet>/<index>/`. Obligations use `/petals/polymarket/obligations/<wallet>/<index>/status.json`.
+
+`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
+
+
+Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
+Retain deposit-wallet onboarding identity, credentials, funding and relayer receipts, and trade records from the installed build until pending funds and positions have been reconciled. Externally funded deposit wallets and venue orders survive local route upgrades; use the old build to inspect their identity and recovery state.

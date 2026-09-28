@@ -1,61 +1,35 @@
-//! Trusted account selected for one wallet route invocation.
+//! Trusted numbered account context for explicit wallet/index routes.
 use std::cell::Cell;
-
-thread_local! {
-    static SELECTED: Cell<u32> = const { Cell::new(0) };
-    static PREFIX: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
+thread_local! { static SELECTED: Cell<u32> = const { Cell::new(0) }; }
 pub fn wallet_param(ctx: &petal::Ctx) -> Result<&str, petal::DispatchResponse> {
     let wallet = petal::wallet_param(ctx)?;
+    if petal::route_param(ctx, "bloom.wallet") != Some(wallet) {
+        return Err(petal::error(-2, "Bloom did not select this wallet"));
+    }
     let account = petal::route_param(ctx, "bloom.account")
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(0);
+        .ok_or_else(|| petal::error(-2, "Bloom did not select an account"))?
+        .parse::<u32>()
+        .map_err(|_| petal::error(-3, "invalid selected account"))?;
     SELECTED.with(|selected| selected.set(account));
-    PREFIX.with(|prefix| {
-        *prefix.borrow_mut() = petal::route_param(ctx, "bloom.route_prefix").map(str::to_owned)
-    });
     Ok(wallet)
 }
-
 pub fn number() -> u32 {
     SELECTED.with(Cell::get)
 }
-
-/// Convert a legacy package-relative follow-up route to the mounted path.
-pub fn link(wallet: &str, old: &str) -> String {
-    let Some(prefix) = PREFIX.with(|prefix| prefix.borrow().clone()) else {
-        return old.to_string();
-    };
-    let wallet_segment = format!("/{wallet}/");
-    let route = if let Some(pos) = old.find(&wallet_segment) {
-        format!("{}{}", &old[..pos], &old[pos + wallet_segment.len() - 1..])
-    } else {
-        old.to_string()
-    };
-    format!("{prefix}{route}")
+pub fn link(wallet: &str, path: &str) -> String {
+    path.replacen(
+        &format!("/{wallet}/"),
+        &format!("/{wallet}/{}/", number()),
+        1,
+    )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn legacy_and_scoped_follow_up_links() {
-        SELECTED.with(|selected| selected.set(1));
-        assert_eq!(
-            crate::infra_parts::host_calls::wallet_address_path("alice"),
-            "wallets/alice/1/address.evm"
-        );
-        PREFIX.with(|prefix| *prefix.borrow_mut() = None);
-        assert_eq!(link("alice", "fund/alice/new"), "fund/alice/new");
-        PREFIX.with(|prefix| *prefix.borrow_mut() = Some("wallets/alice/1/".into()));
-        assert_eq!(link("alice", "fund/alice/new"), "wallets/alice/1/fund/new");
-        PREFIX.with(|prefix| *prefix.borrow_mut() = None);
-        SELECTED.with(|selected| selected.set(0));
-        assert_eq!(
-            crate::infra_parts::host_calls::wallet_address_path("alice"),
-            "wallets/alice/0/address.evm"
-        );
+    fn links_keep_feature_subtree() {
+        SELECTED.with(|n| n.set(1));
+        assert_eq!(link("alice", "fund/alice/new"), "fund/alice/1/new");
+        SELECTED.with(|n| n.set(0));
     }
 }

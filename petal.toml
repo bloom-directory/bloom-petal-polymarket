@@ -83,6 +83,3 @@ allowed_intents = [
 [store]
 namespaces = ["state"]
 secret_namespaces = ["secrets"]
-
-[account]
-aware = true
