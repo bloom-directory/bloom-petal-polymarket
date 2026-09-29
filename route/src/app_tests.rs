@@ -158,12 +158,12 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 97);
+        assert_eq!(routes.len(), 109);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes
                 .iter()
-                .any(|path| path.ends_with("trade/[wallet]/receipts/[id]/cancel.rs"))
+                .any(|path| path.ends_with("trade/[wallet]/[index]/receipts/[id]/cancel.rs"))
         );
         assert!(
             routes
@@ -171,9 +171,9 @@ mod tests {
                 .any(|path| path.ends_with("meta/route-contract.json.rs"))
         );
         assert!(
-            routes
-                .iter()
-                .any(|path| path.ends_with("onboard/[wallet]/review_relayer_intent.json.rs"))
+            routes.iter().any(
+                |path| path.ends_with("onboard/[wallet]/[index]/review_relayer_intent.json.rs")
+            )
         );
         assert!(
             !routes
@@ -223,7 +223,10 @@ mod tests {
         assert!(source.contains("petal::sdk::store_get"));
         assert!(!source.contains("wallets/{wallet}/policy.toml"));
         assert!(!source.contains("petal::sdk::vfs_read"));
-        assert!(root.join("files/settings/[wallet]/venue.toml.rs").is_file());
+        assert!(
+            root.join("files/settings/[wallet]/[index]/venue.toml.rs")
+                .is_file()
+        );
     }
 
     #[test]

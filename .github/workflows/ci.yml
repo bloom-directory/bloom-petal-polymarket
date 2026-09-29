@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bloom-directory/bloom
-          ref: master
+          ref: b751087b4d7bb65a0f2796a00cf49237e20d9cda
           path: bloom
           persist-credentials: false
       - name: Build key-free debug Bloom CLI for install smoke tests
@@ -89,12 +89,12 @@ jobs:
           for required in \
             'bloom.polymarket.petal-route-contract.v1' \
             'settings/enso-api-key' \
-            'fund/<wallet>/<id>/confirm' \
-            'trade/<wallet>/orders/<clob-order-id>/cancel' \
-            'redeem/<wallet>/<slug>/confirm' \
-            'revoke-approvals/<wallet>/request/confirm' \
-            'withdraw/<wallet>/pusd/confirm' \
-            'obligations/<wallet>.json' \
+            'fund/<wallet>/<index>/<id>/confirm' \
+            'trade/<wallet>/<index>/orders/<clob-order-id>/cancel' \
+            'redeem/<wallet>/<index>/<slug>/confirm' \
+            'revoke-approvals/<wallet>/<index>/request/confirm' \
+            'withdraw/<wallet>/<index>/pusd/confirm' \
+            'obligations/<wallet>/<index>/status.json' \
             'bloom:sign/signing@0.2.0' \
             'bloom:tx/outbox@0.1.0' \
             'bloom:chain/read@0.1.0'; do
