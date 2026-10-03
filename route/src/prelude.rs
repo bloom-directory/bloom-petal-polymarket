@@ -8,8 +8,8 @@ pub use crate::app_types::{
     default_slippage_bps, default_true,
 };
 pub use crate::approval::{
-    PreparedSigning, load_prepared_signing, sign_prepared, sign_prepared_batch,
-    store_prepared_signing, store_review_intent, verify_review_intent,
+    PreparedSigning, load_prepared_signing, pending_approval_selector, sign_prepared,
+    sign_prepared_reusable, store_prepared_signing, store_review_intent, verify_review_intent,
 };
 pub use crate::constants::{
     BATCH_DEADLINE_SECS, CLOB, CLOB_AUTH_NONCE, DATA, GAMMA, MARKETS_LIST_LIMIT,
@@ -24,9 +24,7 @@ pub use crate::infra_parts::credentials::{
 };
 pub use crate::infra_parts::host_calls::{http, wallet_address};
 pub use crate::infra_parts::http::{clob_auth_request, clob_server_time, get_json};
-pub use crate::infra_parts::lists::{
-    next_id, safe_wallet_names, store_ids, store_wallets, vfs_wallets_or_store,
-};
+pub use crate::infra_parts::lists::{next_id, safe_wallet_names, store_ids};
 pub use crate::infra_parts::reconcile::{
     address_strings_equal, blake3_hex, clob_cancel_confirmed, clob_order_field_strings,
     clob_order_field_u64s, clob_order_fields, clob_reconciled_public_summary,
@@ -38,9 +36,9 @@ pub use crate::infra_parts::relayer::{
     LocalRelayerTx, RelayerHttpError, builder_headers, builder_hmac_signature,
     dispatch_error_message, onboard_in_flight_deadline_ms, parse_json_u64,
     parse_relayer_submit_response, parse_relayer_transaction_response, prepare_relayer_batch,
-    relayer_batch_body, relayer_get_json, relayer_http_error, relayer_poll_confirmed,
-    relayer_submit, relayer_submit_configured, relayer_transaction, relayer_tx_id_matches,
-    relayer_wallet_nonce, store_prepared_relayer_signature,
+    relayer_batch_body, relayer_batch_signature, relayer_get_json, relayer_http_error,
+    relayer_poll_confirmed, relayer_signature_hex, relayer_submit, relayer_submit_configured,
+    relayer_transaction, relayer_tx_id_matches, relayer_wallet_nonce,
 };
 pub use crate::infra_parts::store::{
     StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,

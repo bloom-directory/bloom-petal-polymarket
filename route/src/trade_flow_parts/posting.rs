@@ -7,7 +7,13 @@ use crate::polymarket::order::{
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn post_trade_draft(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     let (_, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
@@ -49,7 +55,7 @@ pub fn post_trade_draft(ctx: &petal::Ctx, wallet: &str, id: &str, body: &[u8]) -
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");
     }
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -541,7 +547,7 @@ fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchRespo
     })
 }
 
-pub fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -582,7 +588,7 @@ pub fn cancel_trade_receipt(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     let Some(order_id) = receipt.clob_order_id.clone() else {
         return error(-3, "receipt has no CLOB order id to cancel");
     };
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -643,11 +649,11 @@ pub fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), Dispatch
     Ok(())
 }
 
-pub fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchResponse> {
+pub fn discoverable_order_ids(wallet: &str, account: u32) -> Result<Vec<String>, DispatchResponse> {
     if let Err(err) = validate_wallet_name(wallet) {
         return Err(error(-3, err.to_string()));
     }
-    let owner = wallet_address(wallet)?;
+    let owner = wallet_address(wallet, account)?;
     let creds = load_creds(wallet)?;
     let orders = clob_l2_get_json(owner, &creds, "/data/orders", &[])?;
     let rows = orders
@@ -665,7 +671,12 @@ pub fn discoverable_order_ids(wallet: &str) -> Result<Vec<String>, DispatchRespo
     Ok(ids)
 }
 
-pub fn cancel_discovered_order(wallet: &str, order_id: &str, body: &[u8]) -> DispatchResponse {
+pub fn cancel_discovered_order(
+    wallet: &str,
+    account: u32,
+    order_id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
@@ -685,7 +696,7 @@ pub fn cancel_discovered_order(wallet: &str, order_id: &str, body: &[u8]) -> Dis
         Ok(lock) => lock,
         Err(resp) => return resp,
     };
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };

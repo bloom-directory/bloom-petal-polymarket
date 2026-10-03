@@ -1,9 +1,2 @@
-petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_list: |ctx: &petal::Ctx| {
-    let wallet = petal::param(ctx, "wallet")?;
-    let mut out = vec![petal::writable("new")];
-    out.extend(petal::dirs(crate::infra_parts::lists::store_ids(
-        &format!("fund/{wallet}/requests/"),
-        ".json",
-    )));
-    Ok(out)
-});
+// Bloom supplies live wallet/index directory inventory from the core projection.
+petal::route_file!(spec: petal::static_dir_spec(), list: Vec::new());

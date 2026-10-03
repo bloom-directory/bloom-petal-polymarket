@@ -247,6 +247,7 @@ pub fn relayer_batch_body(
     deposit: Address,
     nonce: u64,
     deadline: u64,
+    approval_key: &str,
 ) -> Result<serde_json::Value, DispatchResponse> {
     let prepared = prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)?;
     let prepared_deadline = prepared
@@ -274,30 +275,7 @@ pub fn relayer_batch_body(
         .get("nonce")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
-    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
-    let signature = match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
-        Ok(bytes) => {
-            let stored: PreparedRelayerSignature = serde_json::from_slice(&bytes)
-                .map_err(|err| error(-4, format!("stored relayer signature: {err}")))?;
-            if stored.prepared_digest != prepared.digest()? {
-                return Err(error(
-                    -4,
-                    "stored relayer signature does not match prepared batch",
-                ));
-            }
-            stored.signature_hex
-        }
-        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => format!(
-            "0x{}",
-            hex::encode(sign_prepared(
-                ctx,
-                wallet,
-                &prepared,
-                &format!("onboard/{wallet}/approval.json"),
-            )?)
-        ),
-        Err(err) => return Err(sdk_error(err)),
-    };
+    let signature = relayer_batch_signature(ctx, wallet, &prepared, approval_key)?;
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
@@ -310,6 +288,33 @@ pub fn relayer_batch_body(
             "calls": calls_json,
         },
     }))
+}
+
+pub fn relayer_signature_hex(signature: &[u8]) -> Result<String, DispatchResponse> {
+    if signature.len() != 65 {
+        return Err(error(-4, "relayer signature is not 65 bytes"));
+    }
+    let mut normalized = signature.to_vec();
+    normalized[64] = match normalized[64] {
+        recovery @ 0..=1 => recovery + 27,
+        recovery @ 27..=28 => recovery,
+        recovery => {
+            return Err(error(
+                -4,
+                format!("relayer signature has invalid recovery byte {recovery}"),
+            ));
+        }
+    };
+    Ok(format!("0x{}", hex::encode(normalized)))
+}
+
+fn normalize_relayer_signature_hex(signature: &str) -> Result<String, DispatchResponse> {
+    let encoded = signature
+        .strip_prefix("0x")
+        .ok_or_else(|| error(-4, "stored relayer signature is not 0x-prefixed"))?;
+    let decoded = hex::decode(encoded)
+        .map_err(|err| error(-4, format!("stored relayer signature hex: {err}")))?;
+    relayer_signature_hex(&decoded)
 }
 
 pub fn prepare_relayer_batch(
@@ -407,21 +412,43 @@ pub fn prepare_relayer_batch(
     Ok(prepared)
 }
 
-pub fn store_prepared_relayer_signature(
+/// Return the owner signature for a prepared deposit-wallet approval batch.
+/// The batch carries a long deadline, so its approval stays bound to the exact
+/// reviewed bytes; the signature is stored so later stages reuse it.
+pub fn relayer_batch_signature(
+    ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
-    signature: &[u8],
-) -> Result<(), DispatchResponse> {
+    approval_key: &str,
+) -> Result<String, DispatchResponse> {
+    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
+    match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
+        Ok(bytes) => {
+            // A stored signature that no longer matches the prepared batch (or
+            // no longer parses) is useless; retire it and sign the current
+            // batch instead of failing on every retry.
+            let usable = serde_json::from_slice::<PreparedRelayerSignature>(&bytes)
+                .ok()
+                .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref())
+                .and_then(|stored| normalize_relayer_signature_hex(&stored.signature_hex).ok());
+            match usable {
+                Some(signature) => return Ok(signature),
+                None => match petal::sdk::store_del(&signature_key) {
+                    Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+                    Err(err) => return Err(sdk_error(err)),
+                },
+            }
+        }
+        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+        Err(err) => return Err(sdk_error(err)),
+    }
+    let signature = relayer_signature_hex(&sign_prepared(ctx, wallet, prepared, approval_key)?)?;
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
-        signature_hex: format!("0x{}", hex::encode(signature)),
+        signature_hex: signature.clone(),
     };
-    match store_put_json(
-        &format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
-        &value,
-        true,
-    ) {
-        DispatchResponse::Write => Ok(()),
+    match store_put_json(&signature_key, &value, true) {
+        DispatchResponse::Write => Ok(signature),
         response => Err(response),
     }
 }
@@ -584,5 +611,27 @@ mod tests {
                 ("RELAYER_API_KEY_ADDRESS".into(), "0xowner".into()),
             ]
         );
+    }
+
+    #[test]
+    fn relayer_signature_normalizes_recovery_byte() {
+        let mut signature = [0x11; 65];
+        signature[64] = 0;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
+        signature[64] = 1;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
+        signature[64] = 27;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
+        signature[64] = 28;
+        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
+    }
+
+    #[test]
+    fn relayer_signature_rejects_invalid_shape() {
+        assert!(relayer_signature_hex(&[0; 64]).is_err());
+        let mut signature = [0; 65];
+        signature[64] = 2;
+        assert!(relayer_signature_hex(&signature).is_err());
+        assert!(normalize_relayer_signature_hex("0xnot-hex").is_err());
     }
 }

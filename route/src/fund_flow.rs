@@ -5,14 +5,14 @@ use crate::polymarket::order::parse_micro;
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
-pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
+pub fn create_fund_request(wallet: &str, account: u32, body: &[u8]) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let owner = match wallet_address(wallet) {
+    let owner = match wallet_address(wallet, account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -60,7 +60,7 @@ pub fn create_fund_request(wallet: &str, body: &[u8]) -> DispatchResponse {
     )
 }
 
-pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_fund_request(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
@@ -96,7 +96,7 @@ pub fn confirm_fund_request(wallet: &str, id: &str, body: &[u8]) -> DispatchResp
     }
     let prepared = match session.prepared_funding.clone() {
         Some(prepared) => prepared,
-        None => match prepare_funding(wallet, &session) {
+        None => match prepare_funding(wallet, account, &session) {
             Ok(prepared) => {
                 session.review_intent = Some(prepared.review_intent.clone());
                 session.prepared_funding = Some(prepared);
@@ -246,10 +246,11 @@ pub fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
 
 fn prepare_funding(
     wallet: &str,
+    account: u32,
     session: &StoreFundSession,
 ) -> Result<PreparedFunding, DispatchResponse> {
     let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let owner = wallet_address(wallet)?;
+    let owner = wallet_address(wallet, account)?;
     let deposit = session
         .deposit_wallet
         .parse::<Address>()

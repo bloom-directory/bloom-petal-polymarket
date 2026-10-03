@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use crate::polymarket::eip712::{
-    CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, FACTORY, NEG_RISK_CTF_COLLATERAL_ADAPTER,
-    NEG_RISK_EXCHANGE, PUSD,
+    CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, FACTORY, NEG_RISK_ADAPTER,
+    NEG_RISK_CTF_COLLATERAL_ADAPTER, NEG_RISK_EXCHANGE, PUSD,
 };
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::{Address, U256};
@@ -107,7 +107,7 @@ pub fn read_chain_erc20_allowance(
 
 pub fn read_chain_approvals(deposit: Address) -> Result<bool, DispatchResponse> {
     let floor = allowance_floor();
-    for spender in approval_spenders() {
+    for spender in approval_spenders().into_iter().chain([NEG_RISK_ADAPTER]) {
         if read_chain_erc20_allowance(PUSD, deposit, spender)? < floor {
             return Ok(false);
         }
@@ -141,15 +141,23 @@ pub fn read_clob_collateral_sync(
 }
 
 fn clob_collateral_allowance(value: &serde_json::Value) -> Option<U256> {
-    value
-        .get("allowance")
-        .and_then(parse_json_u256)
-        .or_else(|| {
-            value
-                .get("allowances")
-                .and_then(serde_json::Value::as_object)
-                .and_then(|allowances| allowances.values().filter_map(parse_json_u256).max())
+    let Some(allowances) = value
+        .get("allowances")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return value.get("allowance").and_then(parse_json_u256);
+    };
+    [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
+        .into_iter()
+        .map(|spender| {
+            allowances
+                .iter()
+                .find(|(address, _)| address.eq_ignore_ascii_case(&format!("{spender:#x}")))
+                .and_then(|(_, amount)| parse_json_u256(amount))
         })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
 }
 
 pub fn parse_json_u256(value: &serde_json::Value) -> Option<U256> {
@@ -255,11 +263,17 @@ mod tests {
             clob_collateral_allowance(&serde_json::json!({"allowance": "42"})),
             Some(U256::from(42))
         );
+        let allowances = [
+            (CTF_EXCHANGE, "99"),
+            (NEG_RISK_EXCHANGE, "80"),
+            (NEG_RISK_ADAPTER, "0"),
+        ]
+        .into_iter()
+        .map(|(spender, amount)| (format!("{spender:#x}"), serde_json::json!(amount)))
+        .collect::<serde_json::Map<_, _>>();
         assert_eq!(
-            clob_collateral_allowance(&serde_json::json!({
-                "allowances": {"first": "0", "second": "99"}
-            })),
-            Some(U256::from(99))
+            clob_collateral_allowance(&serde_json::json!({"allowances": allowances})),
+            Some(U256::ZERO)
         );
     }
 }

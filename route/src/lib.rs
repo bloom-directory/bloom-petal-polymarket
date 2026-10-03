@@ -8,6 +8,7 @@
 //! private store import. It intentionally does not call the legacy native
 //! `polymarket/` VFS handler.
 
+pub mod account;
 pub mod account_views;
 pub mod app_types;
 pub mod approval;
@@ -44,3 +45,6 @@ pub mod trade_flow_parts {
 
 #[cfg(test)]
 mod app_tests;
+
+#[cfg(test)]
+mod global_settings_tests;

@@ -7,7 +7,9 @@ pub fn load_creds(wallet: &str) -> Result<Credentials, DispatchResponse> {
     let Some(bytes) = store_get(&format!("creds/{wallet}/clob.json")) else {
         return Err(error(
             -3,
-            format!("wallet '{wallet}' is not onboarded; write onboard/{wallet}/begin first"),
+            format!(
+                "wallet '{wallet}' is not onboarded; begin onboarding for the selected account first"
+            ),
         ));
     };
     serde_json::from_slice(&bytes).map_err(|e| error(-4, format!("corrupt credentials: {e}")))

@@ -31,8 +31,7 @@ pub fn local_onboard_status(
             "warning": "do not fund this local estimate; full onboarding must resolve the live factory address first"
         },
         "approvals": {
-            "required": true,
-            "preview_path": format!("onboard/{wallet}/approvals.json")
+            "required": true
         },
         "message": message
     })
@@ -65,8 +64,7 @@ pub fn local_onboard_status_with_live_deposit(status: LiveOnboardStatus<'_>) -> 
             "warning": serde_json::Value::Null
         },
         "approvals": {
-            "required": true,
-            "preview_path": format!("onboard/{}/approvals.json", status.wallet)
+            "required": true
         },
         "probes": status.probes,
         "message": status.message
@@ -263,7 +261,7 @@ pub fn fundable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, 
     fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/begin before funding",
+            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before funding",
         )
     })
 }
@@ -273,7 +271,7 @@ pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address,
     let deposit = fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/begin before posting",
+            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before posting",
         )
     })?;
     if status.get("stage").and_then(serde_json::Value::as_str) != Some("complete")
@@ -284,7 +282,7 @@ pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address,
     {
         return Err(error(
             -3,
-            "wallet onboarding is not complete; read onboard/<wallet>/status.json and complete deploy, fund, approve, credentials, and CLOB sync before posting",
+            "wallet onboarding is not complete; read onboard/<wallet>/<index>/status.json and complete deploy, fund, approve, credentials, and CLOB sync before posting",
         ));
     }
     Ok(deposit)

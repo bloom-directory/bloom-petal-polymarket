@@ -10,11 +10,11 @@ pub fn market_by_slug(slug: &str) -> Result<Market, DispatchResponse> {
     ))
 }
 
-pub fn position_user(segment: &str) -> Result<String, DispatchResponse> {
+pub fn position_user(segment: &str, account: u32) -> Result<String, DispatchResponse> {
     if (segment.starts_with("0x") || segment.starts_with("0X"))
         && let Ok(address) = segment.parse::<Address>()
     {
         return Ok(address.to_checksum(None));
     }
-    wallet_address(segment).map(|address| address.to_checksum(None))
+    wallet_address(segment, account).map(|address| address.to_checksum(None))
 }
