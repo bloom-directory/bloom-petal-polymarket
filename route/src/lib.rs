@@ -12,6 +12,7 @@ pub mod account;
 pub mod account_views;
 pub mod app_types;
 pub mod approval;
+pub mod builder_code;
 pub mod constants;
 pub mod fund_flow;
 pub mod infra_parts {

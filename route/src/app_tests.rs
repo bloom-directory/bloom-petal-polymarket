@@ -158,7 +158,7 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 109);
+        assert_eq!(routes.len(), 111);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
         assert!(
             routes

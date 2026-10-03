@@ -15,7 +15,7 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 109 route components. Directory endpoints use
+The route tree currently builds 111 route components. Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
@@ -97,11 +97,41 @@ To publish a release:
 Do not retag or replace an existing release asset. Publish a new patch release
 for packaging-only corrections.
 
+## Embedded default builder code
+
+Polymarket's [Builder Program](https://docs.polymarket.com/programs/builders/overview)
+assigns a `bytes32` builder attribution code (not an address) when you
+register a Builder Profile and set its fee rates on polymarket.com; every
+order this Petal signs carries that code in the CTF Exchange order struct's
+`builder` field so Polymarket can attribute volume and revenue share to it.
+Fee rates and payout are managed entirely by Polymarket against that
+registration — there is no on-chain approval step.
+
+A release build may embed Bloom's own code so orders carry it without an
+operator having to configure one. This is public on-chain data, not a
+credential — it's serialized into every `OrderFilled` event and builder
+profiles are publicly queryable — so there is no encryption-at-rest framing,
+only whether a default is present, and if so, whether it came from a release
+build or an operator override. The repository secret
+`POLYMARKET_BUILDER_CODE` is passed to the pinned `bloom-directory/petal`
+release workflow as its generic `compile-time-secret` input, which exposes it
+to `scripts/build.sh` as `PETAL_COMPILE_TIME_SECRET`; the script re-exports
+it as `POLYMARKET_BUILDER_CODE` before invoking the Petal build, where
+`route/src/builder_code.rs` embeds it via `option_env!`. The secret is
+optional: an unconfigured repository, or a local build that does not set it,
+has no embedded default, and orders then carry a zero builder field exactly
+as they did before this was wired up.
+
+`settings/builder-code` writes an operator override (any hex string up to 32
+bytes, with or without `0x`) that takes precedence over the embedded default,
+or clear it with an empty body; `settings/builder-code-status.json` reports
+which one (if either) is currently in effect.
+
 ## Account-scoped routes
 
 Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,account,positions,fund,trade,builder-keys,redeem,withdraw,revoke-approvals}/<wallet>/<index>/`. Obligations use `/petals/polymarket/obligations/<wallet>/<index>/status.json`.
 
-`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store for account state. The manifest shares only the Enso API key and router through the package-global store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
+`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store for account state. The manifest shares only the Enso API key, router, and public builder-attribution override through the package-global store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
 
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
