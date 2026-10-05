@@ -77,10 +77,11 @@ paths = ["/nonce", "/submit", "/transaction"]
 allowed_intents = [
   "polymarket.onboard",
   "polymarket.order.poly1271",
+  "polymarket.builder_code_order.poly1271",
   "polymarket.relayer_batch",
 ]
 
 [store]
 namespaces = ["state"]
 secret_namespaces = ["secrets"]
-shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router"]
+shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code"]
