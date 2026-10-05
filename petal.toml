@@ -77,7 +77,7 @@ paths = ["/nonce", "/submit", "/transaction"]
 allowed_intents = [
   "polymarket.onboard",
   "polymarket.order.poly1271",
-  "polymarket.builder_order.poly1271",
+  "polymarket.builder_code_order.poly1271",
   "polymarket.relayer_batch",
 ]
 

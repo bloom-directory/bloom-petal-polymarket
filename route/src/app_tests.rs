@@ -131,7 +131,7 @@ mod tests {
     /// `FEE_BEARING_OPERATION_CLASSES`; if either side renames it, enrollment
     /// leaves the class fee-free and signing answers `FEE_NOT_ALLOWED`.
     #[test]
-    fn builder_order_class_is_declared_separately_from_the_plain_order_class() {
+    fn builder_code_order_class_is_declared_separately_from_the_plain_order_class() {
         let manifest: toml::Value = toml::from_str(include_str!("../../petal.toml")).unwrap();
         let intents = manifest
             .get("sign")
@@ -146,12 +146,12 @@ mod tests {
             "plain orders keep their fee-free class"
         );
         assert!(
-            intents.contains(&"polymarket.builder_order.poly1271"),
-            "builder-coded orders need their own fee-bearing class"
+            intents.contains(&"polymarket.builder_code_order.poly1271"),
+            "builder-code orders need their own fee-bearing class"
         );
         assert_ne!(
             "polymarket.order.poly1271",
-            "polymarket.builder_order.poly1271"
+            "polymarket.builder_code_order.poly1271"
         );
     }
 
@@ -194,7 +194,8 @@ mod tests {
         assert!(
             routes
                 .iter()
-                .any(|path| path.ends_with("trade/[wallet]/[index]/drafts/[id]/post_builder.rs")),
+                .any(|path| path
+                    .ends_with("trade/[wallet]/[index]/drafts/[id]/post_builder_code.rs")),
             "builder-coded posting keeps its own route so its class can be fee-bearing"
         );
         assert!(

@@ -19,7 +19,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "fund_new": "fund/<wallet>/<index>/new",
             "fund_confirm": "fund/<wallet>/<index>/<id>/confirm",
             "trade_post": "trade/<wallet>/<index>/drafts/<id>/post",
-            "trade_post_builder": "trade/<wallet>/<index>/drafts/<id>/post_builder",
+            "trade_post_builder_code": "trade/<wallet>/<index>/drafts/<id>/post_builder_code",
             "arbitrary_order_cancel": "trade/<wallet>/<index>/orders/<clob-order-id>/cancel",
             "redeem_confirm": "redeem/<wallet>/<index>/<slug>/confirm",
             "revoke_confirm": "revoke-approvals/<wallet>/<index>/request/confirm",

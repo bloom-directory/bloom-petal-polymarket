@@ -8,6 +8,6 @@ petal::route_file!(spec: petal::static_dir_spec(), list: {
         "review_intent.json",
         "post_attempt.json",
     ]);
-    out.extend(["revalidate", "post", "post_builder"].iter().map(|name| petal::writable(*name)));
+    out.extend(["revalidate", "post", "post_builder_code"].iter().map(|name| petal::writable(*name)));
     out
 });
