@@ -11,23 +11,29 @@
 //! attach; there is no on-chain approval step (unlike Hyperliquid's builder
 //! fee, which is capped and approved on-chain per builder).
 //!
-//! A release build may embed Bloom's own code so orders carry it without an
-//! operator having to configure one. This is not a secret — the code is
+//! A release may declare Bloom's own code so orders carry it without an
+//! operator having to configure one. The code is not a secret — it is
 //! serialized on-chain in every `OrderFilled` event and builder profiles are
-//! publicly queryable — so unlike a credential there is no encryption-at-rest
-//! framing, only whether a default is present, and if so, whether it came
-//! from a release build or an operator override that can change it without
-//! cutting a new release.
+//! publicly queryable — so it is declared in source rather than injected at
+//! build time: a release then rebuilds byte for byte from its tag, and the
+//! package CI checks is the package that ships. Status therefore reports only
+//! whether a default is present, and if so, whether it came from this
+//! release or an operator override that can change it without a new release.
 use alloy::primitives::B256;
 use serde::Serialize;
 
-const EMBEDDED_DEFAULT_BUILDER_CODE: Option<&str> = option_env!("POLYMARKET_BUILDER_CODE");
+/// This release's default builder attribution code, used when no operator
+/// override is stored. It is public on-chain data, not a credential, so it
+/// lives here in source instead of arriving through a build-time environment
+/// variable. Set it as hex, with or without `0x`, up to 32 bytes;
+/// `release_default_if_set_is_a_valid_builder_code` checks it.
+pub const RELEASE_DEFAULT_BUILDER_CODE: Option<&str> = None;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuilderCodeSource {
     StoreOverride,
-    EmbeddedRelease,
+    ReleaseDefault,
     Unconfigured,
 }
 
@@ -40,26 +46,26 @@ pub struct BuilderCodeStatus {
 
 /// Resolves the default builder code: an operator-set store override first,
 /// so the default can change without a release, then this release's
-/// embedded default, else none.
+/// source-declared default, else none.
 fn resolve_default(
-    embedded: Option<&str>,
+    release_default: Option<&str>,
     store_override: Option<&str>,
 ) -> Option<(String, BuilderCodeSource)> {
     if let Some(code) = store_override {
         return Some((code.to_owned(), BuilderCodeSource::StoreOverride));
     }
-    embedded.map(|code| (code.to_owned(), BuilderCodeSource::EmbeddedRelease))
+    release_default.map(|code| (code.to_owned(), BuilderCodeSource::ReleaseDefault))
 }
 
 /// The code every order should attach as its builder attribution field: the
-/// operator store override if set, else this release's embedded default,
+/// operator store override if set, else this release's declared default,
 /// else none (orders then carry a zero builder field, same as today).
 pub fn resolve_default_builder_code(store_override: Option<&str>) -> Option<String> {
-    resolve_default(EMBEDDED_DEFAULT_BUILDER_CODE, store_override).map(|(code, _)| code)
+    resolve_default(RELEASE_DEFAULT_BUILDER_CODE, store_override).map(|(code, _)| code)
 }
 
 pub fn builder_code_status(store_override: Option<&str>) -> BuilderCodeStatus {
-    match resolve_default(EMBEDDED_DEFAULT_BUILDER_CODE, store_override) {
+    match resolve_default(RELEASE_DEFAULT_BUILDER_CODE, store_override) {
         Some((code, source)) => BuilderCodeStatus {
             configured: true,
             source,
@@ -99,7 +105,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_override_wins_over_embedded_default() {
+    fn store_override_wins_over_the_release_default() {
         assert_eq!(
             resolve_default(Some("0x02"), Some("0x03")),
             Some(("0x03".into(), BuilderCodeSource::StoreOverride))
@@ -107,10 +113,10 @@ mod tests {
     }
 
     #[test]
-    fn embedded_default_used_when_no_override_is_stored() {
+    fn release_default_used_when_no_override_is_stored() {
         assert_eq!(
             resolve_default(Some("0x02"), None),
-            Some(("0x02".into(), BuilderCodeSource::EmbeddedRelease))
+            Some(("0x02".into(), BuilderCodeSource::ReleaseDefault))
         );
     }
 
@@ -120,11 +126,25 @@ mod tests {
     }
 
     #[test]
-    fn this_dev_build_has_no_embedded_default() {
-        // This binary is not built with POLYMARKET_BUILDER_CODE set, so a
-        // dev build has no embedded default; release builds set the env var.
-        assert_eq!(EMBEDDED_DEFAULT_BUILDER_CODE, None);
-        assert_eq!(resolve_default_builder_code(None), None);
+    fn release_default_if_set_is_a_valid_builder_code() {
+        // The default is public data declared in source, so it gets the same
+        // check the operator override gets at its write route: an unparsable
+        // or all-zero value would otherwise silently attach nothing, or make
+        // every order fail once a release declared it.
+        if let Some(code) = RELEASE_DEFAULT_BUILDER_CODE {
+            parse_builder_code(code).expect("release default builder code must parse");
+        }
+    }
+
+    #[test]
+    fn the_release_wrapper_resolves_exactly_this_release_default() {
+        // Whatever this release declares (including nothing), the wrapper
+        // resolves exactly that when the store is silent, and a store
+        // override still wins over it. Declaring a default breaks no test.
+        assert_eq!(
+            resolve_default_builder_code(None),
+            RELEASE_DEFAULT_BUILDER_CODE.map(str::to_owned)
+        );
         assert_eq!(
             resolve_default_builder_code(Some("0x03")),
             Some("0x03".into())

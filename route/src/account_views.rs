@@ -308,7 +308,7 @@ pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
 }
 
 /// The builder attribution code every order should carry: the resolved
-/// default (operator store override, else this release's embedded default),
+/// default (operator store override, else this release's declared default),
 /// or `None` if nothing is configured — orders then carry a zero builder
 /// field, same as before this was wired up.
 pub fn resolve_builder_code() -> Result<Option<B256>, DispatchResponse> {
