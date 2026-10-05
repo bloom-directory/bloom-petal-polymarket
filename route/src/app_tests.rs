@@ -124,6 +124,37 @@ mod tests {
             })
     }
 
+    /// The fee-bearing class a builder-coded order signs under. Broker needs
+    /// an operation class to be uniformly fee-bearing or uniformly fee-free,
+    /// so this cannot share `polymarket.order.poly1271` with plain orders.
+    /// Bloom catalogues this exact string with the polygon/pusd fee asset in
+    /// `FEE_BEARING_OPERATION_CLASSES`; if either side renames it, enrollment
+    /// leaves the class fee-free and signing answers `FEE_NOT_ALLOWED`.
+    #[test]
+    fn builder_order_class_is_declared_separately_from_the_plain_order_class() {
+        let manifest: toml::Value = toml::from_str(include_str!("../../petal.toml")).unwrap();
+        let intents = manifest
+            .get("sign")
+            .and_then(|sign| sign.get("allowed_intents"))
+            .and_then(toml::Value::as_array)
+            .expect("petal.toml declares [sign].allowed_intents")
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            intents.contains(&"polymarket.order.poly1271"),
+            "plain orders keep their fee-free class"
+        );
+        assert!(
+            intents.contains(&"polymarket.builder_order.poly1271"),
+            "builder-coded orders need their own fee-bearing class"
+        );
+        assert_ne!(
+            "polymarket.order.poly1271",
+            "polymarket.builder_order.poly1271"
+        );
+    }
+
     #[test]
     fn path_validation_rejects_escape_segments() {
         assert!(validate_relative_path("").is_ok());
@@ -158,8 +189,14 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 111);
+        assert_eq!(routes.len(), 112);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
+        assert!(
+            routes
+                .iter()
+                .any(|path| path.ends_with("trade/[wallet]/[index]/drafts/[id]/post_builder.rs")),
+            "builder-coded posting keeps its own route so its class can be fee-bearing"
+        );
         assert!(
             routes
                 .iter()
