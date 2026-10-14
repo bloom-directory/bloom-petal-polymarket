@@ -1,6 +1,8 @@
-use alloy::primitives::{Address, B256, Signature};
+use crate::polymarket::order::{Order, SIG_TYPE_POLY_1271, poly1271_signing_preimage};
+use alloy::primitives::{Address, B256, Signature, U256};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeMap;
 
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignBatchOutcome};
@@ -92,7 +94,7 @@ fn sign_prepared_items(
     let approval_hint =
         existing_approval_hint(approval_key, &prepared_artifact_digest, selector_label)?;
     let sent_hint = approval_hint.is_some();
-    let claim = batch_claim(ctx, operation_class, &payloads)?;
+    let claim = batch_claim(ctx, operation_class, &payloads, prepared)?;
     match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
         wallet: wallet.into(),
         payloads,
@@ -378,6 +380,7 @@ fn batch_claim(
     ctx: &petal::Ctx,
     operation_class: &str,
     payloads: &[petal::PayloadSignItem],
+    prepared: &[&PreparedSigning],
 ) -> Result<Vec<u8>, DispatchResponse> {
     let route = ctx
         .params
@@ -405,7 +408,7 @@ fn batch_claim(
         "crypto_suite": "secp256k1-keccak256-recoverable",
         "payload_digest": hex::encode(payload_digest),
         "ordered_hashes": ordered_hashes,
-        "declared_debits": [],
+        "declared_debits": order_debits(operation_class, prepared)?,
         "declared_destinations": [],
         "declared_fee": {"kind": "none"},
         "nonce": hex::encode(&nonce[..16]),
@@ -414,9 +417,191 @@ fn batch_claim(
     .map_err(|err| error(-4, format!("encode Petal use claim: {err}")))
 }
 
+/// Derive what leaves the maker's account from the exact prepared order.
+/// Open or uncertain orders retain their full reservation; receipts never
+/// release signing authority, because a signed order can still be filled.
+fn order_debits(
+    operation_class: &str,
+    prepared: &[&PreparedSigning],
+) -> Result<Vec<serde_json::Value>, DispatchResponse> {
+    if operation_class != "polymarket.order.poly1271" {
+        return Ok(Vec::new());
+    }
+    let mut amounts: BTreeMap<String, U256> = BTreeMap::new();
+    for item in prepared {
+        if item.operation != "order" || item.intent != operation_class {
+            return Err(error(-4, "order claim does not match prepared operation"));
+        }
+        let order = order_from_prepared(&item.preimage)?;
+        let chain = item
+            .preimage
+            .get("chain_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| error(-4, "prepared order chain is invalid"))?;
+        let neg_risk = item
+            .preimage
+            .get("neg_risk")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| error(-4, "prepared order market kind is invalid"))?;
+        let owner = item
+            .preimage
+            .get("owner")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|owner| owner.parse::<Address>().ok())
+            .ok_or_else(|| error(-4, "prepared order owner is invalid"))?;
+        if chain != crate::polymarket::POLYGON
+            || owner != item.owner()?
+            || order.signatureType != SIG_TYPE_POLY_1271
+            || order.makerAmount == U256::ZERO
+            || order.takerAmount == U256::ZERO
+            || poly1271_signing_preimage(&order, chain, neg_risk) != item.signing_preimage()?
+        {
+            return Err(error(-4, "order debit facts do not match signed payload"));
+        }
+        let asset = match order.side {
+            0 => "pusd".to_owned(),
+            // A sale spends shares, not collateral. An ordinary pUSD session
+            // must not silently authorize disposal of arbitrary positions.
+            1 => format!(
+                "erc1155:{:#x}:{}",
+                crate::polymarket::eip712::CTF,
+                order.tokenId
+            ),
+            _ => return Err(error(-4, "prepared order side is invalid")),
+        };
+        let total = amounts.entry(asset).or_default();
+        *total = total
+            .checked_add(order.makerAmount)
+            .ok_or_else(|| error(-4, "order debit amount exceeds uint256"))?;
+    }
+    Ok(amounts
+        .into_iter()
+        .map(|(asset, amount)| {
+            serde_json::json!({
+                "asset": {"chain": "polygon", "asset": asset},
+                "amount": amount.to_string()
+            })
+        })
+        .collect())
+}
+
+pub(crate) fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
+    let string = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| error(-4, format!("prepared order is missing {name}")))
+    };
+    let parse_u256 = |name: &str| {
+        string(name)?
+            .parse::<U256>()
+            .map_err(|err| error(-4, format!("prepared order {name} is invalid: {err}")))
+    };
+    let funder = string("funder")?
+        .parse::<Address>()
+        .map_err(|err| error(-4, format!("prepared order funder is invalid: {err}")))?;
+    Ok(Order {
+        salt: parse_u256("salt")?,
+        maker: funder,
+        signer: funder,
+        tokenId: parse_u256("token_id")?,
+        makerAmount: parse_u256("maker_amount")?,
+        takerAmount: parse_u256("taker_amount")?,
+        side: value
+            .get("side")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|side| u8::try_from(side).ok())
+            .ok_or_else(|| error(-4, "prepared order side is invalid"))?,
+        signatureType: value
+            .get("signature_type")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|kind| u8::try_from(kind).ok())
+            .ok_or_else(|| error(-4, "prepared order signature type is invalid"))?,
+        timestamp: parse_u256("timestamp_ms")?,
+        metadata: B256::ZERO,
+        builder: B256::ZERO,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared_order(side: u8, maker_amount: u64) -> PreparedSigning {
+        let owner = Address::repeat_byte(1);
+        let funder = Address::repeat_byte(2);
+        let order = Order {
+            salt: U256::from(1),
+            maker: funder,
+            signer: funder,
+            tokenId: U256::from(42),
+            makerAmount: U256::from(maker_amount),
+            takerAmount: U256::from(20_000_000),
+            side,
+            signatureType: SIG_TYPE_POLY_1271,
+            timestamp: U256::from(1),
+            metadata: B256::ZERO,
+            builder: B256::ZERO,
+        };
+        let preimage = poly1271_signing_preimage(&order, crate::polymarket::POLYGON, false);
+        PreparedSigning::new(
+            "order",
+            "polymarket.order.poly1271",
+            owner,
+            preimage.clone(),
+            alloy::primitives::keccak256(&preimage),
+            serde_json::json!({
+                "owner": owner.to_checksum(None), "funder": funder.to_checksum(None),
+                "salt": "1", "token_id": "42", "maker_amount": maker_amount.to_string(),
+                "taker_amount": "20000000", "side": side,
+                "signature_type": SIG_TYPE_POLY_1271, "timestamp_ms": "1",
+                "chain_id": crate::polymarket::POLYGON, "neg_risk": false
+            }),
+        )
+    }
+
+    #[test]
+    fn order_budget_counts_full_collateral_and_never_treats_sales_as_free() {
+        let buy = prepared_order(0, 10_000_000);
+        let other_buy = prepared_order(0, 5_000_000);
+        let sell = prepared_order(1, 2_000_000);
+        let debits = order_debits("polymarket.order.poly1271", &[&buy, &other_buy, &sell]).unwrap();
+        let collateral = debits
+            .iter()
+            .find(|debit| debit["asset"]["asset"] == "pusd")
+            .unwrap();
+        assert_eq!(collateral["amount"], "15000000");
+        let shares = debits
+            .iter()
+            .find(|debit| debit["asset"]["asset"] != "pusd")
+            .unwrap();
+        assert_eq!(shares["amount"], "2000000");
+        assert_eq!(
+            shares["asset"]["asset"],
+            format!("erc1155:{:#x}:42", crate::polymarket::eip712::CTF)
+        );
+    }
+
+    #[test]
+    fn understated_or_retargeted_order_facts_cannot_satisfy_a_session_budget() {
+        for (field, value) in [
+            ("maker_amount", serde_json::json!("1")),
+            ("side", serde_json::json!(1)),
+            ("chain_id", serde_json::json!(1)),
+            ("neg_risk", serde_json::json!(true)),
+            (
+                "owner",
+                serde_json::json!(Address::repeat_byte(3).to_checksum(None)),
+            ),
+        ] {
+            let mut order = prepared_order(0, 10_000_000);
+            order.preimage[field] = value;
+            assert!(
+                order_debits("polymarket.order.poly1271", &[&order]).is_err(),
+                "{field}"
+            );
+        }
+    }
 
     #[test]
     fn prepared_digest_binds_preimage() {

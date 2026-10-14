@@ -3,6 +3,12 @@
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
+## Persona session accounting
+
+Fee-free `polymarket.order.poly1271` claims include gross maker debits reconstructed from the signed order. BUY orders debit six-decimal `polygon:pusd`; SELL orders debit the exact CTF ERC1155 token's share units. The claim validates the owner, chain, negative-risk exchange selection, amounts and side against the saved signing preimage before asking Bloom to sign. Multiple orders in a batch consume the sum of their debits.
+
+Bloom may execute covered BUY orders under an owner-activated Trader or Degen grant. Selecting a persona alone does not activate a grant. The default collateral budget covers pUSD BUY orders; SELL shares, builder fees, onboarding, funding and withdrawals need their own explicit authority or exact review. Session accounting reserves gross signed order exposure, including orders that remain open or whose submission result is unknown. Cancellation, expiry at the venue or revoking future signing does not automatically refund the sealed budget or cancel existing signed orders.
+
 ## Layout
 
 - `petal-build.toml` pins the canonical Bloom Petal SDK and configures the
