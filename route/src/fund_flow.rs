@@ -2,8 +2,10 @@ use crate::prelude::*;
 
 use crate::polymarket::eip712::PUSD;
 use crate::polymarket::order::parse_micro;
+use crate::polymarket::wallet::{approveCall, transferCall};
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
+use alloy::sol_types::SolCall;
 use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
 pub fn create_fund_request(
     wallet: &str,
@@ -541,28 +543,22 @@ fn read_chain_native_balance(holder: Address) -> Result<U256, DispatchResponse> 
     parse_chain_quantity(&result, "native balance")
 }
 
-fn read_chain_erc20_decimals(token: Address) -> Result<u8, DispatchResponse> {
-    let value = read_chain_eth_call_u256(token, &[0x31, 0x3c, 0xe5, 0x67], "ERC20 decimals")?;
-    u8::try_from(value).map_err(|_| error(-4, "ERC20 decimals exceed 255"))
+alloy::sol! {
+    interface Erc20Metadata {
+        function decimals() external view returns (uint8);
+    }
 }
 
-fn read_chain_eth_call_u256(
-    contract: Address,
-    calldata: &[u8],
-    field: &str,
-) -> Result<U256, DispatchResponse> {
-    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let result = petal::sdk::chain_read(
-        &chain,
-        "eth_call",
-        &serde_json::json!([{
-            "to": contract.to_checksum(None),
-            "data": format!("0x{}", hex::encode(calldata)),
-        }, "latest"])
-        .to_string(),
-    )
-    .map_err(sdk_error)?;
-    parse_chain_quantity(&result, field)
+/// The validating decoder refuses a return word above 255 rather than
+/// truncating it: decimals scale the funding spend cap.
+fn read_chain_erc20_decimals(token: Address) -> Result<u8, DispatchResponse> {
+    let output = read_chain_eth_call(
+        token,
+        &Erc20Metadata::decimalsCall {}.abi_encode(),
+        "ERC20 decimals",
+    )?;
+    Erc20Metadata::decimalsCall::abi_decode_returns_validate(&output)
+        .map_err(|err| error(-4, format!("ERC20 decimals decode: {err}")))
 }
 
 fn parse_chain_quantity(result_json: &str, field: &str) -> Result<U256, DispatchResponse> {
@@ -576,21 +572,11 @@ fn parse_chain_quantity(result_json: &str, field: &str) -> Result<U256, Dispatch
 }
 
 fn erc20_approve_calldata(spender: Address, amount: U256) -> String {
-    let mut bytes = vec![0x09, 0x5e, 0xa7, 0xb3];
-    let mut encoded_spender = [0u8; 32];
-    encoded_spender[12..].copy_from_slice(spender.as_slice());
-    bytes.extend_from_slice(&encoded_spender);
-    bytes.extend_from_slice(&amount.to_be_bytes::<32>());
-    format!("0x{}", hex::encode(bytes))
+    alloy::primitives::hex::encode_prefixed(approveCall { spender, amount }.abi_encode())
 }
 
 fn erc20_transfer_calldata(to: Address, amount: U256) -> String {
-    let mut bytes = vec![0xa9, 0x05, 0x9c, 0xbb];
-    let mut recipient = [0u8; 32];
-    recipient[12..].copy_from_slice(to.as_slice());
-    bytes.extend_from_slice(&recipient);
-    bytes.extend_from_slice(&amount.to_be_bytes::<32>());
-    format!("0x{}", hex::encode(bytes))
+    alloy::primitives::hex::encode_prefixed(transferCall { to, amount }.abi_encode())
 }
 
 fn fund_confirmation(body: &[u8]) -> Result<FundConfirmRequest, ()> {
@@ -753,13 +739,18 @@ pub fn load_fund_session(wallet: &str, id: &str) -> Result<StoreFundSession, Dis
 mod tests {
     use super::*;
 
+    /// The exact bytes the hand-packed encoder produced, so stored funding
+    /// requests and their review digests still match.
     #[test]
     fn direct_transfer_calldata_is_canonical() {
         let recipient = Address::repeat_byte(0x11);
         let calldata = erc20_transfer_calldata(recipient, U256::from(7u8));
-        assert!(calldata.starts_with("0xa9059cbb"));
-        assert_eq!(calldata.len(), 2 + (4 + 32 + 32) * 2);
-        assert!(calldata.contains(&hex::encode(recipient.as_slice())));
+        assert_eq!(
+            calldata,
+            format!("0xa9059cbb{:0>64}{:0>64}", "11".repeat(20), "7")
+        );
+        let decoded = transferCall::abi_decode(&hex::decode(&calldata[2..]).unwrap()).unwrap();
+        assert_eq!((decoded.to, decoded.amount), (recipient, U256::from(7u8)));
     }
 
     #[test]
@@ -774,9 +765,30 @@ mod tests {
     fn exact_approval_calldata_is_canonical() {
         let spender = Address::repeat_byte(0x22);
         let calldata = erc20_approve_calldata(spender, U256::from(7u8));
-        assert!(calldata.starts_with("0x095ea7b3"));
-        assert_eq!(calldata.len(), 2 + (4 + 32 + 32) * 2);
-        assert!(calldata.contains(&hex::encode(spender.as_slice())));
+        assert_eq!(
+            calldata,
+            format!("0x095ea7b3{:0>64}{:0>64}", "22".repeat(20), "7")
+        );
+        let decoded = approveCall::abi_decode(&hex::decode(&calldata[2..]).unwrap()).unwrap();
+        assert_eq!(
+            (decoded.spender, decoded.amount),
+            (spender, U256::from(7u8))
+        );
+    }
+
+    #[test]
+    fn erc20_decimals_are_read_from_a_validated_uint8() {
+        assert_eq!(
+            Erc20Metadata::decimalsCall::SELECTOR,
+            [0x31, 0x3c, 0xe5, 0x67]
+        );
+        let word = |value: u64| U256::from(value).to_be_bytes::<32>();
+        assert_eq!(
+            Erc20Metadata::decimalsCall::abi_decode_returns_validate(&word(6)).unwrap(),
+            6
+        );
+        assert!(Erc20Metadata::decimalsCall::abi_decode_returns_validate(&word(256)).is_err());
+        assert!(Erc20Metadata::decimalsCall::abi_decode_returns_validate(&[]).is_err());
     }
 
     #[test]

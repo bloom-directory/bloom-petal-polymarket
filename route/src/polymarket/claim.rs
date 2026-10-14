@@ -19,9 +19,10 @@
 //! operator, so no signed payload spends the owner's POL; and Bloom catalogues
 //! every Petal operation class with no fee asset, so a fee would be refused.
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::sol_types::SolCall;
 use petal::{ClaimAsset, ClaimEffects};
+use serde::{Deserialize, Serialize};
 
 use crate::polymarket::eip712::{
     Batch, CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, Call, NEG_RISK_ADAPTER,
@@ -199,83 +200,86 @@ pub fn wallet_batch_effects(chain: &str, calls: &[Call]) -> Result<ClaimEffects>
     })
 }
 
-/// Effects of a prepared deposit-wallet batch, read back from the fields it
-/// persisted (`deposit_wallet`, `chain_id`, `nonce`, `deadline`, `calls`).
+/// One call of a deposit-wallet batch as the route persists it and sends it to
+/// the relayer: an EIP-55 `target`, a decimal `value` and 0x-hex `data`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchCall {
+    #[serde(with = "alloy::serde::checksum")]
+    pub target: Address,
+    #[serde(with = "alloy::serde::displayfromstr")]
+    pub value: U256,
+    pub data: Bytes,
+}
+
+impl From<&Call> for BatchCall {
+    fn from(call: &Call) -> Self {
+        Self {
+            target: call.target,
+            value: call.value,
+            data: call.data.clone(),
+        }
+    }
+}
+
+impl From<&BatchCall> for Call {
+    fn from(call: &BatchCall) -> Self {
+        Self {
+            target: call.target,
+            value: call.value,
+            data: call.data.clone(),
+        }
+    }
+}
+
+/// A prepared deposit-wallet batch as `PreparedSigning.preimage` persists it.
+///
+/// It serializes to the same JSON the route has always written, so stored
+/// records and the review hashes taken over them stay valid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedBatch {
+    #[serde(with = "alloy::serde::checksum")]
+    pub deposit_wallet: Address,
+    pub chain_id: u64,
+    pub nonce: u64,
+    pub deadline: u64,
+    pub calls: Vec<BatchCall>,
+    pub review_intent_hash: String,
+}
+
+impl PreparedBatch {
+    pub fn from_preimage(preimage: &serde_json::Value) -> Result<Self> {
+        Self::deserialize(preimage)
+            .map_err(|err| PolymarketError::signing(format!("prepared batch: {err}")))
+    }
+
+    pub fn to_preimage(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self)
+            .map_err(|err| PolymarketError::signing(format!("encode prepared batch: {err}")))
+    }
+}
+
+/// Effects of a prepared deposit-wallet batch.
 ///
 /// The batch is rebuilt and its EIP-712 hash compared with `signing_hash`, so
 /// the effects describe the exact bytes being signed rather than whatever the
 /// persisted record says. A record that does not match is corrupt.
 pub fn prepared_batch_effects(
     chain: &str,
-    preimage: &serde_json::Value,
+    prepared: &PreparedBatch,
     signing_hash: B256,
 ) -> Result<ClaimEffects> {
-    let number = |name: &str| {
-        preimage
-            .get(name)
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| PolymarketError::signing(format!("prepared batch lacks {name}")))
-    };
-    let deposit = preimage
-        .get("deposit_wallet")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| PolymarketError::signing("prepared batch lacks deposit_wallet"))?
-        .parse::<Address>()
-        .map_err(|err| PolymarketError::signing(format!("prepared batch deposit wallet: {err}")))?;
-    let calls = calls_from_json(
-        preimage
-            .get("calls")
-            .ok_or_else(|| PolymarketError::signing("prepared batch lacks calls"))?,
-    )?;
     let batch = Batch {
-        wallet: deposit,
-        nonce: U256::from(number("nonce")?),
-        deadline: U256::from(number("deadline")?),
-        calls,
+        wallet: prepared.deposit_wallet,
+        nonce: U256::from(prepared.nonce),
+        deadline: U256::from(prepared.deadline),
+        calls: prepared.calls.iter().map(Call::from).collect(),
     };
-    if batch_signing_hash(&batch, number("chain_id")?, deposit) != signing_hash {
+    if batch_signing_hash(&batch, prepared.chain_id, prepared.deposit_wallet) != signing_hash {
         return Err(PolymarketError::signing(
             "prepared batch calls do not match the hash being signed",
         ));
     }
     wallet_batch_effects(chain, &batch.calls)
-}
-
-/// Read back the calls a prepared batch persisted as `{target, value, data}`.
-fn calls_from_json(calls: &serde_json::Value) -> Result<Vec<Call>> {
-    let calls = calls
-        .as_array()
-        .ok_or_else(|| PolymarketError::signing("prepared batch calls are not a list"))?;
-    calls
-        .iter()
-        .enumerate()
-        .map(|(index, call)| {
-            let field = |name: &str| {
-                call.get(name)
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        PolymarketError::signing(format!(
-                            "prepared batch call {index} lacks {name}"
-                        ))
-                    })
-            };
-            let target = field("target")?.parse::<Address>().map_err(|err| {
-                PolymarketError::signing(format!("batch call {index} target: {err}"))
-            })?;
-            let value = field("value")?.parse::<U256>().map_err(|err| {
-                PolymarketError::signing(format!("batch call {index} value: {err}"))
-            })?;
-            let data = field("data")?;
-            let data = hex::decode(data.strip_prefix("0x").unwrap_or(data)).map_err(|err| {
-                PolymarketError::signing(format!("batch call {index} data: {err}"))
-            })?;
-            Ok(Call {
-                target,
-                value,
-                data: data.into(),
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -488,23 +492,20 @@ mod tests {
             1_900_000_000,
             &calls,
         );
-        let preimage = serde_json::json!({
-            "deposit_wallet": DEPOSIT.to_checksum(None),
-            "chain_id": 137,
-            "nonce": 3,
-            "deadline": 1_900_000_000u64,
-            "calls": [{
-                "target": PUSD.to_checksum(None),
-                "value": "0",
-                "data": format!("0x{}", hex::encode(calls[0].data.as_ref())),
-            }],
-        });
-        let effects = prepared_batch_effects(CHAIN, &preimage, built.signing_hash).unwrap();
+        let prepared = PreparedBatch {
+            deposit_wallet: DEPOSIT,
+            chain_id: 137,
+            nonce: 3,
+            deadline: 1_900_000_000,
+            calls: calls.iter().map(BatchCall::from).collect(),
+            review_intent_hash: "review".into(),
+        };
+        let effects = prepared_batch_effects(CHAIN, &prepared, built.signing_hash).unwrap();
         assert_eq!(effects.debits(), &[debit(PUSD_STR, "5")]);
-        let mut tampered = preimage.clone();
-        tampered["calls"] = serde_json::json!([]);
+        let mut tampered = prepared.clone();
+        tampered.calls.clear();
         assert!(prepared_batch_effects(CHAIN, &tampered, built.signing_hash).is_err());
-        assert!(prepared_batch_effects(CHAIN, &preimage, B256::ZERO).is_err());
+        assert!(prepared_batch_effects(CHAIN, &prepared, B256::ZERO).is_err());
     }
 
     struct Post;
@@ -548,11 +549,17 @@ mod tests {
         assert_eq!(request.petal_use_claim_jcs, claim.jcs());
     }
 
+    /// The record must serialize to exactly the JSON the route wrote before it
+    /// was typed: stored preimages and the review hashes over them depend on it.
     #[test]
-    fn persisted_calls_read_back_exactly() {
+    fn a_prepared_batch_keeps_its_persisted_json() {
         let calls = approval_calls();
-        let json = serde_json::Value::Array(
-            calls
+        let legacy = serde_json::json!({
+            "deposit_wallet": DEPOSIT.to_checksum(None),
+            "chain_id": 137,
+            "nonce": 3,
+            "deadline": 1_900_000_000u64,
+            "calls": calls
                 .iter()
                 .map(|call| {
                     serde_json::json!({
@@ -561,15 +568,28 @@ mod tests {
                         "data": format!("0x{}", hex::encode(call.data.as_ref())),
                     })
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
+            "review_intent_hash": "review",
+        });
+        let prepared = PreparedBatch::from_preimage(&legacy).unwrap();
+        assert_eq!(prepared.calls.len(), calls.len());
+        for (read, call) in prepared.calls.iter().zip(&calls) {
+            assert_eq!(
+                (read.target, read.value, &read.data),
+                (call.target, call.value, &call.data)
+            );
+        }
+        let rewritten = prepared.to_preimage().unwrap();
+        assert_eq!(rewritten, legacy);
+        assert_eq!(
+            serde_json::to_vec(&rewritten).unwrap(),
+            serde_json::to_vec(&legacy).unwrap()
         );
-        let fields = |calls: &[Call]| {
-            calls
-                .iter()
-                .map(|call| (call.target, call.value, call.data.to_vec()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(fields(&calls_from_json(&json).unwrap()), fields(&calls));
-        assert!(calls_from_json(&serde_json::json!({})).is_err());
+
+        // Targets are written checksummed, so a lowercase one is corrupt.
+        let mut lowercase = legacy.clone();
+        lowercase["calls"][0]["target"] = format!("{:#x}", calls[0].target).into();
+        assert!(PreparedBatch::from_preimage(&lowercase).is_err());
+        assert!(PreparedBatch::from_preimage(&serde_json::json!({})).is_err());
     }
 }

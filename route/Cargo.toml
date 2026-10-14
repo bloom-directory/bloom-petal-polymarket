@@ -13,7 +13,7 @@ default = []
 native-client = []
 
 [dependencies]
-alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "sol-types", "std"] }
+alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "serde", "sol-types", "std"] }
 base64 = "0.22"
 blake3 = "1"
 hex = "0.4"

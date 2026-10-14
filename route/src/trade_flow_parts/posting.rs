@@ -269,10 +269,11 @@ pub fn post_trade_draft(
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let signature = match wrap_poly1271_signature(&order, &inner_sig, chain_id, draft.neg_risk) {
-        Ok(signature) => signature,
-        Err(e) => return polymarket_error(e),
-    };
+    let signature =
+        match wrap_poly1271_signature(&order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
+            Ok(signature) => signature,
+            Err(e) => return polymarket_error(e),
+        };
     let order_body = match OrderBody::from_signed(&order, &signature, &creds.key, draft.order_type)
     {
         Ok(body) => body,

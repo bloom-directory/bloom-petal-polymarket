@@ -146,7 +146,8 @@ pub fn begin_onboarding(
         &petal::ClaimEffects::moves_nothing(),
         &approval_key,
     ) {
-        Ok(signature) => format!("0x{}", hex::encode(signature)),
+        // v is rendered as 27/28, the form Polymarket's own clients send.
+        Ok(signature) => signature.to_string(),
         Err(resp) => return resp,
     };
     let headers = [

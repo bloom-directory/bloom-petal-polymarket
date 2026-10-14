@@ -75,7 +75,7 @@ fn sign_prepared_items(
     effects: &petal::ClaimEffects,
     approval_key: &str,
     selector: petal::SignSelector,
-) -> Result<Vec<Vec<u8>>, DispatchResponse> {
+) -> Result<Vec<Signature>, DispatchResponse> {
     if prepared.is_empty() {
         return Err(error(-3, "prepared signing batch is empty"));
     }
@@ -111,23 +111,27 @@ fn sign_prepared_items(
     request.action = Some(prepared_bytes);
     match petal::sdk::sign_payload_batch(&request) {
         Ok(SignBatchOutcome::Signatures(signatures)) if signatures.len() == prepared.len() => {
-            for (signature, item) in signatures.iter().zip(prepared) {
-                if signature.len() != 65 {
-                    return Err(error(-4, "payload batch returned a non-65-byte signature"));
-                }
-                let signature = Signature::from_raw(signature)
-                    .map_err(|err| error(-4, format!("host signature: {err}")))?;
-                if signature
-                    .recover_address_from_prehash(&item.hash()?)
-                    .map_err(|err| error(-4, format!("recover host signature: {err}")))?
-                    != item.owner()?
-                {
-                    return Err(error(
-                        -4,
-                        "host batch signature does not match prepared owner",
-                    ));
-                }
-            }
+            // alloy checks the length and recovery byte; only signatures that
+            // recover to the prepared owner are returned.
+            let signatures = signatures
+                .iter()
+                .zip(prepared)
+                .map(|(signature, item)| {
+                    let signature = Signature::from_raw(signature)
+                        .map_err(|err| error(-4, format!("host signature: {err}")))?;
+                    if signature
+                        .recover_address_from_prehash(&item.hash()?)
+                        .map_err(|err| error(-4, format!("recover host signature: {err}")))?
+                        != item.owner()?
+                    {
+                        return Err(error(
+                            -4,
+                            "host batch signature does not match prepared owner",
+                        ));
+                    }
+                    Ok(signature)
+                })
+                .collect::<Result<Vec<_>, DispatchResponse>>()?;
             let _ = petal::sdk::store_del(approval_key);
             Ok(signatures)
         }
@@ -287,7 +291,7 @@ pub fn sign_prepared(
     prepared: &PreparedSigning,
     effects: &petal::ClaimEffects,
     approval_key: &str,
-) -> Result<Vec<u8>, DispatchResponse> {
+) -> Result<Signature, DispatchResponse> {
     sign_prepared_items(
         ctx,
         wallet,
@@ -313,7 +317,7 @@ pub fn sign_prepared_reusable(
     prepared: &PreparedSigning,
     effects: &petal::ClaimEffects,
     approval_key: &str,
-) -> Result<Vec<u8>, DispatchResponse> {
+) -> Result<Signature, DispatchResponse> {
     sign_prepared_items(
         ctx,
         wallet,

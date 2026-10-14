@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
+use crate::polymarket::claim::{BatchCall, PreparedBatch};
 use crate::polymarket::eip712::{Call, FACTORY, PUSD};
 use crate::polymarket::signing::wallet_batch_action_and_hash;
 use crate::polymarket::wallet::{redeem_positions_call, revoke_calls, transfer_amount_call};
@@ -174,7 +175,7 @@ fn execute(
             };
             let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
             let built = wallet_batch_action_and_hash(deposit, chain_id, nonce, deadline, &calls);
-            let calls_json: Vec<_> = calls.iter().map(call_json).collect();
+            let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
             let review = serde_json::json!({
                 "operation": action.operation(),
                 "owner": owner.to_checksum(None),
@@ -182,12 +183,25 @@ fn execute(
                 "chain_id": chain_id,
                 "nonce": nonce,
                 "deadline": deadline,
-                "calls": calls_json,
+                "calls": batch_calls,
                 "signing_hash": format!("{:#x}", built.signing_hash),
             });
             let review_hash = match store_review_intent(&review_key, &review) {
                 Ok(hash) => hash,
                 Err(resp) => return resp,
+            };
+            let preimage = PreparedBatch {
+                deposit_wallet: deposit,
+                chain_id,
+                nonce,
+                deadline,
+                calls: batch_calls,
+                review_intent_hash: review_hash,
+            }
+            .to_preimage();
+            let preimage = match preimage {
+                Ok(preimage) => preimage,
+                Err(e) => return polymarket_error(e),
             };
             let prepared = PreparedSigning::new(
                 action.operation(),
@@ -195,14 +209,7 @@ fn execute(
                 owner,
                 built.signing_preimage,
                 built.signing_hash,
-                serde_json::json!({
-                    "deposit_wallet": deposit.to_checksum(None),
-                    "chain_id": chain_id,
-                    "nonce": nonce,
-                    "deadline": deadline,
-                    "calls": calls_json,
-                    "review_intent_hash": review_hash,
-                }),
+                preimage,
             );
             if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
                 return resp;
@@ -211,26 +218,17 @@ fn execute(
         }
         Err(resp) => return resp,
     };
-    if prepared
-        .preimage
-        .get("chain_id")
-        .and_then(serde_json::Value::as_u64)
-        != Some(chain_id)
-    {
+    let batch = match PreparedBatch::from_preimage(&prepared.preimage) {
+        Ok(batch) => batch,
+        Err(e) => return polymarket_error(e),
+    };
+    if batch.chain_id != chain_id {
         return error(
             -4,
             "prepared relayer action does not match configured chain",
         );
     }
-    let expected_review = match prepared
-        .preimage
-        .get("review_intent_hash")
-        .and_then(serde_json::Value::as_str)
-    {
-        Some(hash) => hash,
-        None => return error(-4, "prepared relayer batch is missing review hash"),
-    };
-    if let Err(resp) = verify_review_intent(&review_key, expected_review) {
+    if let Err(resp) = verify_review_intent(&review_key, &batch.review_intent_hash) {
         return resp;
     }
     let digest = match serde_json::to_vec(&prepared) {
@@ -302,42 +300,16 @@ fn execute(
     }
 
     let effects = match prepared.hash().and_then(|hash| {
-        crate::polymarket::claim::prepared_batch_effects(&chain, &prepared.preimage, hash)
+        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, hash)
             .map_err(polymarket_error)
     }) {
         Ok(effects) => effects,
         Err(resp) => return resp,
     };
+    // alloy's `Signature` renders v as 27/28, the form the relayer expects.
     let signature = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
-        Ok(signature) => match relayer_signature_hex(&signature) {
-            Ok(signature) => signature,
-            Err(resp) => return resp,
-        },
+        Ok(signature) => signature.to_string(),
         Err(resp) => return resp,
-    };
-    let calls = match prepared
-        .preimage
-        .get("calls")
-        .and_then(serde_json::Value::as_array)
-    {
-        Some(calls) => calls,
-        None => return error(-4, "prepared relayer batch is missing calls"),
-    };
-    let nonce = match prepared
-        .preimage
-        .get("nonce")
-        .and_then(serde_json::Value::as_u64)
-    {
-        Some(value) => value,
-        None => return error(-4, "prepared relayer batch is missing nonce"),
-    };
-    let deadline = match prepared
-        .preimage
-        .get("deadline")
-        .and_then(serde_json::Value::as_u64)
-    {
-        Some(value) => value,
-        None => return error(-4, "prepared relayer batch is missing deadline"),
     };
     let progress = RelayerProgress {
         prepared_digest: digest.clone(),
@@ -360,12 +332,12 @@ fn execute(
             "type": "WALLET",
             "from": owner.to_checksum(None),
             "to": FACTORY.to_checksum(None),
-            "nonce": nonce.to_string(),
+            "nonce": batch.nonce.to_string(),
             "signature": signature,
             "depositWalletParams": {
                 "depositWallet": deposit.to_checksum(None),
-                "deadline": deadline.to_string(),
-                "calls": calls,
+                "deadline": batch.deadline.to_string(),
+                "calls": batch.calls,
             }
         }),
     ) {
@@ -428,14 +400,6 @@ fn withdraw_amount(body: &[u8], balance: U256) -> Result<U256, DispatchResponse>
         return Err(error(-3, "withdraw amount exceeds deposit pUSD balance"));
     }
     Ok(amount)
-}
-
-fn call_json(call: &Call) -> serde_json::Value {
-    serde_json::json!({
-        "target": call.target.to_checksum(None),
-        "value": call.value.to_string(),
-        "data": format!("0x{}", hex::encode(call.data.as_ref())),
-    })
 }
 
 fn confirmation_body(body: &[u8]) -> bool {
