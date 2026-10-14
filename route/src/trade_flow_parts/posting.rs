@@ -1,3 +1,4 @@
+use crate::approval::order_from_prepared;
 use crate::prelude::*;
 
 use crate::polymarket::order::{
@@ -493,44 +494,6 @@ pub fn post_trade_draft(
             )
         }
     }
-}
-
-fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
-    let string = |name: &str| {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| error(-4, format!("prepared order is missing {name}")))
-    };
-    let parse_u256 = |name: &str| {
-        string(name)?
-            .parse::<U256>()
-            .map_err(|err| error(-4, format!("prepared order {name} is invalid: {err}")))
-    };
-    let funder = string("funder")?
-        .parse::<Address>()
-        .map_err(|err| error(-4, format!("prepared order funder is invalid: {err}")))?;
-    Ok(Order {
-        salt: parse_u256("salt")?,
-        maker: funder,
-        signer: funder,
-        tokenId: parse_u256("token_id")?,
-        makerAmount: parse_u256("maker_amount")?,
-        takerAmount: parse_u256("taker_amount")?,
-        side: value
-            .get("side")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|side| u8::try_from(side).ok())
-            .ok_or_else(|| error(-4, "prepared order side is invalid"))?,
-        signatureType: value
-            .get("signature_type")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|kind| u8::try_from(kind).ok())
-            .ok_or_else(|| error(-4, "prepared order signature type is invalid"))?,
-        timestamp: parse_u256("timestamp_ms")?,
-        metadata: B256::ZERO,
-        builder: B256::ZERO,
-    })
 }
 
 pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
