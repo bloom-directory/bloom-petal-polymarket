@@ -442,7 +442,20 @@ pub fn relayer_batch_signature(
         Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
         Err(err) => return Err(sdk_error(err)),
     }
-    let signature = relayer_signature_hex(&sign_prepared(ctx, wallet, prepared, approval_key)?)?;
+    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
+    let effects = crate::polymarket::claim::prepared_batch_effects(
+        &chain,
+        &prepared.preimage,
+        prepared.hash()?,
+    )
+    .map_err(polymarket_error)?;
+    let signature = relayer_signature_hex(&sign_prepared(
+        ctx,
+        wallet,
+        prepared,
+        &effects,
+        approval_key,
+    )?)?;
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
         signature_hex: signature.clone(),

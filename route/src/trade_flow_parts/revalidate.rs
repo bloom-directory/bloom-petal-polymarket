@@ -7,7 +7,7 @@ use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     id: &str,
     body: &[u8],
 ) -> DispatchResponse {
@@ -104,7 +104,7 @@ pub fn revalidate_trade_draft(
         Err(resp) => return resp,
     };
 
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };

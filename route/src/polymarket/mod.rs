@@ -1,4 +1,5 @@
 pub mod builder_creds;
+pub mod claim;
 pub mod creds;
 pub mod eip712;
 pub mod order;

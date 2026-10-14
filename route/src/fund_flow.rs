@@ -5,14 +5,18 @@ use crate::polymarket::order::parse_micro;
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
-pub fn create_fund_request(wallet: &str, account: u32, body: &[u8]) -> DispatchResponse {
+pub fn create_fund_request(
+    wallet: &str,
+    account: &petal::WalletAccount,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -60,7 +64,12 @@ pub fn create_fund_request(wallet: &str, account: u32, body: &[u8]) -> DispatchR
     )
 }
 
-pub fn confirm_fund_request(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn confirm_fund_request(
+    wallet: &str,
+    account: &petal::WalletAccount,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
@@ -246,11 +255,11 @@ pub fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
 
 fn prepare_funding(
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     session: &StoreFundSession,
 ) -> Result<PreparedFunding, DispatchResponse> {
     let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let owner = wallet_address(wallet, account)?;
+    let owner = wallet_address(account)?;
     let deposit = session
         .deposit_wallet
         .parse::<Address>()

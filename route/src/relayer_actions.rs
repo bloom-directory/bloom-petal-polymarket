@@ -73,11 +73,11 @@ pub fn revoke_plan(wallet: &str) -> DispatchResponse {
     ).into_bytes())
 }
 
-pub fn withdraw_plan(wallet: &str, account: u32) -> DispatchResponse {
+pub fn withdraw_plan(wallet: &str, account: &petal::WalletAccount) -> DispatchResponse {
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -98,7 +98,7 @@ pub fn withdraw_plan(wallet: &str, account: u32) -> DispatchResponse {
 pub fn confirm_redeem(
     ctx: &petal::Ctx,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     slug: &str,
     body: &[u8],
 ) -> DispatchResponse {
@@ -108,7 +108,7 @@ pub fn confirm_redeem(
 pub fn confirm_revoke(
     ctx: &petal::Ctx,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     body: &[u8],
 ) -> DispatchResponse {
     execute(ctx, RelayerAction::RevokeApprovals, wallet, account, body)
@@ -117,7 +117,7 @@ pub fn confirm_revoke(
 pub fn confirm_withdraw(
     ctx: &petal::Ctx,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     body: &[u8],
 ) -> DispatchResponse {
     execute(ctx, RelayerAction::WithdrawPusd, wallet, account, body)
@@ -127,7 +127,7 @@ fn execute(
     ctx: &petal::Ctx,
     action: RelayerAction<'_>,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     body: &[u8],
 ) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
@@ -136,7 +136,7 @@ fn execute(
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let (_, chain_id) = match crate::runtime_config::chain() {
+    let (chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -146,7 +146,7 @@ fn execute(
             "confirmation requires confirm, y, or {\"confirm\":true}",
         );
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -301,7 +301,14 @@ fn execute(
         }
     }
 
-    let signature = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
+    let effects = match prepared.hash().and_then(|hash| {
+        crate::polymarket::claim::prepared_batch_effects(&chain, &prepared.preimage, hash)
+            .map_err(polymarket_error)
+    }) {
+        Ok(effects) => effects,
+        Err(resp) => return resp,
+    };
+    let signature = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
         Ok(signature) => match relayer_signature_hex(&signature) {
             Ok(signature) => signature,
             Err(resp) => return resp,
@@ -408,11 +415,15 @@ fn withdraw_amount(body: &[u8], balance: U256) -> Result<U256, DispatchResponse>
         .get("amount")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("all");
-    if amount.eq_ignore_ascii_case("all") {
-        return Ok(balance);
+    let amount = if amount.eq_ignore_ascii_case("all") {
+        balance
+    } else {
+        U256::from(crate::polymarket::order::parse_micro(amount).map_err(polymarket_error)?)
+    };
+    if amount.is_zero() {
+        // A zero transfer moves nothing, and its claim could not declare a debit.
+        return Err(error(-3, "nothing to withdraw: the amount is zero"));
     }
-    let micro = crate::polymarket::order::parse_micro(amount).map_err(polymarket_error)?;
-    let amount = U256::from(micro);
     if amount > balance {
         return Err(error(-3, "withdraw amount exceeds deposit pUSD balance"));
     }
@@ -456,6 +467,8 @@ mod tests {
             U256::from(1_250_000u64)
         );
         assert!(withdraw_amount(br#"{"confirm":true,"amount":"3"}"#, balance).is_err());
+        assert!(withdraw_amount(br#"{"confirm":true,"amount":"0"}"#, balance).is_err());
+        assert!(withdraw_amount(br#"{"confirm":true,"amount":"all"}"#, U256::ZERO).is_err());
     }
 
     #[test]

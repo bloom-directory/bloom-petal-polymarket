@@ -1,9 +1,11 @@
 use alloy::primitives::{Address, B256, Signature};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignBatchOutcome};
+
+/// Every Polymarket payload is an EIP-712 digest the owner's EVM key signs.
+const SUITE: petal::CryptoSuite = petal::CryptoSuite::Secp256k1Keccak256Recoverable;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedSigning {
@@ -70,6 +72,7 @@ fn sign_prepared_items(
     wallet: &str,
     prepared: &[&PreparedSigning],
     operation_class: &str,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
     selector: petal::SignSelector,
 ) -> Result<Vec<Vec<u8>>, DispatchResponse> {
@@ -92,20 +95,21 @@ fn sign_prepared_items(
     let approval_hint =
         existing_approval_hint(approval_key, &prepared_artifact_digest, selector_label)?;
     let sent_hint = approval_hint.is_some();
-    let claim = batch_claim(ctx, operation_class, &payloads)?;
-    match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
-        wallet: wallet.into(),
-        payloads,
-        signature_algorithm: "secp256k1-keccak256-recoverable".into(),
-        operation_class: operation_class.into(),
-        petal_use_claim_jcs: claim,
-        claim_assurance_evidence: None,
-        approval_hint,
-        action: Some(prepared_bytes),
-        advisory: None,
-        selector: selector.clone(),
-        key_ref_jcs: None,
-    }) {
+    // The derived nonce depends only on the route, class and payloads, and the
+    // action is the persisted prepared record, so a retry presents the same
+    // claim and the owner's approval still matches it.
+    let claim = petal::petal_use_claim(
+        ctx,
+        operation_class,
+        SUITE,
+        &payloads,
+        effects,
+        petal::ClaimNonce::Derived,
+    )?;
+    let mut request = claim.batch_request(wallet, selector.clone());
+    request.approval_hint = approval_hint;
+    request.action = Some(prepared_bytes);
+    match petal::sdk::sign_payload_batch(&request) {
         Ok(SignBatchOutcome::Signatures(signatures)) if signatures.len() == prepared.len() => {
             for (signature, item) in signatures.iter().zip(prepared) {
                 if signature.len() != 65 {
@@ -275,10 +279,13 @@ pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), Dispat
 }
 
 /// Sign one prepared payload under an owner approval bound to its exact bytes.
+/// `effects` is what the payload moves, declared in its Petal use claim; it
+/// must be derived from the prepared bytes so a retry declares the same.
 pub fn sign_prepared(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
 ) -> Result<Vec<u8>, DispatchResponse> {
     sign_prepared_items(
@@ -286,6 +293,7 @@ pub fn sign_prepared(
         wallet,
         &[prepared],
         &prepared.intent,
+        effects,
         approval_key,
         petal::SignSelector::Exact,
     )?
@@ -298,11 +306,12 @@ pub fn sign_prepared(
 /// bound to its bytes. Use this only for payloads carrying a short-lived venue
 /// field (such as a server timestamp) that must be rebuilt after the owner
 /// approves; the approval stays bound to this Petal, route, wallet, operation
-/// class and signature count.
+/// class and signature count. Every rebuild must declare the same `effects`.
 pub fn sign_prepared_reusable(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
 ) -> Result<Vec<u8>, DispatchResponse> {
     sign_prepared_items(
@@ -310,6 +319,7 @@ pub fn sign_prepared_reusable(
         wallet,
         &[prepared],
         &prepared.intent,
+        effects,
         approval_key,
         petal::SignSelector::Reusable,
     )?
@@ -372,46 +382,6 @@ fn existing_approval_hint(
         return Ok(None);
     };
     Ok((existing.expires_ms > now_millis() as u64).then_some(existing.action_id))
-}
-
-fn batch_claim(
-    ctx: &petal::Ctx,
-    operation_class: &str,
-    payloads: &[petal::PayloadSignItem],
-) -> Result<Vec<u8>, DispatchResponse> {
-    let route = ctx
-        .params
-        .iter()
-        .find_map(|(name, value)| (name == "bloom.route_id").then_some(value.as_str()))
-        .ok_or_else(|| error(-4, "trusted Petal route id is unavailable"))?;
-    let payload_digest = petal::payload_batch_digest(payloads).map_err(sdk_error)?;
-    let ordered_hashes = payloads
-        .iter()
-        .map(|payload| hex::encode(payload.claimed_hash))
-        .collect::<Vec<_>>();
-    let nonce = Sha256::digest(
-        [
-            ctx.package_hash.as_bytes(),
-            route.as_bytes(),
-            operation_class.as_bytes(),
-            payload_digest.as_slice(),
-        ]
-        .concat(),
-    );
-    serde_jcs::to_vec(&serde_json::json!({
-        "package_hash": ctx.package_hash,
-        "route": route,
-        "operation_class": operation_class,
-        "crypto_suite": "secp256k1-keccak256-recoverable",
-        "payload_digest": hex::encode(payload_digest),
-        "ordered_hashes": ordered_hashes,
-        "declared_debits": [],
-        "declared_destinations": [],
-        "declared_fee": {"kind": "none"},
-        "nonce": hex::encode(&nonce[..16]),
-        "claim_assurance": {"kind": "machine_asserted"}
-    }))
-    .map_err(|err| error(-4, format!("encode Petal use claim: {err}")))
 }
 
 #[cfg(test)]
