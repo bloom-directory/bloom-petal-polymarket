@@ -2,11 +2,11 @@ use crate::approval::order_from_prepared;
 use crate::prelude::*;
 
 use crate::polymarket::order::{
-    LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
+    LimitQuote, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
     poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::U256;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
