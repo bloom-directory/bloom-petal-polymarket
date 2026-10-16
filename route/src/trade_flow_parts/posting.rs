@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
+    format_micro, poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
@@ -10,11 +10,11 @@ use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     id: &str,
     body: &[u8],
 ) -> DispatchResponse {
-    let (_, chain_id) = match crate::runtime_config::chain() {
+    let (chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -55,7 +55,7 @@ pub fn post_trade_draft(
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -114,6 +114,12 @@ pub fn post_trade_draft(
             format!("{message}; write revalidate again before posting"),
         );
     }
+    // Shown in the prepared record, which Bloom presents as the approval's
+    // action, so the owner sees why the pUSD debit exceeds maker_amount.
+    let fee_cap = match draft.fee_cap_micro() {
+        Ok(cap) => cap,
+        Err(e) => return polymarket_error(e),
+    };
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
     };
@@ -190,6 +196,8 @@ pub fn post_trade_draft(
                     "salt": order.salt.to_string(),
                     "maker_amount": order.makerAmount.to_string(),
                     "taker_amount": order.takerAmount.to_string(),
+                    "fee": draft.fee,
+                    "fee_cap": format_micro(fee_cap),
                     "side": order.side,
                     "signature_type": order.signatureType,
                     "timestamp_ms": order.timestamp.to_string(),
@@ -254,14 +262,36 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
+    // The claim's effects come from `order` and the fee schedule the final
+    // review pinned (its hash is in the prepared record), so `order` must be
+    // the order whose digest is being signed.
+    match prepared.hash() {
+        Ok(hash) if hash == digest => {}
+        Ok(_) => return error(-4, "prepared order does not match its signing hash"),
+        Err(resp) => return resp,
+    }
+    let effects = match draft.order_effects(&chain, &order) {
+        Ok(effects) => effects,
+        Err(e) => return polymarket_error(e),
+    };
+    let unposted = match StoreTradeReceipt::for_draft(
+        &draft,
+        funder.to_checksum(None),
+        salt,
+        review_intent_hash.clone(),
+    ) {
+        Ok(receipt) => receipt,
+        Err(e) => return polymarket_error(e),
+    };
+    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let signature = match wrap_poly1271_signature(&order, &inner_sig, chain_id, draft.neg_risk) {
-        Ok(signature) => signature,
-        Err(e) => return polymarket_error(e),
-    };
+    let signature =
+        match wrap_poly1271_signature(&order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
+            Ok(signature) => signature,
+            Err(e) => return polymarket_error(e),
+        };
     let order_body = match OrderBody::from_signed(&order, &signature, &creds.key, draft.order_type)
     {
         Ok(body) => body,
@@ -302,18 +332,6 @@ pub fn post_trade_draft(
             let filled_size_micro = clob_response_filled_size_micro(&raw_response);
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: clob_order_id.clone(),
                 clob_status: status.clone(),
                 filled_size_micro,
@@ -322,8 +340,8 @@ pub fn post_trade_draft(
                     &clob_order_id,
                     filled_size_micro,
                 ),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to store receipt");
@@ -344,18 +362,6 @@ pub fn post_trade_draft(
         Err(DispatchResponse::Error { code: -3, message }) => {
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "rejected".into(),
                 filled_size_micro: None,
@@ -363,8 +369,8 @@ pub fn post_trade_draft(
                     "error": "CLOB rejected the order",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to persist rejected order receipt");
@@ -390,18 +396,6 @@ pub fn post_trade_draft(
                 let filled_size_micro = clob_response_filled_size_micro(&raw_response);
                 let posted_ms = now_millis();
                 let receipt = StoreTradeReceipt {
-                    draft_id: id.into(),
-                    wallet: wallet.into(),
-                    slug: draft.slug.clone(),
-                    token_id: draft.token_id.clone(),
-                    side: draft.side,
-                    order_type: draft.order_type,
-                    funder: Some(funder.to_checksum(None)),
-                    signature_type: SIG_TYPE_POLY_1271,
-                    amount_microusd: draft.amount_micro,
-                    limit_price_micro: draft.limit_price_micro,
-                    size_micro: draft.size_micro,
-                    salt,
                     clob_order_id: clob_order_id.clone(),
                     clob_status: status.clone(),
                     filled_size_micro,
@@ -410,8 +404,8 @@ pub fn post_trade_draft(
                         &clob_order_id,
                         filled_size_micro,
                     ),
-                    review_intent_hash: Some(review_intent_hash),
                     posted_ms,
+                    ..unposted
                 };
                 if let DispatchResponse::Error { .. } = store_put_json(
                     &format!("{base}/post_attempt.json"),
@@ -450,18 +444,6 @@ pub fn post_trade_draft(
             }
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "ambiguous".into(),
                 filled_size_micro: None,
@@ -469,8 +451,8 @@ pub fn post_trade_draft(
                     "error": "post outcome unknown after signing",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             draft.status = "ambiguous".into();
             draft.clob_status = Some("ambiguous".into());
@@ -533,7 +515,12 @@ fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchRespo
     })
 }
 
-pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn cancel_trade_receipt(
+    wallet: &str,
+    account: &petal::WalletAccount,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -574,7 +561,7 @@ pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -
     let Some(order_id) = receipt.clob_order_id.clone() else {
         return error(-3, "receipt has no CLOB order id to cancel");
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -635,11 +622,14 @@ pub fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), Dispatch
     Ok(())
 }
 
-pub fn discoverable_order_ids(wallet: &str, account: u32) -> Result<Vec<String>, DispatchResponse> {
+pub fn discoverable_order_ids(
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> Result<Vec<String>, DispatchResponse> {
     if let Err(err) = validate_wallet_name(wallet) {
         return Err(error(-3, err.to_string()));
     }
-    let owner = wallet_address(wallet, account)?;
+    let owner = wallet_address(account)?;
     let creds = load_creds(wallet)?;
     let orders = clob_l2_get_json(owner, &creds, "/data/orders", &[])?;
     let rows = orders
@@ -659,7 +649,7 @@ pub fn discoverable_order_ids(wallet: &str, account: u32) -> Result<Vec<String>,
 
 pub fn cancel_discovered_order(
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     order_id: &str,
     body: &[u8],
 ) -> DispatchResponse {
@@ -682,7 +672,7 @@ pub fn cancel_discovered_order(
         Ok(lock) => lock,
         Err(resp) => return resp,
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };

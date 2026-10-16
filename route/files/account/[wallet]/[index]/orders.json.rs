@@ -1,5 +1,5 @@
 petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
-    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+    let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
     let wallet = match petal::wallet_param(ctx) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -7,7 +7,7 @@ petal::route_file!(spec: petal::account_read_spec(), read: |ctx: &petal::Ctx| {
     if let Err(e) = crate::polymarket::validate_wallet_name(wallet) {
         return petal::error(-3, e.to_string());
     }
-    let owner = match crate::infra_parts::host_calls::wallet_address(wallet, account) {
+    let owner = match crate::infra_parts::host_calls::wallet_address(&account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
