@@ -14,10 +14,14 @@
 //! - An outcome token (an ERC-1155 position on the CTF) is
 //!   `<CTF address>/<decimal token id>`.
 //!
-//! No claim declares a fee. Deposit-wallet batches are submitted and paid for
-//! by Polymarket's relayer and CLOB orders are settled by the exchange
-//! operator, so no signed payload spends the owner's POL; and Bloom catalogues
-//! every Petal operation class with no fee asset, so a fee would be refused.
+//! No claim declares a [`petal::ClaimFee`]. Deposit-wallet batches are
+//! submitted and paid for by Polymarket's relayer and CLOB orders are settled
+//! by the exchange operator, so no signed payload spends the owner's POL; and
+//! Bloom catalogues every Petal operation class with no fee asset, so a
+//! `ClaimFee` would be refused. Polymarket's trading fee is not gas: on a
+//! fee-enabled market the exchange pulls a BUY's fee in pUSD from the deposit
+//! wallet together with its principal, so it is part of the BUY's pUSD debit
+//! (see [`order_effects`] and [`crate::polymarket::fees`]).
 
 use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::sol_types::SolCall;
@@ -28,6 +32,7 @@ use crate::polymarket::eip712::{
     Batch, CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, Call, NEG_RISK_ADAPTER,
     NEG_RISK_CTF_COLLATERAL_ADAPTER, NEG_RISK_EXCHANGE, PUSD, batch_signing_hash,
 };
+use crate::polymarket::fees::MarketFee;
 use crate::polymarket::order::Order;
 use crate::polymarket::wallet::{
     approveCall, redeemPositionsCall, setApprovalForAllCall, transferCall,
@@ -63,38 +68,57 @@ const CTF_OPERATORS: [Address; 4] = [
 
 /// Effects of a CLOB order signed under `polymarket.order.poly1271`.
 ///
-/// The maker is the deposit wallet. A BUY gives at most `makerAmount` pUSD and
-/// a SELL at most `makerAmount` of the outcome token. Either way it settles
-/// through the exchange that verifies the order, the only destination the
-/// signed bytes name: the counterparty is chosen at match time.
+/// The maker is the deposit wallet. A SELL gives at most `makerAmount` of the
+/// outcome token; Polymarket takes its fee out of the pUSD proceeds, so
+/// nothing more leaves the wallet, and `fee` is not consulted. A BUY gives at
+/// most `makerAmount` pUSD of principal plus, on a fee-enabled market, the fee
+/// the exchange pulls from the wallet with it. The signed order carries no
+/// fee and nothing on chain caps it, so the BUY debit adds the most `fee`
+/// lets the operator charge: [`MarketFee::buy_fee_cap`] of `makerAmount`,
+/// which no fill price or tick change can exceed. A BUY on a market whose fee
+/// cannot be bounded is refused. The bound holds only while Polymarket's
+/// operator charges the published schedule. Either way the order settles
+/// through the exchange that verifies it, the only destination the signed
+/// bytes name: the exchange pays the counterparty and the fee receiver, who
+/// are chosen at match time.
 ///
 /// A non-zero `builder` field attaches a fee-bearing builder code, which this
 /// class cannot declare, so such an order is refused.
-pub fn order_effects(chain: &str, order: &Order, neg_risk: bool) -> Result<ClaimEffects> {
+pub fn order_effects(
+    chain: &str,
+    order: &Order,
+    neg_risk: bool,
+    fee: &MarketFee,
+) -> Result<ClaimEffects> {
     if !order.builder.is_zero() {
         return Err(PolymarketError::invalid(
             "this order carries a builder code, whose fees the trader pays; polymarket.order.poly1271 cannot declare them",
         ));
     }
-    let asset = match order.side {
-        0 => pusd_asset(chain),
-        1 => outcome_asset(chain, order.tokenId),
+    if order.makerAmount.is_zero() {
+        return Err(PolymarketError::invalid("order makerAmount is zero"));
+    }
+    let (asset, amount) = match order.side {
+        0 => {
+            let maker = u64::try_from(order.makerAmount)
+                .map_err(|_| PolymarketError::invalid("BUY makerAmount does not fit in 64 bits"))?;
+            let fee_cap = fee.buy_fee_cap(maker)?;
+            (pusd_asset(chain), order.makerAmount + U256::from(fee_cap))
+        }
+        1 => (outcome_asset(chain, order.tokenId), order.makerAmount),
         side => {
             return Err(PolymarketError::invalid(format!(
                 "order side {side} is neither BUY nor SELL"
             )));
         }
     };
-    if order.makerAmount.is_zero() {
-        return Err(PolymarketError::invalid("order makerAmount is zero"));
-    }
     let exchange = if neg_risk {
         NEG_RISK_EXCHANGE
     } else {
         CTF_EXCHANGE
     };
     Ok(ClaimEffects::moves_value()
-        .debit(&asset, &order.makerAmount.to_string())
+        .debit(&asset, &amount.to_string())
         .destination(chain, &exchange.to_checksum(None)))
 }
 
@@ -296,12 +320,33 @@ mod tests {
 
     const CHAIN: &str = "polygon";
     const DEPOSIT: Address = Address::repeat_byte(0x42);
+    const TICK: u64 = 10_000;
+
+    /// `crypto_fees_v2` as Gamma serves it: rate 0.07, exponent 1, takers only.
+    fn crypto_fee() -> MarketFee {
+        MarketFee::Enabled {
+            fee_type: Some("crypto_fees_v2".into()),
+            rate_ppm: 70_000,
+            taker_only: true,
+        }
+    }
+
+    fn unbounded() -> MarketFee {
+        MarketFee::Unbounded {
+            fee_type: Some("crypto_fees_v2".into()),
+            reason: "feeSchedule exponent 2 is not 1, the only fee curve this Petal bounds".into(),
+        }
+    }
 
     fn order(side: Side, builder: Option<B256>) -> Order {
         let quote = match side {
             Side::Buy => LimitQuote::buy_from_spend(10_000_000, 500_000, 10_000).unwrap(),
             Side::Sell => LimitQuote::sell_from_shares(20_000_000, 500_000, 10_000).unwrap(),
         };
+        order_from(quote, builder)
+    }
+
+    fn order_from(quote: LimitQuote, builder: Option<B256>) -> Order {
         build_order(
             &OrderParams {
                 token_id: U256::from(7_777u64),
@@ -355,16 +400,24 @@ mod tests {
         }
     }
 
+    /// The live fill on Polygon: BUY 5 YES @ 0.40 on a `crypto_fees_v2`
+    /// market spent 2,000,000 pUSD and the exchange pulled 2,084,000.
     #[test]
-    fn a_buy_debits_its_pusd_maker_amount_to_the_exchange() {
-        let buy = order(Side::Buy, None);
-        assert_eq!(buy.makerAmount, U256::from(10_000_000u64));
-        let effects = order_effects(CHAIN, &buy, false).unwrap();
+    fn a_fee_enabled_buy_debits_its_maker_amount_plus_the_fee_bound() {
+        let buy = order_from(
+            LimitQuote::buy_from_spend(2_000_000, 400_000, TICK).unwrap(),
+            None,
+        );
+        assert_eq!(buy.makerAmount, U256::from(2_000_000u64));
+        let effects = order_effects(CHAIN, &buy, false, &crypto_fee()).unwrap();
         effects.validate().unwrap();
-        assert_eq!(effects.debits(), &[debit(PUSD_STR, "10000000")]);
+        // 2,000,000 + ceil(2,000,000 × 0.07) + 1,000 margin, which covers
+        // the 2,084,000 the exchange actually pulled.
+        assert_eq!(effects.debits(), &[debit(PUSD_STR, "2141000")]);
         assert_eq!(effects.destinations(), &[destination(CTF_EXCHANGE_STR)]);
         assert_eq!(effects.declared_fee(), &ClaimFee::None);
-        let neg_risk = order_effects(CHAIN, &buy, true).unwrap();
+        let neg_risk = order_effects(CHAIN, &buy, true, &crypto_fee()).unwrap();
+        assert_eq!(neg_risk.debits(), &[debit(PUSD_STR, "2141000")]);
         assert_eq!(
             neg_risk.destinations(),
             &[destination(NEG_RISK_EXCHANGE_STR)]
@@ -372,25 +425,59 @@ mod tests {
     }
 
     #[test]
-    fn a_sell_debits_its_outcome_tokens_to_the_exchange() {
-        let sell = order(Side::Sell, None);
-        let effects = order_effects(CHAIN, &sell, false).unwrap();
+    fn a_fee_free_buy_debits_its_pusd_maker_amount_to_the_exchange() {
+        let buy = order(Side::Buy, None);
+        assert_eq!(buy.makerAmount, U256::from(10_000_000u64));
+        let effects = order_effects(CHAIN, &buy, false, &MarketFee::Disabled).unwrap();
         effects.validate().unwrap();
-        assert_eq!(
-            effects.debits(),
-            &[debit(
-                "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045/7777",
-                "20000000"
-            )]
-        );
+        assert_eq!(effects.debits(), &[debit(PUSD_STR, "10000000")]);
         assert_eq!(effects.destinations(), &[destination(CTF_EXCHANGE_STR)]);
+        assert_eq!(effects.declared_fee(), &ClaimFee::None);
+        let neg_risk = order_effects(CHAIN, &buy, true, &MarketFee::Disabled).unwrap();
+        assert_eq!(
+            neg_risk.destinations(),
+            &[destination(NEG_RISK_EXCHANGE_STR)]
+        );
+    }
+
+    #[test]
+    fn a_sell_debits_only_its_outcome_tokens_to_the_exchange() {
+        let sell = order(Side::Sell, None);
+        for fee in [MarketFee::Disabled, crypto_fee(), unbounded()] {
+            let effects = order_effects(CHAIN, &sell, false, &fee).unwrap();
+            effects.validate().unwrap();
+            assert_eq!(
+                effects.debits(),
+                &[debit(
+                    "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045/7777",
+                    "20000000"
+                )]
+            );
+            assert_eq!(effects.destinations(), &[destination(CTF_EXCHANGE_STR)]);
+            assert_eq!(effects.declared_fee(), &ClaimFee::None);
+        }
     }
 
     #[test]
     fn a_builder_coded_order_is_refused() {
         let coded = order(Side::Buy, Some(B256::repeat_byte(0xbc)));
-        let err = order_effects(CHAIN, &coded, false).unwrap_err().to_string();
+        let err = order_effects(CHAIN, &coded, false, &MarketFee::Disabled)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("builder code"), "{err}");
+    }
+
+    #[test]
+    fn a_buy_whose_fee_cannot_be_bounded_is_refused() {
+        let buy = order(Side::Buy, None);
+        let err = order_effects(CHAIN, &buy, false, &unbounded())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exponent 2 is not 1"), "{err}");
+        assert!(err.contains("refusing to sign a BUY"), "{err}");
+        let mut huge = buy.clone();
+        huge.makerAmount = U256::from(u64::MAX) + U256::from(1u8);
+        assert!(order_effects(CHAIN, &huge, false, &crypto_fee()).is_err());
     }
 
     #[test]
@@ -523,7 +610,9 @@ mod tests {
             .account("main", 0)
             .bind::<Post>();
         let buy = order(Side::Buy, None);
-        let effects = order_effects(CHAIN, &buy, false).unwrap();
+        let effects = order_effects(CHAIN, &buy, false, &crypto_fee()).unwrap();
+        // 10,000,000 + 700,000 + 1,000.
+        assert_eq!(effects.debits(), &[debit(PUSD_STR, "10701000")]);
         let preimage = crate::polymarket::order::poly1271_signing_preimage(&buy, 137, false);
         let payload = petal::PayloadSignItem {
             claimed_hash: alloy::primitives::keccak256(&preimage).into(),

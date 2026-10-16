@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
+    format_micro, poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
@@ -114,6 +114,12 @@ pub fn post_trade_draft(
             format!("{message}; write revalidate again before posting"),
         );
     }
+    // Shown in the prepared record, which Bloom presents as the approval's
+    // action, so the owner sees why the pUSD debit exceeds maker_amount.
+    let fee_cap = match draft.fee_cap_micro() {
+        Ok(cap) => cap,
+        Err(e) => return polymarket_error(e),
+    };
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
     };
@@ -190,6 +196,8 @@ pub fn post_trade_draft(
                     "salt": order.salt.to_string(),
                     "maker_amount": order.makerAmount.to_string(),
                     "taker_amount": order.takerAmount.to_string(),
+                    "fee": draft.fee,
+                    "fee_cap": format_micro(fee_cap),
                     "side": order.side,
                     "signature_type": order.signatureType,
                     "timestamp_ms": order.timestamp.to_string(),
@@ -254,15 +262,25 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    // The claim's effects come from `order`, so it must be the order whose
-    // digest is being signed.
+    // The claim's effects come from `order` and the fee schedule the final
+    // review pinned (its hash is in the prepared record), so `order` must be
+    // the order whose digest is being signed.
     match prepared.hash() {
         Ok(hash) if hash == digest => {}
         Ok(_) => return error(-4, "prepared order does not match its signing hash"),
         Err(resp) => return resp,
     }
-    let effects = match crate::polymarket::claim::order_effects(&chain, &order, draft.neg_risk) {
+    let effects = match draft.order_effects(&chain, &order) {
         Ok(effects) => effects,
+        Err(e) => return polymarket_error(e),
+    };
+    let unposted = match StoreTradeReceipt::for_draft(
+        &draft,
+        funder.to_checksum(None),
+        salt,
+        review_intent_hash.clone(),
+    ) {
+        Ok(receipt) => receipt,
         Err(e) => return polymarket_error(e),
     };
     let inner_sig = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
@@ -314,18 +332,6 @@ pub fn post_trade_draft(
             let filled_size_micro = clob_response_filled_size_micro(&raw_response);
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: clob_order_id.clone(),
                 clob_status: status.clone(),
                 filled_size_micro,
@@ -334,8 +340,8 @@ pub fn post_trade_draft(
                     &clob_order_id,
                     filled_size_micro,
                 ),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to store receipt");
@@ -356,18 +362,6 @@ pub fn post_trade_draft(
         Err(DispatchResponse::Error { code: -3, message }) => {
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "rejected".into(),
                 filled_size_micro: None,
@@ -375,8 +369,8 @@ pub fn post_trade_draft(
                     "error": "CLOB rejected the order",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to persist rejected order receipt");
@@ -402,18 +396,6 @@ pub fn post_trade_draft(
                 let filled_size_micro = clob_response_filled_size_micro(&raw_response);
                 let posted_ms = now_millis();
                 let receipt = StoreTradeReceipt {
-                    draft_id: id.into(),
-                    wallet: wallet.into(),
-                    slug: draft.slug.clone(),
-                    token_id: draft.token_id.clone(),
-                    side: draft.side,
-                    order_type: draft.order_type,
-                    funder: Some(funder.to_checksum(None)),
-                    signature_type: SIG_TYPE_POLY_1271,
-                    amount_microusd: draft.amount_micro,
-                    limit_price_micro: draft.limit_price_micro,
-                    size_micro: draft.size_micro,
-                    salt,
                     clob_order_id: clob_order_id.clone(),
                     clob_status: status.clone(),
                     filled_size_micro,
@@ -422,8 +404,8 @@ pub fn post_trade_draft(
                         &clob_order_id,
                         filled_size_micro,
                     ),
-                    review_intent_hash: Some(review_intent_hash),
                     posted_ms,
+                    ..unposted
                 };
                 if let DispatchResponse::Error { .. } = store_put_json(
                     &format!("{base}/post_attempt.json"),
@@ -462,18 +444,6 @@ pub fn post_trade_draft(
             }
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "ambiguous".into(),
                 filled_size_micro: None,
@@ -481,8 +451,8 @@ pub fn post_trade_draft(
                     "error": "post outcome unknown after signing",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             draft.status = "ambiguous".into();
             draft.clob_status = Some("ambiguous".into());

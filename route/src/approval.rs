@@ -284,7 +284,8 @@ pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), Dispat
 
 /// Sign one prepared payload under an owner approval bound to its exact bytes.
 /// `effects` is what the payload moves, declared in its Petal use claim; it
-/// must be derived from the prepared bytes so a retry declares the same.
+/// must be fixed by what the prepared record pins (its bytes, or the final
+/// review whose hash it carries) so a retry declares the same.
 pub fn sign_prepared(
     ctx: &petal::Ctx,
     wallet: &str,
