@@ -34,6 +34,16 @@ selected account directory and stored in the Petal's own state. They are advisor
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
 
+CLOB login uses `polymarket.clob_auth.v1`, a one-signature permission distinct
+from exact wallet approvals. The matching Broker verifies the actual EIP-712
+domain, selected owner, fixed wallet attestation, nonce zero and fresh timestamp
+at signing. Polymarket's server timestamp can refresh after the owner approves.
+An old pending login approval is replaced because the permission profile changed.
+Install this package with the matching clear-signing Broker/Machine release;
+older services cannot enforce this profile. API credentials can authorize
+account API actions and are kept in the Petal's secret store. Orders and
+deposit-wallet batches still need their own exact approvals.
+
 The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
 `wallets/<wallet>/<account>/address.evm`. The retired wallet-root `address`,

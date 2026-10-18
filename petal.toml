@@ -75,6 +75,7 @@ paths = ["/nonce", "/submit", "/transaction"]
 
 [sign]
 allowed_intents = [
+  "polymarket.clob_auth.v1",
   "polymarket.onboard",
   "polymarket.order.poly1271",
   "polymarket.relayer_batch",

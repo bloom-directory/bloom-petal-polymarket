@@ -122,7 +122,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
     };
     let prepared = PreparedSigning::new(
         "clob_auth",
-        "polymarket.onboard",
+        "polymarket.clob_auth.v1",
         owner,
         action.signing_preimage,
         action.signing_hash,
