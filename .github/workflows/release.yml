@@ -25,3 +25,5 @@ jobs:
       build-command: scripts/build.sh
       package-root: .
       expected-route-count: 112
+    secrets:
+      compile-time-secret: ${{ secrets.POLYMARKET_BUILDER_CODE }}

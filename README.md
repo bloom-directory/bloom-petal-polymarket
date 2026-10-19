@@ -107,15 +107,20 @@ order this Petal signs carries that code in the CTF Exchange order struct's
 Fee rates and payout are managed entirely by Polymarket against that
 registration — there is no on-chain approval step.
 
-A release may declare Bloom's own code so orders carry it without an operator
+A release build embeds Bloom's own code so orders carry it without an operator
 having to configure one. This is public on-chain data, not a credential — it
 is serialized into every `OrderFilled` event and builder profiles are publicly
-queryable — so it is declared in source as `RELEASE_DEFAULT_BUILDER_CODE` in
-`route/src/builder_code.rs` rather than injected at build time. A tagged
-release therefore rebuilds byte for byte and the package CI checks is the
-package that ships; `scripts/build.sh` takes no build-time inputs. The
-constant is `None` until Bloom's code is committed, and orders then carry a
-zero builder field exactly as they did before this was wired up.
+queryable — but it is injected at build time rather than committed, because
+this repository is public. The `POLYMARKET_BUILDER_CODE` repository secret is
+passed to the pinned release workflow as its generic `compile-time-secret`
+input, which `scripts/build.sh` re-exports for
+`EMBEDDED_DEFAULT_BUILDER_CODE` in `route/src/builder_code.rs`.
+
+The cost is that a tagged release cannot be rebuilt byte for byte from source
+alone. What compensates is that the code is bound into the approval the owner
+signs, so an order cannot carry a code the owner did not approve. A build that
+sets nothing has no default, and orders carry a zero builder field exactly as
+they did before this was wired up.
 
 `settings/builder-code` writes an operator override (any hex string up to 32
 bytes, with or without `0x`) that takes precedence over the release default,

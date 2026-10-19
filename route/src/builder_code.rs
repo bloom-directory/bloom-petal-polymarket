@@ -11,23 +11,29 @@
 //! attach; there is no on-chain approval step (unlike Hyperliquid's builder
 //! fee, which is capped and approved on-chain per builder).
 //!
-//! A release may declare Bloom's own code so orders carry it without an
+//! A release build embeds Bloom's own code so orders carry it without an
 //! operator having to configure one. The code is not a secret — it is
 //! serialized on-chain in every `OrderFilled` event and builder profiles are
-//! publicly queryable — so it is declared in source rather than injected at
-//! build time: a release then rebuilds byte for byte from its tag, and the
-//! package CI checks is the package that ships. Status therefore reports only
-//! whether a default is present, and if so, whether it came from this
-//! release or an operator override that can change it without a new release.
+//! publicly queryable — but it is injected at build time rather than
+//! committed, because this repository is public. The cost is that a tagged
+//! release cannot be rebuilt byte for byte from its source alone. What
+//! compensates is that the code is bound into the approval the owner signs,
+//! so an order cannot carry a code the owner did not approve. Status
+//! therefore reports only whether a default is present, and if so, whether it
+//! came from this release or an operator override that can change it without
+//! a new release.
 use alloy::primitives::B256;
 use serde::Serialize;
 
 /// This release's default builder attribution code, used when no operator
-/// override is stored. It is public on-chain data, not a credential, so it
-/// lives here in source instead of arriving through a build-time environment
-/// variable. Set it as hex, with or without `0x`, up to 32 bytes;
-/// `release_default_if_set_is_a_valid_builder_code` checks it.
-pub const RELEASE_DEFAULT_BUILDER_CODE: Option<&str> = None;
+/// override is stored. A release build embeds it from the
+/// `POLYMARKET_BUILDER_CODE` build input; a local build sets nothing, so
+/// orders carry a zero builder field as they did before this was wired up.
+///
+/// Set it as hex, with or without `0x`, up to 32 bytes;
+/// `release_default_if_set_is_a_valid_builder_code` checks whatever a build
+/// embeds, so an unparsable or all-zero value cannot silently attach nothing.
+pub const EMBEDDED_DEFAULT_BUILDER_CODE: Option<&str> = option_env!("POLYMARKET_BUILDER_CODE");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,11 +67,11 @@ fn resolve_default(
 /// operator store override if set, else this release's declared default,
 /// else none (orders then carry a zero builder field, same as today).
 pub fn resolve_default_builder_code(store_override: Option<&str>) -> Option<String> {
-    resolve_default(RELEASE_DEFAULT_BUILDER_CODE, store_override).map(|(code, _)| code)
+    resolve_default(EMBEDDED_DEFAULT_BUILDER_CODE, store_override).map(|(code, _)| code)
 }
 
 pub fn builder_code_status(store_override: Option<&str>) -> BuilderCodeStatus {
-    match resolve_default(RELEASE_DEFAULT_BUILDER_CODE, store_override) {
+    match resolve_default(EMBEDDED_DEFAULT_BUILDER_CODE, store_override) {
         Some((code, source)) => BuilderCodeStatus {
             configured: true,
             source,
@@ -131,7 +137,7 @@ mod tests {
         // check the operator override gets at its write route: an unparsable
         // or all-zero value would otherwise silently attach nothing, or make
         // every order fail once a release declared it.
-        if let Some(code) = RELEASE_DEFAULT_BUILDER_CODE {
+        if let Some(code) = EMBEDDED_DEFAULT_BUILDER_CODE {
             parse_builder_code(code).expect("release default builder code must parse");
         }
     }
@@ -143,7 +149,7 @@ mod tests {
         // override still wins over it. Declaring a default breaks no test.
         assert_eq!(
             resolve_default_builder_code(None),
-            RELEASE_DEFAULT_BUILDER_CODE.map(str::to_owned)
+            EMBEDDED_DEFAULT_BUILDER_CODE.map(str::to_owned)
         );
         assert_eq!(
             resolve_default_builder_code(Some("0x03")),
