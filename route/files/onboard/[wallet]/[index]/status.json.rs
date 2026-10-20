@@ -21,5 +21,7 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         }),
     };
     status["approvals"]["preview_path"] = serde_json::json!(format!("onboard/{wallet}/{account}/approvals.json"));
+    status["credential_action"] = serde_json::json!(format!("onboard/{wallet}/{account}/begin"));
+    status["deposit_wallet_action"] = serde_json::json!(format!("onboard/{wallet}/{account}/continue"));
     petal::read_json_value(&status)
 });
