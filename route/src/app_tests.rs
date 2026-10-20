@@ -883,6 +883,64 @@ require_flag_above_usd = "2.05"
         }
     }
 
+    /// The prepared approval record and the receipt show a BUY's fee bound
+    /// with the note on what enforces it. Records an earlier build wrote
+    /// without the note still load, and keep their JSON.
+    #[test]
+    fn the_fee_bound_note_is_shown_wherever_the_bound_is() {
+        use crate::polymarket::fees::FEE_BOUND_NOTE;
+        use crate::polymarket::order::poly1271_digest;
+        use crate::trade_flow_parts::posting::prepared_order_signing;
+
+        let buy = fee_enabled_buy();
+        let order = signed_order(&buy);
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let prepared = prepared_order_signing(
+            &buy,
+            &order,
+            owner,
+            funder,
+            137,
+            buy.fee_cap_micro().unwrap(),
+            "h",
+            false,
+        );
+        assert_eq!(prepared.preimage["fee"], serde_json::json!(buy.fee));
+        assert_eq!(prepared.preimage["fee_cap"], "0.141");
+        assert_eq!(prepared.preimage["fee_note"], FEE_BOUND_NOTE);
+        assert_eq!(prepared.preimage["draft_id"], buy.id);
+        assert_eq!(prepared.preimage["review_intent_hash"], "h");
+        assert_eq!(
+            prepared.hash().unwrap(),
+            poly1271_digest(&order, 137, buy.neg_risk)
+        );
+        // Posting reuses a stored prepared record as it is, so one without
+        // the note keeps the bytes its owner approval is bound to.
+        let mut earlier = prepared.clone();
+        earlier.preimage.as_object_mut().unwrap().remove("fee_note");
+        let stored = serde_json::to_vec(&earlier).unwrap();
+        let loaded: PreparedSigning = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(loaded, earlier);
+        assert_eq!(serde_json::to_vec(&loaded).unwrap(), stored);
+
+        let receipt =
+            StoreTradeReceipt::for_draft(&buy, funder.to_checksum(None), 42, "h".into()).unwrap();
+        assert_eq!(receipt.fee_note.as_deref(), Some(FEE_BOUND_NOTE));
+        let stored = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(stored["fee_cap_microusd"], 141_000);
+        assert_eq!(stored["fee_note"], FEE_BOUND_NOTE);
+        // A receipt from an earlier build has no note. It loads, and a
+        // rewrite (the cancel path's) leaves the note out.
+        let mut earlier = stored;
+        earlier.as_object_mut().unwrap().remove("fee_note");
+        let loaded: StoreTradeReceipt = serde_json::from_value(earlier.clone()).unwrap();
+        assert_eq!(loaded.fee_note, None);
+        assert_eq!(serde_json::to_value(&loaded).unwrap(), earlier);
+        let policy: StoreTradeReceiptPolicy = serde_json::from_value(earlier).unwrap();
+        assert_eq!(policy.fee_cap_microusd, Some(141_000));
+    }
+
     /// A draft stored by an older build has no fee. It still loads, but it
     /// has no fee bound and its old final review cannot be posted.
     #[test]

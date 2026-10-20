@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
     format_micro, poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
@@ -181,31 +182,15 @@ pub fn post_trade_draft(
                 },
                 timestamp_ms,
             );
-            let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
-            let prepared = PreparedSigning::new(
-                "order",
-                "polymarket.order.poly1271",
+            let prepared = prepared_order_signing(
+                &draft,
+                &order,
                 owner,
-                poly1271_signing_preimage(&order, chain_id, draft.neg_risk),
-                digest,
-                serde_json::json!({
-                    "draft_id": id,
-                    "owner": owner.to_checksum(None),
-                    "funder": funder.to_checksum(None),
-                    "token_id": order.tokenId.to_string(),
-                    "salt": order.salt.to_string(),
-                    "maker_amount": order.makerAmount.to_string(),
-                    "taker_amount": order.takerAmount.to_string(),
-                    "fee": draft.fee,
-                    "fee_cap": format_micro(fee_cap),
-                    "side": order.side,
-                    "signature_type": order.signatureType,
-                    "timestamp_ms": order.timestamp.to_string(),
-                    "neg_risk": draft.neg_risk,
-                    "chain_id": chain_id,
-                    "review_intent_hash": review_intent_hash,
-                    "policy_warnings_acknowledged": req.acknowledge_warnings,
-                }),
+                funder,
+                chain_id,
+                fee_cap,
+                &review_intent_hash,
+                req.acknowledge_warnings,
             );
             if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
                 return resp;
@@ -475,6 +460,49 @@ pub fn post_trade_draft(
             )
         }
     }
+}
+
+/// The prepared record for signing `order`, built for `draft` and paid from
+/// `funder`. Bloom presents it as the approval's action, so it carries the fee
+/// schedule, the fee bound `fee_cap` and [`FEE_BOUND_NOTE`] on what enforces
+/// the bound, next to the order fields `order_from_prepared` rebuilds the
+/// order from.
+pub fn prepared_order_signing(
+    draft: &StoreTradeDraft,
+    order: &Order,
+    owner: Address,
+    funder: Address,
+    chain_id: u64,
+    fee_cap: u64,
+    review_intent_hash: &str,
+    policy_warnings_acknowledged: bool,
+) -> PreparedSigning {
+    PreparedSigning::new(
+        "order",
+        "polymarket.order.poly1271",
+        owner,
+        poly1271_signing_preimage(order, chain_id, draft.neg_risk),
+        poly1271_digest(order, chain_id, draft.neg_risk),
+        serde_json::json!({
+            "draft_id": draft.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "token_id": order.tokenId.to_string(),
+            "salt": order.salt.to_string(),
+            "maker_amount": order.makerAmount.to_string(),
+            "taker_amount": order.takerAmount.to_string(),
+            "fee": draft.fee,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
+            "side": order.side,
+            "signature_type": order.signatureType,
+            "timestamp_ms": order.timestamp.to_string(),
+            "neg_risk": draft.neg_risk,
+            "chain_id": chain_id,
+            "review_intent_hash": review_intent_hash,
+            "policy_warnings_acknowledged": policy_warnings_acknowledged,
+        }),
+    )
 }
 
 fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {

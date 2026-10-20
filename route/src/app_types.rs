@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::polymarket::claim;
-use crate::polymarket::fees::MarketFee;
+use crate::polymarket::fees::{FEE_BOUND_NOTE, MarketFee};
 use crate::polymarket::order::{LimitQuote, Order, OrderType, SIG_TYPE_POLY_1271, parse_micro};
 use crate::polymarket::trade as shared_trade;
 use crate::polymarket::{Market, PolymarketError, Side};
@@ -325,6 +325,12 @@ pub struct StoreTradeReceipt {
     pub fee_cap_microusd: Option<u64>,
     #[serde(default)]
     pub fee: Option<MarketFee>,
+    /// [`FEE_BOUND_NOTE`] as it read when the receipt was written: what
+    /// enforces `fee_cap_microusd`. `None` on receipts written before it was
+    /// recorded, and left out when such a receipt is rewritten, so its JSON
+    /// does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_note: Option<String>,
     pub limit_price_micro: u64,
     pub size_micro: u64,
     pub salt: u64,
@@ -361,6 +367,7 @@ impl StoreTradeReceipt {
             amount_microusd: draft.amount_micro,
             fee_cap_microusd: Some(draft.fee_cap_micro()?),
             fee: draft.fee.clone(),
+            fee_note: Some(FEE_BOUND_NOTE.into()),
             limit_price_micro: draft.limit_price_micro,
             size_micro: draft.size_micro,
             salt,
