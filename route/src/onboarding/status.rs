@@ -162,6 +162,11 @@ pub fn local_status_for_wallet(
     let mut status = stored_status_for_wallet(wallet, owner)?;
     status["creds_present"] =
         serde_json::json!(store_get(&format!("creds/{wallet}/clob.json")).is_some());
+    if status["creds_present"] == true
+        && crate::relayer_config::load_relayer_config()?.legacy_eoa_mode
+    {
+        return Ok(crate::relayer_config::legacy_eoa_status(wallet, owner));
+    }
     let deposit_value = status.get("deposit_wallet");
     let source = deposit_value
         .and_then(|value| value.get("source"))
