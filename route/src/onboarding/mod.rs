@@ -116,11 +116,15 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
 }
 
 fn continuation_response(wallet: &str, account: u32) -> DispatchResponse {
-    petal::read_json_value(&serde_json::json!({
-        "status": "credentials_ready",
-        "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
-        "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
-    }))
+    store_put_json(
+        &format!("onboard/{wallet}/next_action.json"),
+        &serde_json::json!({
+            "status": "credentials_ready",
+            "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
+            "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
+        }),
+        false,
+    )
 }
 
 pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
