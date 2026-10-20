@@ -13,6 +13,13 @@
 //! which disables the on-chain cap. The bound computed here therefore holds
 //! only while the operator charges the published schedule.
 //!
+//! The bound uses the schedule read when the order is posted. A resting GTC
+//! remainder can fill much later, and is bound only by that schedule: if
+//! Polymarket raises the rate, enables fees on a market that had none, or
+//! starts charging makers, the resting part could pay more than the claim
+//! declared. Makers pay nothing today; `takerOnly` is shown to the owner but
+//! not checked.
+//!
 //! Whatever price a charge is taken at, `C × p` is the pUSD `F` the order
 //! spends in it, so the charge is `F × rate × (1 − p)`, less than
 //! `F × rate`. An order's matches spend at most its `makerAmount` in total,
@@ -47,8 +54,8 @@ pub const MAX_FEE_RATE_PPM: u64 = 250_000;
 /// order, and add 0.001 pUSD to the value limit.
 pub const FEE_ROUNDING_MARGIN_MICRO: u64 = 1_000;
 
-/// One line for every surface that shows the fee bound to the owner.
-pub const FEE_BOUND_NOTE: &str = "The fee bound is enforced by Polymarket's operator, not on chain: the signed order carries no fee, and the exchange takes a BUY's fee from the deposit wallet in pUSD (a SELL's from its proceeds) at match time.";
+/// The note every surface that shows the fee bound to the owner shows with it.
+pub const FEE_BOUND_NOTE: &str = "The fee bound is enforced by Polymarket's operator, not on chain: the signed order carries no fee, and the exchange takes a BUY's fee from the deposit wallet in pUSD at match time. The bound uses the fee schedule at post time, so a resting GTC remainder could pay more if Polymarket later raises the rate, enables fees, or starts charging makers. A SELL's fee is expected to come out of its pUSD proceeds; that is not yet verified on chain.";
 
 /// The fee a market charges, as Gamma's `feesEnabled` and `feeSchedule`
 /// state it.
@@ -69,7 +76,9 @@ pub enum MarketFee {
         taker_only: bool,
     },
     /// Gamma's fee data does not let this Petal bound a BUY's fee. A BUY is
-    /// refused; a SELL is not, because its fee comes out of its proceeds.
+    /// refused; a SELL is not, because its fee is expected to come out of
+    /// its proceeds. That is not yet verified on chain: no SELL has posted
+    /// (see #20).
     Unbounded {
         /// Gamma's `feeType`, shown to the owner.
         fee_type: Option<String>,
@@ -79,10 +88,14 @@ pub enum MarketFee {
 }
 
 /// Gamma's `feeSchedule`. serde_json is built without `arbitrary_precision`,
-/// so each number is parsed as an `f64` and printed back as its shortest
-/// round-trip decimal (`0.070` reads as `0.07`). That decimal is then parsed
-/// exactly into parts per million, so any rate with at most 6 decimal places
-/// is read exactly, and anything else is refused rather than rounded.
+/// so each number is read as an `f64`, printed back in its shortest
+/// round-trip form, and that text is parsed into parts per million. A rate
+/// of at least 0.00001 with at most 6 decimal places reads exactly (`0.070`
+/// and `7e-2` read as `0.07`). A rate below 0.00001 prints in exponent form
+/// (`0.000001` as `1e-6`) and is refused, as is one with more than 6 places
+/// that an `f64` keeps (`0.0700001`). Digits beyond what an `f64` holds are
+/// rounded away before the check: `0.0700000000000000001` reads as 70,000
+/// ppm.
 ///
 /// A field this Petal does not model, such as a minimum fee, a flat fee or a
 /// maker rate, could change what the operator charges, so a schedule with one
@@ -105,9 +118,9 @@ impl MarketFee {
     /// bound reads as [`MarketFee::Unbounded`]: no `feesEnabled`, a
     /// `feesEnabled` that is not a JSON boolean, or fees enabled with a
     /// missing or unreadable schedule, a schedule field this Petal does not
-    /// model, an exponent other than 1, or a rate that is not an exact
-    /// decimal of at most 6 places in `[0, 0.25]`. A `feeType` that is not a
-    /// string is shown as no fee type.
+    /// model, an exponent other than 1, or a rate that does not read as a
+    /// decimal of at most 6 places in `[0, 0.25]` (see `GammaFeeSchedule`).
+    /// A `feeType` that is not a string is shown as no fee type.
     pub fn from_market(market: &Market) -> Self {
         Self::read(market).unwrap_or_else(|reason| Self::Unbounded {
             fee_type: gamma_fee_type(market),
@@ -434,6 +447,39 @@ pub(crate) mod tests {
             assert!(
                 err.contains("refusing to sign a BUY whose fee cannot be bounded"),
                 "{field}: {err}"
+            );
+        }
+    }
+
+    /// The rate parser as `GammaFeeSchedule` documents it: numbers pass
+    /// through an `f64` and its shortest printed form.
+    #[test]
+    fn rates_read_through_their_f64_form() {
+        let rate = |raw: &str| {
+            let raw = FEE_ENABLED_MARKET.replace("\"rate\": 0.07", &format!("\"rate\": {raw}"));
+            match MarketFee::from_market(&market(&raw)) {
+                MarketFee::Enabled { rate_ppm, .. } => Some(rate_ppm),
+                _ => None,
+            }
+        };
+        assert_eq!(rate("0.070"), Some(70_000));
+        assert_eq!(rate("7e-2"), Some(70_000));
+        assert_eq!(rate("0.00001"), Some(10));
+        // Below 0.00001 an f64 prints in exponent form, which is refused.
+        assert_eq!(rate("0.000001"), None);
+        assert_eq!(rate("0.0700001"), None);
+        // Digits an f64 cannot hold are rounded away before the check.
+        assert_eq!(rate("0.0700000000000000001"), Some(70_000));
+        let exponent = |raw: &str| {
+            FEE_ENABLED_MARKET.replace("\"exponent\": 1", &format!("\"exponent\": {raw}"))
+        };
+        for raw in ["1.0", "1e0"] {
+            assert!(
+                matches!(
+                    MarketFee::from_market(&market(&exponent(raw))),
+                    MarketFee::Enabled { .. }
+                ),
+                "exponent {raw}"
             );
         }
     }

@@ -258,7 +258,8 @@ impl StoreTradeDraft {
 
     /// The most pUSD Polymarket's operator can charge this order in fees under
     /// the market's published schedule: [`MarketFee::buy_fee_cap`] of a BUY's
-    /// pUSD leg, and zero for a SELL, whose fee comes out of its proceeds.
+    /// pUSD leg, and zero for a SELL, whose fee is expected to come out of
+    /// its proceeds (not yet verified on chain; see #20).
     /// Refused for a BUY that recorded no fee or whose fee cannot be bounded.
     pub fn fee_cap_micro(&self) -> Result<u64, PolymarketError> {
         match self.side {

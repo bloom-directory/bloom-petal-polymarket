@@ -1172,8 +1172,9 @@ require_flag_above_usd = "2.05"
         assert!(err.contains("'fee_cap'"), "{err}");
     }
 
-    /// A SELL's claim debits only its outcome tokens and Polymarket takes its
-    /// fee out of the proceeds, so the fee schedule never blocks a SELL.
+    /// A SELL's claim debits only its outcome tokens, and Polymarket is
+    /// expected to take its fee out of the proceeds (not yet verified on
+    /// chain; see #20), so the fee schedule never blocks a SELL.
     #[test]
     fn a_sell_is_not_held_to_the_fee_schedule() {
         let sell = StoreTradeDraft {

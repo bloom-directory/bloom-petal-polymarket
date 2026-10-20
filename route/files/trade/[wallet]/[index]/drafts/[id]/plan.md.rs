@@ -43,7 +43,7 @@ pub fn plan_md(draft: &crate::app_types::StoreTradeDraft) -> String {
             format_micro(cap),
             format_micro(draft.maker_micro.saturating_add(cap))
         ),
-        (Ok(_), Side::Sell) => "none from the wallet; a SELL's fee comes out of its pUSD proceeds".to_string(),
+        (Ok(_), Side::Sell) => "none from the wallet; a SELL's fee is expected to come out of its pUSD proceeds, which is not yet verified on chain".to_string(),
     };
     let order = match &draft.clob_order_id {
         Some(order_id) => format!("order {order_id}"),

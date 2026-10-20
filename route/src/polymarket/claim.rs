@@ -69,18 +69,18 @@ const CTF_OPERATORS: [Address; 4] = [
 /// Effects of a CLOB order signed under `polymarket.order.poly1271`.
 ///
 /// The maker is the deposit wallet. A SELL gives at most `makerAmount` of the
-/// outcome token; Polymarket takes its fee out of the pUSD proceeds, so
-/// nothing more leaves the wallet, and `fee` is not consulted. A BUY gives at
-/// most `makerAmount` pUSD of principal plus, on a fee-enabled market, the fee
-/// the exchange pulls from the wallet with it. The signed order carries no
-/// fee and nothing on chain caps it, so the BUY debit adds the most `fee`
-/// lets the operator charge: [`MarketFee::buy_fee_cap`] of `makerAmount`,
-/// which no fill price or tick change can exceed. A BUY on a market whose fee
-/// cannot be bounded is refused. The bound holds only while Polymarket's
-/// operator charges the published schedule. Either way the order settles
-/// through the exchange that verifies it, the only destination the signed
-/// bytes name: the exchange pays the counterparty and the fee receiver, who
-/// are chosen at match time.
+/// outcome token; Polymarket is expected to take its fee out of the pUSD
+/// proceeds, so nothing more leaves the wallet, and `fee` is not consulted.
+/// That is not yet verified on chain: no SELL has posted (see #20). A BUY gives
+/// at most `makerAmount` pUSD of principal plus, on a fee-enabled market, the
+/// fee the exchange pulls from the wallet with it. The signed order carries no
+/// fee and nothing on chain caps it, so the BUY debit adds the most `fee` lets
+/// the operator charge: [`MarketFee::buy_fee_cap`] of `makerAmount`, which no
+/// fill price or tick change can exceed. A BUY on a market whose fee cannot be
+/// bounded is refused. The bound holds only while Polymarket's operator charges
+/// the published schedule. Either way the order settles through the exchange
+/// that verifies it, the only destination the signed bytes name: the exchange
+/// pays the counterparty and the fee receiver, who are chosen at match time.
 ///
 /// A non-zero `builder` field attaches a fee-bearing builder code, which this
 /// class cannot declare, so such an order is refused.
@@ -105,6 +105,8 @@ pub fn order_effects(
             let fee_cap = fee.buy_fee_cap(maker)?;
             (pusd_asset(chain), order.makerAmount + U256::from(fee_cap))
         }
+        // Only the outcome tokens: the fee is expected to come out of the
+        // pUSD proceeds, not yet verified on chain (see #20).
         1 => (outcome_asset(chain, order.tokenId), order.makerAmount),
         side => {
             return Err(PolymarketError::invalid(format!(
