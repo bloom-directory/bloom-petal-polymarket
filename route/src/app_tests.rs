@@ -941,6 +941,144 @@ require_flag_above_usd = "2.05"
         assert_eq!(policy.fee_cap_microusd, Some(141_000));
     }
 
+    /// Once the CLOB answers, `post_attempt.json` records the outcome in
+    /// place of the `signed` record.
+    #[test]
+    fn the_post_attempt_records_the_clob_answer() {
+        use crate::trade_flow_parts::posting::answered_post_attempt;
+
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22).to_checksum(None);
+        let unposted =
+            StoreTradeReceipt::for_draft(&fee_enabled_buy(), funder.clone(), 42, "h".into())
+                .unwrap();
+        let posted = StoreTradeReceipt {
+            clob_order_id: Some("0xorder".into()),
+            clob_status: "live".into(),
+            filled_size_micro: Some(0),
+            posted_ms: 1_000,
+            ..unposted.clone()
+        };
+        assert_eq!(
+            answered_post_attempt(&posted, owner, "body", "posted", None),
+            serde_json::json!({
+                "wallet": "alice",
+                "draft_id": "0001",
+                "owner": owner.to_checksum(None),
+                "funder": funder,
+                "salt": 42,
+                "review_intent_hash": "h",
+                "order_body_blake3": "body",
+                "posted_ms": 1_000,
+                "status": "posted",
+                "clob_order_id": "0xorder",
+                "clob_status": "live",
+            })
+        );
+
+        let rejected = StoreTradeReceipt {
+            clob_status: "rejected".into(),
+            posted_ms: 2_000,
+            ..unposted
+        };
+        let attempt = answered_post_attempt(
+            &rejected,
+            owner,
+            "body",
+            "rejected",
+            Some("CLOB post error (status 400): not enough balance"),
+        );
+        assert_eq!(attempt["status"], "rejected");
+        assert_eq!(attempt["clob_status"], "rejected");
+        assert_eq!(attempt["clob_order_id"], serde_json::Value::Null);
+        assert_eq!(
+            attempt["error"],
+            "CLOB post error (status 400): not enough balance"
+        );
+        assert_eq!(attempt["posted_ms"], 2_000);
+    }
+
+    mod plan_route {
+        include!("../files/trade/[wallet]/[index]/drafts/[id]/plan.md.rs");
+    }
+
+    /// plan.md says where the draft stands, from the state posting stores on
+    /// it, rather than always reporting signing and posting as pending.
+    #[test]
+    fn the_plan_shows_the_post_outcome() {
+        let plan = |edit: &dyn Fn(&mut StoreTradeDraft)| {
+            let mut draft = fee_enabled_buy();
+            edit(&mut draft);
+            plan_route::plan_md(&draft)
+        };
+        let pending = "Signing and posting are still pending.";
+
+        for status in ["review", "revalidated"] {
+            let plan = plan(&|draft| draft.status = status.into());
+            assert!(plan.contains(pending), "{status}: {plan}");
+        }
+        let prepared = plan(&|draft| draft.status = "signing_prepared".into());
+        assert!(
+            prepared.contains("waits for the owner's approval"),
+            "{prepared}"
+        );
+
+        let posted = plan(&|draft| {
+            draft.status = "posted".into();
+            draft.clob_order_id = Some("0xorder".into());
+            draft.clob_status = Some("live".into());
+        });
+        assert!(
+            posted.contains("Posted to the CLOB as order 0xorder, CLOB status live."),
+            "{posted}"
+        );
+        assert!(posted.contains("Status: posted"), "{posted}");
+        assert!(posted.contains("Fee bound: 0.141 pUSD"), "{posted}");
+
+        let rejected = plan(&|draft| {
+            draft.status = "rejected".into();
+            draft.clob_status = Some("rejected".into());
+            draft.last_error = Some("CLOB post error (status 400): not enough balance".into());
+        });
+        assert!(
+            rejected.contains(
+                "Not posted. The CLOB rejected the order: CLOB post error (status 400): not enough balance"
+            ),
+            "{rejected}"
+        );
+        // A FAK that did not match is answered, not refused.
+        let unmatched = plan(&|draft| {
+            draft.status = "rejected".into();
+            draft.clob_order_id = Some("0xorder".into());
+            draft.clob_status = Some("unmatched".into());
+        });
+        assert!(
+            unmatched.contains("the CLOB answered order 0xorder with status unmatched"),
+            "{unmatched}"
+        );
+
+        let ambiguous = plan(&|draft| {
+            draft.status = "ambiguous".into();
+            draft.last_error = Some("post outcome unknown after signing".into());
+        });
+        assert!(
+            ambiguous.contains("its outcome is unknown (post outcome unknown after signing)"),
+            "{ambiguous}"
+        );
+        let cancelled = plan(&|draft| {
+            draft.status = "cancelled".into();
+            draft.clob_order_id = Some("0xorder".into());
+        });
+        assert!(
+            cancelled.contains("Posted to the CLOB as order 0xorder, then cancelled."),
+            "{cancelled}"
+        );
+
+        for plan in [prepared, posted, rejected, unmatched, ambiguous, cancelled] {
+            assert!(!plan.contains(pending), "{plan}");
+        }
+    }
+
     /// A draft stored by an older build has no fee. It still loads, but it
     /// has no fee bound and its old final review cannot be posted.
     #[test]

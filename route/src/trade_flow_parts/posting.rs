@@ -333,16 +333,25 @@ pub fn post_trade_draft(
             }
             let _ = petal::sdk::store_del(&prepared_key);
             let _ = petal::sdk::store_del(&approval_key);
-            draft.status =
+            let outcome =
                 if clob_status_excluded_from_daily_cap(status.as_str(), Some(draft.order_type)) {
-                    "rejected".into()
+                    "rejected"
                 } else {
-                    "posted".into()
+                    "posted"
                 };
+            draft.status = outcome.into();
             draft.clob_order_id = clob_order_id;
             draft.clob_status = Some(status);
             draft.last_error = None;
-            store_put_json(&format!("{base}/order.json"), &draft, false)
+            let stored = store_put_json(&format!("{base}/order.json"), &draft, false);
+            if let DispatchResponse::Error { .. } = stored {
+                return stored;
+            }
+            store_put_json(
+                &format!("{base}/post_attempt.json"),
+                &answered_post_attempt(&receipt, owner, &body_hash, outcome, None),
+                false,
+            )
         }
         Err(DispatchResponse::Error { code: -3, message }) => {
             let posted_ms = now_millis();
@@ -360,6 +369,8 @@ pub fn post_trade_draft(
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to persist rejected order receipt");
             }
+            let attempt =
+                answered_post_attempt(&receipt, owner, &body_hash, "rejected", Some(&message));
             draft.status = "rejected".into();
             draft.clob_status = Some("rejected".into());
             draft.last_error = Some(message);
@@ -370,6 +381,11 @@ pub fn post_trade_draft(
             }
             let _ = petal::sdk::store_del(&prepared_key);
             let _ = petal::sdk::store_del(&approval_key);
+            if let DispatchResponse::Error { .. } =
+                store_put_json(&format!("{base}/post_attempt.json"), &attempt, false)
+            {
+                return error(-4, "failed to persist rejected post attempt");
+            }
             error(-3, "CLOB rejected the order; rejected receipt written")
         }
         Err(resp) => {
@@ -503,6 +519,37 @@ pub fn prepared_order_signing(
             "policy_warnings_acknowledged": policy_warnings_acknowledged,
         }),
     )
+}
+
+/// `post_attempt.json` once the CLOB has answered the post of `receipt`'s
+/// order, replacing the `signed` record: who signed it, the order body's
+/// hash, and the outcome `receipt` records, as the reconcile path writes one.
+/// `status` is the draft's resulting status, `posted` or `rejected`, and
+/// `reason` is the CLOB's reason when it refused the order.
+pub fn answered_post_attempt(
+    receipt: &StoreTradeReceipt,
+    owner: Address,
+    order_body_blake3: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut attempt = serde_json::json!({
+        "wallet": receipt.wallet,
+        "draft_id": receipt.draft_id,
+        "owner": owner.to_checksum(None),
+        "funder": receipt.funder,
+        "salt": receipt.salt,
+        "review_intent_hash": receipt.review_intent_hash,
+        "order_body_blake3": order_body_blake3,
+        "posted_ms": receipt.posted_ms,
+        "status": status,
+        "clob_order_id": receipt.clob_order_id,
+        "clob_status": receipt.clob_status,
+    });
+    if let Some(reason) = reason {
+        attempt["error"] = reason.into();
+    }
+    attempt
 }
 
 fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
