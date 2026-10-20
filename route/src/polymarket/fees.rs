@@ -93,25 +93,26 @@ struct GammaFeeSchedule {
 
 impl MarketFee {
     /// Read a market's fee from Gamma. A market whose fee this module cannot
-    /// bound reads as [`MarketFee::Unbounded`]: no `feesEnabled`, or fees
-    /// enabled with a missing or unreadable schedule, an exponent other than
-    /// 1, or a rate that is not an exact decimal of at most 6 places in
-    /// `[0, 0.25]`.
+    /// bound reads as [`MarketFee::Unbounded`]: no `feesEnabled`, a
+    /// `feesEnabled` that is not a JSON boolean, or fees enabled with a
+    /// missing or unreadable schedule, an exponent other than 1, or a rate
+    /// that is not an exact decimal of at most 6 places in `[0, 0.25]`. A
+    /// `feeType` that is not a string is shown as no fee type.
     pub fn from_market(market: &Market) -> Self {
         Self::read(market).unwrap_or_else(|reason| Self::Unbounded {
-            fee_type: market.fee_type.clone(),
+            fee_type: gamma_fee_type(market),
             reason,
         })
     }
 
     fn read(market: &Market) -> std::result::Result<Self, String> {
-        match market.fees_enabled {
+        match &market.fees_enabled {
             None => Err(
                 "Gamma does not say whether the market charges a trading fee (no feesEnabled)"
                     .into(),
             ),
-            Some(false) => Ok(Self::Disabled),
-            Some(true) => {
+            Some(serde_json::Value::Bool(false)) => Ok(Self::Disabled),
+            Some(serde_json::Value::Bool(true)) => {
                 let raw = market
                     .fee_schedule
                     .as_ref()
@@ -137,11 +138,12 @@ impl MarketFee {
                     ));
                 }
                 Ok(Self::Enabled {
-                    fee_type: market.fee_type.clone(),
+                    fee_type: gamma_fee_type(market),
                     rate_ppm,
                     taker_only: schedule.taker_only,
                 })
             }
+            Some(other) => Err(format!("Gamma's feesEnabled is {other}, not a boolean")),
         }
     }
 
@@ -160,6 +162,15 @@ impl MarketFee {
             ))),
         }
     }
+}
+
+/// Gamma's `feeType` label, or `None` when it is missing or not a string.
+fn gamma_fee_type(market: &Market) -> Option<String> {
+    market
+        .fee_type
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// The fee bound for a BUY of `maker_micro` whose market's schedule was not
@@ -236,8 +247,8 @@ pub(crate) mod tests {
     #[test]
     fn a_fee_enabled_gamma_market_reads_its_schedule() {
         let market = market(FEE_ENABLED_MARKET);
-        assert_eq!(market.fees_enabled, Some(true));
-        assert_eq!(market.fee_type.as_deref(), Some("crypto_fees_v2"));
+        assert_eq!(market.fees_enabled, Some(true.into()));
+        assert_eq!(market.fee_type, Some("crypto_fees_v2".into()));
         assert_eq!(
             MarketFee::from_market(&market),
             MarketFee::Enabled {
@@ -251,7 +262,7 @@ pub(crate) mod tests {
     #[test]
     fn a_fee_free_gamma_market_reads_as_disabled() {
         let market = market(FEE_FREE_MARKET);
-        assert_eq!(market.fees_enabled, Some(false));
+        assert_eq!(market.fees_enabled, Some(false.into()));
         assert_eq!(market.fee_schedule, None);
         assert_eq!(MarketFee::from_market(&market), MarketFee::Disabled);
 
@@ -369,6 +380,64 @@ pub(crate) mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("no feesEnabled"), "{err}");
+    }
+
+    /// Gamma retyping `feesEnabled` or `feeType` must not break the market
+    /// read itself: quoting, the public market reads and redeem all
+    /// deserialize [`Market`]. Only a BUY, whose fee must be bounded, stops.
+    #[test]
+    fn a_retyped_fee_field_refuses_a_buy_without_breaking_the_market_read() {
+        for (field, value) in [
+            ("feesEnabled", serde_json::json!("true")),
+            ("feesEnabled", serde_json::json!(1)),
+            ("feeType", serde_json::json!({"name": "crypto"})),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FEE_ENABLED_MARKET).unwrap();
+            raw[field] = value.clone();
+            let market: Market = serde_json::from_value(raw)
+                .unwrap_or_else(|err| panic!("{field}={value} breaks the market read: {err}"));
+            assert_eq!(market.condition_id, "0xabc", "{field}={value}");
+            assert!(market.is_binary(), "{field}={value}");
+        }
+
+        for value in [
+            serde_json::json!("true"),
+            serde_json::json!("false"),
+            serde_json::json!(1),
+            serde_json::json!(0),
+            serde_json::json!({}),
+        ] {
+            let fee = with(|m| m["feesEnabled"] = value.clone());
+            let MarketFee::Unbounded { fee_type, reason } = &fee else {
+                panic!("feesEnabled={value}: read as {fee:?}");
+            };
+            assert_eq!(fee_type.as_deref(), Some("crypto_fees_v2"), "{value}");
+            assert!(reason.contains("feesEnabled"), "{value}: {reason}");
+            let err = fee.buy_fee_cap(2_000_000).unwrap_err().to_string();
+            assert!(err.contains("feesEnabled"), "{value}: {err}");
+            assert!(
+                err.contains("refusing to sign a BUY whose fee cannot be bounded"),
+                "{value}: {err}"
+            );
+        }
+
+        // A feeType that is not a string is shown as none; the fee is read.
+        assert_eq!(
+            with(|m| m["feeType"] = serde_json::json!({"name": "crypto"})),
+            MarketFee::Enabled {
+                fee_type: None,
+                rate_ppm: 70_000,
+                taker_only: true,
+            }
+        );
+        let unbounded = with(|m| {
+            m["feesEnabled"] = "true".into();
+            m["feeType"] = 7.into();
+        });
+        assert!(matches!(
+            unbounded,
+            MarketFee::Unbounded { fee_type: None, .. }
+        ));
     }
 
     /// The live fill: BUY 5 @ 0.40 spent 2,000,000 and was charged 84,000.

@@ -25,7 +25,7 @@ mod tests {
             order_price_min_tick_size: None,
             order_min_size: None,
             neg_risk: false,
-            fees_enabled: Some(false),
+            fees_enabled: Some(false.into()),
             fee_type: None,
             fee_schedule: None,
         }
@@ -655,6 +655,64 @@ max_daily_usd = "100"
         )
         .unwrap();
         assert!(matches!(snapshot.fee, MarketFee::Unbounded { .. }));
+    }
+
+    /// A `feesEnabled` that Gamma stops sending as a boolean still quotes the
+    /// market: a SELL is quoted and its claim declared, and only a BUY, whose
+    /// fee cannot be bounded, is refused.
+    #[test]
+    fn a_retyped_fees_enabled_refuses_only_a_buy() {
+        use crate::polymarket::OrderBook;
+        use crate::polymarket::fees::tests::FEE_ENABLED_MARKET;
+        use crate::trade_flow_parts::pricing::snapshot_from_book;
+
+        let mut value: serde_json::Value = serde_json::from_str(FEE_ENABLED_MARKET).unwrap();
+        value["feesEnabled"] = "true".into();
+        let book: OrderBook = serde_json::from_value(serde_json::json!({
+            "market": "0xabc",
+            "asset_id": "1",
+            "tick_size": "0.01",
+            "min_order_size": "5",
+            "neg_risk": false,
+            "bids": [{"price": "0.39", "size": "100"}],
+            "asks": [{"price": "0.4", "size": "100"}],
+        }))
+        .unwrap();
+        let snapshot = snapshot_from_book(
+            serde_json::from_value(value).unwrap(),
+            "YES",
+            "1".into(),
+            book,
+        )
+        .unwrap();
+        assert!(matches!(snapshot.fee, MarketFee::Unbounded { .. }));
+
+        let quote =
+            build_trade_quote(Side::Sell, 5_000_000, 390_000, &snapshot, OrderType::GTC).unwrap();
+        let mut sell = StoreTradeDraft {
+            side: Side::Sell,
+            token_id: "1".into(),
+            order_type: OrderType::GTC,
+            ..draft()
+        };
+        sell.requote(&quote, &snapshot, 7);
+        assert_eq!(sell.fee_cap_micro().unwrap(), 0);
+        let effects = sell.order_effects("polygon", &signed_order(&sell)).unwrap();
+        assert_eq!(effects.debits().len(), 1);
+        assert_ne!(effects.debits()[0].asset, pusd_debit("0").asset);
+
+        let quote =
+            build_trade_quote(Side::Buy, 2_000_000, 400_000, &snapshot, OrderType::GTC).unwrap();
+        let mut buy = StoreTradeDraft {
+            token_id: "1".into(),
+            order_type: OrderType::GTC,
+            ..draft()
+        };
+        buy.requote(&quote, &snapshot, 7);
+        let err = buy.fee_cap_micro().unwrap_err().to_string();
+        assert!(err.contains("feesEnabled"), "{err}");
+        assert!(err.contains("refusing to sign a BUY"), "{err}");
+        assert!(buy.order_effects("polygon", &signed_order(&buy)).is_err());
     }
 
     /// Posting refuses before signing when the prepared order is not the
