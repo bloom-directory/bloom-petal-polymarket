@@ -83,21 +83,31 @@ pub enum MarketFee {
 /// round-trip decimal (`0.070` reads as `0.07`). That decimal is then parsed
 /// exactly into parts per million, so any rate with at most 6 decimal places
 /// is read exactly, and anything else is refused rather than rounded.
+///
+/// A field this Petal does not model, such as a minimum fee, a flat fee or a
+/// maker rate, could change what the operator charges, so a schedule with one
+/// is refused rather than read without it.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GammaFeeSchedule {
     exponent: serde_json::Number,
     rate: serde_json::Number,
     #[serde(rename = "takerOnly", default)]
     taker_only: bool,
+    /// The share of fees Polymarket pays back to makers. It does not change
+    /// what an order is charged, so it is accepted and not read.
+    #[serde(rename = "rebateRate", default)]
+    _rebate_rate: serde::de::IgnoredAny,
 }
 
 impl MarketFee {
     /// Read a market's fee from Gamma. A market whose fee this module cannot
     /// bound reads as [`MarketFee::Unbounded`]: no `feesEnabled`, a
     /// `feesEnabled` that is not a JSON boolean, or fees enabled with a
-    /// missing or unreadable schedule, an exponent other than 1, or a rate
-    /// that is not an exact decimal of at most 6 places in `[0, 0.25]`. A
-    /// `feeType` that is not a string is shown as no fee type.
+    /// missing or unreadable schedule, a schedule field this Petal does not
+    /// model, an exponent other than 1, or a rate that is not an exact
+    /// decimal of at most 6 places in `[0, 0.25]`. A `feeType` that is not a
+    /// string is shown as no fee type.
     pub fn from_market(market: &Market) -> Self {
         Self::read(market).unwrap_or_else(|reason| Self::Unbounded {
             fee_type: gamma_fee_type(market),
@@ -380,6 +390,52 @@ pub(crate) mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("no feesEnabled"), "{err}");
+    }
+
+    /// The live schedule reads in full (`rebateRate` is accepted, not read).
+    /// A schedule field this Petal does not model could change the charge,
+    /// so it refuses a BUY rather than being ignored.
+    #[test]
+    fn a_schedule_field_this_petal_does_not_model_refuses_a_buy() {
+        let live = MarketFee::Enabled {
+            fee_type: Some("crypto_fees_v2".into()),
+            rate_ppm: 70_000,
+            taker_only: true,
+        };
+        assert_eq!(
+            with(|m| {
+                m["feeSchedule"] = serde_json::json!(
+                    {"exponent": 1, "rate": 0.07, "takerOnly": true, "rebateRate": 0.2}
+                )
+            }),
+            live
+        );
+        assert_eq!(
+            with(|m| {
+                m["feeSchedule"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("rebateRate");
+            }),
+            live
+        );
+        for (field, value) in [
+            ("minFee", serde_json::json!(0.5)),
+            ("flatFee", serde_json::json!(1)),
+            ("makerRate", serde_json::json!(0.2)),
+        ] {
+            let fee = with(|m| m["feeSchedule"][field] = value);
+            let MarketFee::Unbounded { fee_type, reason } = &fee else {
+                panic!("{field}: read as {fee:?}");
+            };
+            assert_eq!(fee_type.as_deref(), Some("crypto_fees_v2"), "{field}");
+            assert!(reason.contains(&format!("`{field}`")), "{field}: {reason}");
+            let err = fee.buy_fee_cap(2_000_000).unwrap_err().to_string();
+            assert!(
+                err.contains("refusing to sign a BUY whose fee cannot be bounded"),
+                "{field}: {err}"
+            );
+        }
     }
 
     /// Gamma retyping `feesEnabled` or `feeType` must not break the market
