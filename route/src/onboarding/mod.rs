@@ -20,8 +20,8 @@ pub use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboa
 pub use status::{
     LiveOnboardStatus, fundable_deposit_wallet, fundable_deposit_wallet_from_status,
     local_onboard_status, local_onboard_status_with_live_deposit, local_status_for_wallet,
-    preserve_onboard_metadata, refreshed_live_onboard_status, stored_status_for_wallet,
-    tradeable_deposit_wallet,
+    preserve_onboard_metadata, project_next_action, refreshed_live_onboard_status,
+    stored_status_for_wallet, tradeable_deposit_wallet,
 };
 
 pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
@@ -116,15 +116,11 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
 }
 
 fn continuation_response(wallet: &str, account: u32) -> DispatchResponse {
-    store_put_json(
-        &format!("onboard/{wallet}/next_action.json"),
-        &serde_json::json!({
-            "status": "credentials_ready",
-            "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
-            "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
-        }),
-        false,
-    )
+    petal::read_json_value(&serde_json::json!({
+        "status": "credentials_ready",
+        "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
+        "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
+    }))
 }
 
 pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {

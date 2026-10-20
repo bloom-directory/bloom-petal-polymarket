@@ -6,6 +6,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "market": "markets/<slug>/market.json",
             "search": "search/<query>",
             "onboard_begin": "onboard/<wallet>/<index>/begin",
+            "onboard_continue": "onboard/<wallet>/<index>/continue",
             "onboard_review": "onboard/<wallet>/<index>/review_intent.json",
             "account_status": "account/<wallet>/<index>/status.json",
             "buying_power": "account/<wallet>/<index>/buying_power.json",
