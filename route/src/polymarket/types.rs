@@ -54,6 +54,20 @@ pub struct Market {
     pub order_min_size: Option<f64>,
     #[serde(rename = "negRisk", default)]
     pub neg_risk: bool,
+    /// Whether Polymarket charges a trading fee here, kept raw.
+    /// [`crate::polymarket::fees::MarketFee`] reads it: a missing value, or one
+    /// that is not a JSON boolean, is a fee it cannot bound and refuses BUYs,
+    /// rather than breaking every market read.
+    #[serde(rename = "feesEnabled", default)]
+    pub fees_enabled: Option<serde_json::Value>,
+    /// Gamma's fee category label, e.g. `crypto_fees_v2`, kept raw. Display
+    /// only: a value that is not a string is shown as no fee type.
+    #[serde(rename = "feeType", default)]
+    pub fee_type: Option<serde_json::Value>,
+    /// Gamma's `feeSchedule`, kept raw: a schedule this Petal cannot read
+    /// refuses a BUY rather than breaking every market read.
+    #[serde(rename = "feeSchedule", default)]
+    pub fee_schedule: Option<serde_json::Value>,
 }
 
 impl Market {
@@ -312,6 +326,9 @@ mod tests {
             order_price_min_tick_size: None,
             order_min_size: None,
             neg_risk: false,
+            fees_enabled: Some(false.into()),
+            fee_type: None,
+            fee_schedule: None,
         }
     }
 
