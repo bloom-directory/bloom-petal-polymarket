@@ -36,23 +36,6 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         Ok(address) => address,
         Err(resp) => return resp,
     };
-    let relayer_config = match crate::relayer_config::load_relayer_config() {
-        Ok(config) => config,
-        Err(resp) => return resp,
-    };
-    if !relayer_config.legacy_eoa_mode
-        && let crate::relayer_config::RelayerAuth::Disabled { reason } = relayer_config.auth()
-    {
-        return error(-3, reason);
-    }
-    let deposit = if relayer_config.legacy_eoa_mode {
-        None
-    } else {
-        match predict_deposit_wallet(owner) {
-            Ok(deposit) => Some(deposit),
-            Err(resp) => return resp,
-        }
-    };
     let approval_key = approval_key(wallet);
     let review_key = format!("onboard/{wallet}/review_intent.json");
     let existing_creds: Option<Credentials> =
@@ -64,38 +47,8 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
             Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => None,
             Err(err) => return sdk_error(err),
         };
-    if let Some(creds) = existing_creds {
-        // CLOB credentials are durable. Once they exist, onboarding resumes at
-        // the live wallet stages instead of preparing another L1 authentication
-        // signature. Retire a stale CLOB-auth approval or an unreadable one; a
-        // pending deposit-wallet batch approval belongs to the funded stage.
-        let stale_clob_approval = match pending_approval_selector(&approval_key) {
-            Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
-            Err(resp) => return resp,
-        };
-        if stale_clob_approval {
-            for key in [&approval_key, &review_key] {
-                match petal::sdk::store_del(key) {
-                    Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                    Err(err) => return sdk_error(err),
-                }
-            }
-        }
-        if relayer_config.legacy_eoa_mode {
-            return store_put_json(
-                &format!("onboard/{wallet}/status.json"),
-                &crate::relayer_config::legacy_eoa_status(wallet, owner),
-                false,
-            );
-        }
-        let deposit = deposit.expect("non-legacy deposit");
-        return match run_onboard_stages(ctx, wallet, owner, deposit, &creds) {
-            Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
-            Err(resp) => {
-                let _ = persist_onboard_failure(wallet, owner, deposit, &resp);
-                resp
-            }
-        };
+    if existing_creds.is_some() {
+        return continuation_response(wallet, account);
     }
     // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
     // faster than an owner ceremony completes. Build it fresh on every attempt
@@ -159,19 +112,74 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         return error(-4, "failed to store CLOB credentials");
     }
     let _ = petal::sdk::store_del(&approval_key);
-    if relayer_config.legacy_eoa_mode {
+    continuation_response(wallet, account)
+}
+
+fn continuation_response(wallet: &str, account: u32) -> DispatchResponse {
+    petal::read_json_value(&serde_json::json!({
+        "status": "credentials_ready",
+        "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
+        "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
+    }))
+}
+
+pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
+    if let Err(error) = validate_wallet_name(wallet) {
+        return crate::prelude::error(-3, error.to_string());
+    }
+    let owner = match wallet_address(wallet, account) {
+        Ok(owner) => owner,
+        Err(response) => return response,
+    };
+    let creds: Credentials =
+        match petal::sdk::store_get(&format!("creds/{wallet}/clob.json"), MAX_STORE_BYTES) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(creds) => creds,
+                Err(_) => return error(-4, "stored CLOB credentials are corrupt"),
+            },
+            Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {
+                return error(-3, "write begin to obtain CLOB credentials first");
+            }
+            Err(error) => return sdk_error(error),
+        };
+    let config = match crate::relayer_config::load_relayer_config() {
+        Ok(config) => config,
+        Err(response) => return response,
+    };
+    if config.legacy_eoa_mode {
         return store_put_json(
             &format!("onboard/{wallet}/status.json"),
             &crate::relayer_config::legacy_eoa_status(wallet, owner),
             false,
         );
     }
-    let deposit = deposit.expect("non-legacy deposit");
+    if let crate::relayer_config::RelayerAuth::Disabled { reason } = config.auth() {
+        return error(-3, reason);
+    }
+    let deposit = match predict_deposit_wallet(owner) {
+        Ok(deposit) => deposit,
+        Err(response) => return response,
+    };
+    // Retire only a stale CLOB approval. An exact deposit-wallet approval must
+    // survive retries of this continuation.
+    let key = approval_key(wallet);
+    let stale = match pending_approval_selector(&key) {
+        Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
+        Err(response) => return response,
+    };
+    if stale {
+        for key in [key, format!("onboard/{wallet}/review_intent.json")] {
+            match petal::sdk::store_del(&key) {
+                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+                Err(error) => return sdk_error(error),
+            }
+        }
+    }
     match run_onboard_stages(ctx, wallet, owner, deposit, &creds) {
         Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
-        Err(resp) => {
-            let _ = persist_onboard_failure(wallet, owner, deposit, &resp);
-            resp
+        Err(response) => {
+            let _ = persist_onboard_failure(wallet, owner, deposit, &response);
+            response
         }
     }
 }

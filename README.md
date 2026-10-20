@@ -1,5 +1,10 @@
 # Polymarket Petal
 
+Onboarding has two authority routes: write `onboard/<wallet>/<index>/begin`
+to obtain CLOB credentials, then write `onboard/<wallet>/<index>/continue`
+to deploy, fund and approve the deposit wallet. Existing credentials return
+the continuation path without requesting another authentication signature.
+
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 

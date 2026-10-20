@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.clob_auth.v1").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write anything here to begin Broker-authorized CLOB credential signing\n".to_vec())
     },
