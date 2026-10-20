@@ -347,11 +347,14 @@ pub fn post_trade_draft(
             if let DispatchResponse::Error { .. } = stored {
                 return stored;
             }
-            store_put_json(
+            // The order is posted and its receipt and draft are current, so a
+            // failure to update this record must not report the post as failed.
+            let _ = store_put_json(
                 &format!("{base}/post_attempt.json"),
                 &answered_post_attempt(&receipt, owner, &body_hash, outcome, None),
                 false,
-            )
+            );
+            stored
         }
         Err(DispatchResponse::Error { code: -3, message }) => {
             let posted_ms = now_millis();
@@ -381,11 +384,9 @@ pub fn post_trade_draft(
             }
             let _ = petal::sdk::store_del(&prepared_key);
             let _ = petal::sdk::store_del(&approval_key);
-            if let DispatchResponse::Error { .. } =
-                store_put_json(&format!("{base}/post_attempt.json"), &attempt, false)
-            {
-                return error(-4, "failed to persist rejected post attempt");
-            }
+            // The rejected receipt and draft are already written; this record
+            // is best effort so the caller still learns the CLOB refused.
+            let _ = store_put_json(&format!("{base}/post_attempt.json"), &attempt, false);
             error(-3, "CLOB rejected the order; rejected receipt written")
         }
         Err(resp) => {

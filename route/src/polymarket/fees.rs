@@ -166,7 +166,12 @@ impl MarketFee {
                     taker_only: schedule.taker_only,
                 })
             }
-            Some(other) => Err(format!("Gamma's feesEnabled is {other}, not a boolean")),
+            Some(other) => {
+                // Echo enough of the value to diagnose it, never all of it:
+                // the reason is stored on drafts and shown to the owner.
+                let shown: String = other.to_string().chars().take(64).collect();
+                Err(format!("Gamma's feesEnabled is {shown}, not a boolean"))
+            }
         }
     }
 
