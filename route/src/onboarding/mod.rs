@@ -48,7 +48,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
             Err(err) => return sdk_error(err),
         };
     if existing_creds.is_some() {
-        return continuation_response(wallet, account);
+        return DispatchResponse::Write;
     }
     // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
     // faster than an owner ceremony completes. Build it fresh on every attempt
@@ -112,15 +112,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         return error(-4, "failed to store CLOB credentials");
     }
     let _ = petal::sdk::store_del(&approval_key);
-    continuation_response(wallet, account)
-}
-
-fn continuation_response(wallet: &str, account: u32) -> DispatchResponse {
-    petal::read_json_value(&serde_json::json!({
-        "status": "credentials_ready",
-        "next_action": format!("/petals/polymarket/onboard/{wallet}/{account}/continue"),
-        "message": "Write continue to deploy, fund and approve the selected deposit wallet.",
-    }))
+    DispatchResponse::Write
 }
 
 pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
