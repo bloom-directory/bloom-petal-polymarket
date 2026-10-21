@@ -30,7 +30,7 @@ pub enum FeeRateBasis {
 }
 
 impl FeeRateBasis {
-    fn for_order_type(order_type: OrderType) -> Self {
+    pub fn for_order_type(order_type: OrderType) -> Self {
         if order_type.can_rest() {
             Self::MakerOrTaker
         } else {

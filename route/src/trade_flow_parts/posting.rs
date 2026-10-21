@@ -7,12 +7,54 @@ use crate::polymarket::order::{
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
+/// Which operation class a post signs under. Broker needs a class to be
+/// uniformly fee-bearing or uniformly fee-free, so a builder-coded order
+/// cannot share the plain class and the two have their own routes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PostClass {
+    /// `polymarket.order.poly1271`, fee-free. Refuses a configured code.
+    PlainOrder,
+    /// `polymarket.builder_code_order.poly1271`, fee-bearing. Requires one.
+    BuilderCodeOrder,
+}
+
+impl PostClass {
+    fn operation_class(self) -> &'static str {
+        match self {
+            Self::PlainOrder => "polymarket.order.poly1271",
+            Self::BuilderCodeOrder => "polymarket.builder_code_order.poly1271",
+        }
+    }
+}
+
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
     wallet: &str,
     account: u32,
     id: &str,
     body: &[u8],
+) -> DispatchResponse {
+    post_trade_draft_in_class(ctx, wallet, account, id, body, PostClass::PlainOrder)
+}
+
+/// Post a draft under the fee-bearing class, declaring the builder fee.
+pub fn post_builder_code_trade_draft(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
+    post_trade_draft_in_class(ctx, wallet, account, id, body, PostClass::BuilderCodeOrder)
+}
+
+fn post_trade_draft_in_class(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: u32,
+    id: &str,
+    body: &[u8],
+    class: PostClass,
 ) -> DispatchResponse {
     let (_, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
@@ -143,37 +185,100 @@ pub fn post_trade_draft(
     };
     let prepared_key = format!("{base}/prepared_signing.json");
     let approval_key = format!("{base}/approval.json");
-    let (order, prepared) = match load_prepared_signing(&prepared_key) {
+    let (order, prepared, fee_bound) = match load_prepared_signing(&prepared_key) {
         Ok(Some(prepared)) => {
             if prepared.operation != "order" || prepared.owner != owner.to_checksum(None) {
                 return error(-4, "prepared order does not match wallet");
+            }
+            // Both routes share this prepared-signing key, so without this a
+            // draft prepared under one class could be signed under the other,
+            // declaring a fee the class refuses or omitting one it requires.
+            if prepared.intent != class.operation_class() {
+                return error(
+                    -3,
+                    format!(
+                        "this draft was prepared to sign under {}; post it through that route, or cancel and re-stage it",
+                        prepared.intent
+                    ),
+                );
             }
             let order = match order_from_prepared(&prepared.preimage) {
                 Ok(order) => order,
                 Err(resp) => return resp,
             };
-            (order, prepared)
+            // The declared fee is read back, never recomputed: an operator
+            // ceiling change between attempts would otherwise sign a fee the
+            // ceremony never showed.
+            let bound = match class {
+                PostClass::BuilderCodeOrder => {
+                    match builder_fee_from_prepared(&prepared.preimage, draft.order_type) {
+                        Ok(bound) => Some(bound),
+                        Err(resp) => return resp,
+                    }
+                }
+                PostClass::PlainOrder => None,
+            };
+            (order, prepared, bound)
         }
         Ok(None) => {
             let timestamp_ms = match petal::sdk::try_now_ms() {
                 Ok(timestamp_ms) => timestamp_ms,
                 Err(err) => return sdk_error_with_context("read order timestamp", err),
             };
-            let builder_code = match crate::account_views::resolve_builder_code() {
-                Ok(builder_code) => builder_code,
-                Err(resp) => return resp,
+            let quote = LimitQuote {
+                side: draft.side,
+                price_micro: draft.limit_price_micro,
+                size_micro: draft.size_micro,
+                maker_micro: draft.maker_micro,
+                taker_micro: draft.taker_micro,
+            };
+            let (builder_code, bound) = match class {
+                PostClass::PlainOrder => {
+                    // A configured code means this draft belongs on the
+                    // fee-bearing route, where its fee can be declared.
+                    match crate::account_views::resolve_builder_code() {
+                        Ok(Some(_)) => {
+                            return error(
+                                -3,
+                                "a builder code is configured, so this order owes a builder fee that polymarket.order.poly1271 cannot declare; post it through `post_builder_code` instead",
+                            );
+                        }
+                        Ok(None) => (None, None),
+                        Err(resp) => return resp,
+                    }
+                }
+                PostClass::BuilderCodeOrder => {
+                    let attribution = match crate::account_views::resolve_builder_attribution() {
+                        Ok(Some(attribution)) => attribution,
+                        Ok(None) => {
+                            return error(
+                                -3,
+                                "no builder code is configured, so this route has no fee to declare; write one to settings/builder-code, or post through `post`",
+                            );
+                        }
+                        Err(resp) => return resp,
+                    };
+                    let platform =
+                        crate::builder_fee::read_platform_fee_params(&draft.condition_id);
+                    let bound = match crate::builder_fee::fee_bound(
+                        &format!("{:#x}", attribution.code),
+                        attribution.ceiling,
+                        draft.order_type,
+                        &quote,
+                        draft.best_bid_micro,
+                        platform,
+                    ) {
+                        Ok(bound) => bound,
+                        Err(err) => return error(-3, format!("builder fee: {err}")),
+                    };
+                    (Some(attribution.code), Some(bound))
+                }
             };
             let order = build_order(
                 &OrderParams {
                     token_id,
                     maker: funder,
-                    quote: LimitQuote {
-                        side: draft.side,
-                        price_micro: draft.limit_price_micro,
-                        size_micro: draft.size_micro,
-                        maker_micro: draft.maker_micro,
-                        taker_micro: draft.taker_micro,
-                    },
+                    quote,
                     builder_code,
                     signature_type: SIG_TYPE_POLY_1271,
                 },
@@ -182,7 +287,7 @@ pub fn post_trade_draft(
             let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
             let prepared = PreparedSigning::new(
                 "order",
-                "polymarket.order.poly1271",
+                class.operation_class(),
                 owner,
                 poly1271_signing_preimage(&order, chain_id, draft.neg_risk),
                 digest,
@@ -198,6 +303,16 @@ pub fn post_trade_draft(
                     "signature_type": order.signatureType,
                     "timestamp_ms": order.timestamp.to_string(),
                     "builder": format!("{:#x}", order.builder),
+                    // Bound into the approval, and read back on a retry rather
+                    // than recomputed, so a ceiling change cannot sign a fee
+                    // the ceremony never showed.
+                    "builder_fee_rate_bps": bound.as_ref().map(|b| b.builder_bps),
+                    "builder_fee_notional_micro": bound.as_ref().map(|b| b.notional_micro.to_string()),
+                    "builder_fee_ceiling_micro": bound.as_ref().map(|b| b.builder_fee_micro.to_string()),
+                    "platform_fee_micro": bound
+                        .as_ref()
+                        .and_then(|b| b.platform_fee_micro)
+                        .map(|micro| micro.to_string()),
                     "neg_risk": draft.neg_risk,
                     "chain_id": chain_id,
                     "review_intent_hash": review_intent_hash,
@@ -207,7 +322,7 @@ pub fn post_trade_draft(
             if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
                 return resp;
             }
-            (order, prepared)
+            (order, prepared, bound)
         }
         Err(resp) => return resp,
     };
@@ -259,9 +374,25 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
-        Ok(signature) => signature,
-        Err(resp) => return resp,
+    let inner_sig = match &fee_bound {
+        Some(bound) => {
+            let advisory = crate::builder_fee::builder_code_order_advisory(bound, false);
+            match crate::approval::sign_prepared_with_fee(
+                ctx,
+                wallet,
+                &prepared,
+                &approval_key,
+                bound.builder_fee_micro,
+                advisory,
+            ) {
+                Ok(signature) => signature,
+                Err(resp) => return resp,
+            }
+        }
+        None => match sign_prepared(ctx, wallet, &prepared, &approval_key) {
+            Ok(signature) => signature,
+            Err(resp) => return resp,
+        },
     };
     let signature = match wrap_poly1271_signature(&order, &inner_sig, chain_id, draft.neg_risk) {
         Ok(signature) => signature,
@@ -500,6 +631,64 @@ pub fn post_trade_draft(
     }
 }
 
+/// The fee bound a builder-coded order was prepared with.
+///
+/// Read back, never recomputed. An operator ceiling change between attempts
+/// would otherwise sign a fee the owner's ceremony never showed. The fields
+/// are required with no zero default: a zero or absent fee under the
+/// fee-bearing class is a lie, not a legacy artifact, because no release ever
+/// signed under that class without them. The ceiling is re-derived from the
+/// stored notional and rate so a tampered artifact is caught here.
+fn builder_fee_from_prepared(
+    value: &serde_json::Value,
+    order_type: crate::polymarket::order::OrderType,
+) -> Result<crate::builder_fee::FeeBound, DispatchResponse> {
+    let micro = |key: &str| -> Result<u64, DispatchResponse> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| error(-4, format!("prepared builder order is missing {key}")))?
+            .parse::<u64>()
+            .map_err(|err| error(-4, format!("prepared {key} is invalid: {err}")))
+    };
+    let builder_bps = u16::try_from(
+        value
+            .get("builder_fee_rate_bps")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| error(-4, "prepared builder order is missing builder_fee_rate_bps"))?,
+    )
+    .map_err(|_| error(-4, "prepared builder_fee_rate_bps is out of range"))?;
+    let notional_micro = micro("builder_fee_notional_micro")?;
+    let builder_fee_micro = micro("builder_fee_ceiling_micro")?;
+    let expected = crate::builder_code::builder_fee_ceiling_micro(notional_micro, builder_bps)
+        .map_err(|err| error(-4, format!("prepared builder fee: {err}")))?;
+    if expected != builder_fee_micro {
+        return Err(error(
+            -4,
+            "prepared builder fee does not match its stored notional and rate",
+        ));
+    }
+    let platform_fee_micro = match value.get("platform_fee_micro") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(_) => Some(micro("platform_fee_micro")?),
+    };
+    let code_hex = value
+        .get("builder")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Ok(crate::builder_fee::FeeBound {
+        code_hex,
+        builder_bps,
+        // The stored rate is authoritative; the basis only labels which side
+        // it came from, and the draft's order type is stable across attempts.
+        basis: crate::builder_fee::FeeRateBasis::for_order_type(order_type),
+        notional_micro,
+        builder_fee_micro,
+        platform_fee_micro,
+    })
+}
+
 fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
     let string = |name: &str| {
         value
@@ -735,4 +924,77 @@ pub fn cancel_discovered_order(
         "discovered_order_cancelled",
         serde_json::json!({"clob_order_id": order_id}),
     )
+}
+
+#[cfg(test)]
+mod builder_fee_retry_tests {
+    use super::*;
+    use crate::polymarket::order::OrderType;
+
+    fn preimage(rate: u64, notional: &str, ceiling: &str) -> serde_json::Value {
+        serde_json::json!({
+            "builder": "0xabc",
+            "builder_fee_rate_bps": rate,
+            "builder_fee_notional_micro": notional,
+            "builder_fee_ceiling_micro": ceiling,
+            "platform_fee_micro": "75000",
+        })
+    }
+
+    #[test]
+    fn a_retry_reads_the_stored_fee_rather_than_recomputing_it() {
+        let bound = builder_fee_from_prepared(&preimage(100, "10000000", "100000"), OrderType::FAK)
+            .unwrap();
+        assert_eq!(bound.builder_bps, 100);
+        assert_eq!(bound.notional_micro, 10_000_000);
+        assert_eq!(bound.builder_fee_micro, 100_000);
+        assert_eq!(bound.platform_fee_micro, Some(75_000));
+        assert_eq!(bound.total_fee_micro(), 175_000);
+    }
+
+    /// A zero or absent fee under the fee-bearing class is a lie, not a legacy
+    /// artifact: no release ever signed under that class without these fields.
+    #[test]
+    fn a_prepared_builder_order_missing_its_fee_fields_is_refused() {
+        for key in [
+            "builder_fee_rate_bps",
+            "builder_fee_notional_micro",
+            "builder_fee_ceiling_micro",
+        ] {
+            let mut value = preimage(100, "10000000", "100000");
+            value.as_object_mut().unwrap().remove(key);
+            assert!(
+                builder_fee_from_prepared(&value, OrderType::FAK).is_err(),
+                "{key} must be required"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tampered_fee_that_disagrees_with_its_notional_is_refused() {
+        // 10 pUSD at 100 bps is 0.1 pUSD; claiming less is caught.
+        assert!(
+            builder_fee_from_prepared(&preimage(100, "10000000", "1"), OrderType::FAK).is_err()
+        );
+    }
+
+    #[test]
+    fn an_absent_platform_leg_stays_absent_rather_than_reading_as_zero() {
+        let mut value = preimage(100, "10000000", "100000");
+        value.as_object_mut().unwrap().remove("platform_fee_micro");
+        let bound = builder_fee_from_prepared(&value, OrderType::FAK).unwrap();
+        assert_eq!(bound.platform_fee_micro, None);
+    }
+
+    #[test]
+    fn the_two_classes_are_distinct_so_a_draft_cannot_cross_routes() {
+        assert_ne!(
+            PostClass::PlainOrder.operation_class(),
+            PostClass::BuilderCodeOrder.operation_class()
+        );
+        assert_eq!(
+            PostClass::BuilderCodeOrder.operation_class(),
+            "polymarket.builder_code_order.poly1271"
+        );
+    }
 }

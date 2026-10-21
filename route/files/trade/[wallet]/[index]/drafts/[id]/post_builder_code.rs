@@ -21,52 +21,30 @@
 // keep matching this route's class and the fee this Petal eventually
 // declares, or signing answers `FEE_ASSET_MISMATCH`.
 //
-// What is still missing, and why this refuses rather than signs: the fee
-// amount. The signed `Order` struct carries no fee field, and the CLOB serves
-// no endpoint for a builder profile's maker and taker rates, so the rate has
-// to be configured locally. A fee-bearing claim needs an exact amount, so
-// declaring one today would mean inventing it.
-//
-// Note the correct sizing is also venue-specific: Polymarket documents a
-// market buy as reducing `makerAmount` so notional plus platform and builder
-// taker fees fits the intended spend, not adding the fee on top. Until that
-// lands, plain orders keep posting through `post` under the fee-free class.
-// Caps are only what this route imports today. The capability check refuses
-// a route that declares an import it does not use, so `bloom:http`,
-// `bloom:sign`, `bloom:chain` and `bloom:vfs.read` join this list when the
-// signing path lands, matching `post`.
 petal::route_file!(
     spec: petal::signing_write_spec("polymarket.builder_code_order.poly1271")
-        .caps(&["bloom:store"]),
+        .caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]),
     read: |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(
-            b"posts a revalidated draft under the fee-bearing polymarket.builder_code_order.poly1271 class, with the builder-code fee declared in the approval claim. Not yet available: Polymarket serves no API for a builder profile's maker and taker rates, so the fee cannot be declared exactly yet. Plain orders post through `post`.\n"
+            b"write {\"post\":true} to sign and post a revalidated draft under the fee-bearing polymarket.builder_code_order.poly1271 class. The claim declares the builder fee as a ceiling from settings/builder-fee-ceiling, and the ceremony states the builder, both fees and the total. Requires a configured builder code and ceiling; plain orders post through `post`. This performs a value-moving CLOB POST /order.\n"
                 .to_vec(),
         )
     },
-    write: |ctx: &petal::Ctx, _body: &[u8]| {
-        // Resolve the same inputs the signing path will need, so a
-        // misconfigured wallet, account or draft id still fails on its own
-        // terms rather than behind the unimplemented-fee refusal.
-        if let Err(resp) = crate::account::number(ctx) {
-            return resp;
-        }
-        if let Err(resp) = petal::wallet_param(ctx) {
-            return resp;
-        }
-        if let Err(resp) = petal::param(ctx, "id") {
-            return resp;
-        }
-        match crate::account_views::resolve_builder_code() {
-            Ok(Some(_)) => petal::error(
-                -3,
-                "builder-coded posting is not available yet: the builder fee rate has no source this Petal can read, so it cannot be declared in the approval claim. Post through `post` instead, which signs under the fee-free polymarket.order.poly1271 class",
-            ),
-            Ok(None) => petal::error(
-                -3,
-                "no builder code is configured; write one to settings/builder-code, or post through `post` which signs under the fee-free polymarket.order.poly1271 class",
-            ),
-            Err(resp) => resp,
-        }
+    write: |ctx: &petal::Ctx, body: &[u8]| {
+        let account = match crate::account::number(ctx) {
+            Ok(value) => value,
+            Err(resp) => return resp,
+        };
+        let wallet = match petal::wallet_param(ctx) {
+            Ok(value) => value,
+            Err(resp) => return resp,
+        };
+        let id = match petal::param(ctx, "id") {
+            Ok(value) => value,
+            Err(resp) => return resp,
+        };
+        crate::trade_flow_parts::posting::post_builder_code_trade_draft(
+            ctx, wallet, account, id, body,
+        )
     }
 );
