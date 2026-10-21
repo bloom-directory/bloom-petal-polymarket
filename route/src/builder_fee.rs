@@ -89,6 +89,51 @@ impl PlatformFeeParams {
     }
 }
 
+/// `getClobMarketInfo`'s fee details. CLOB V2 returns these per market
+/// alongside the minimum tick size and order size.
+#[derive(Debug, serde::Deserialize)]
+pub struct ClobFeeDetails {
+    /// `r`: the rate numerator.
+    pub r: u64,
+    /// `e`: the decimal exponent the rate is scaled by.
+    pub e: u32,
+    /// `to`: charged to takers only.
+    #[serde(default)]
+    pub to: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ClobMarketInfo {
+    pub fd: Option<ClobFeeDetails>,
+}
+
+impl ClobMarketInfo {
+    pub fn platform_fee_params(&self) -> Option<PlatformFeeParams> {
+        self.fd.as_ref().map(|fd| PlatformFeeParams {
+            rate: fd.r,
+            exponent: fd.e,
+            taker_only: fd.to,
+        })
+    }
+}
+
+/// Reads one market's published platform fee parameters.
+///
+/// A failure here is **not** fatal to posting. Platform fees already go
+/// unaccounted on plain orders, so refusing to post on a transient read would
+/// be a new way to fail rather than a fix. The caller treats `None` as "the
+/// platform fee is not bounded in this approval" and the advisory says so, so
+/// the owner is told what the number does and does not include.
+pub fn read_platform_fee_params(condition_id: &str) -> Option<PlatformFeeParams> {
+    let url = format!(
+        "{}/clob-market-info?condition_id={condition_id}",
+        crate::runtime_config::clob_url()
+    );
+    crate::infra_parts::http::get_json::<ClobMarketInfo>(&url)
+        .ok()
+        .and_then(|info| info.platform_fee_params())
+}
+
 /// Everything the owner is shown and the order is sized against.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeBound {
@@ -97,13 +142,15 @@ pub struct FeeBound {
     pub basis: FeeRateBasis,
     pub notional_micro: u64,
     pub builder_fee_micro: u64,
-    pub platform_fee_micro: u64,
+    /// `None` when the market's fee parameters could not be read, which is
+    /// different from a market that charges nothing.
+    pub platform_fee_micro: Option<u64>,
 }
 
 impl FeeBound {
     pub fn total_fee_micro(&self) -> u64 {
         self.builder_fee_micro
-            .saturating_add(self.platform_fee_micro)
+            .saturating_add(self.platform_fee_micro.unwrap_or(0))
     }
 
     pub fn spend_including_fees_micro(&self) -> u64 {
@@ -151,9 +198,10 @@ pub fn fee_bound(
     let builder_fee_micro = builder_fee_ceiling_micro(notional_micro, builder_bps)?;
     let platform_fee_micro = match platform {
         Some(params) if !params.taker_only || basis.pays_platform_fee() => {
-            params.ceiling_micro(notional_micro, quote.price_micro)?
+            Some(params.ceiling_micro(notional_micro, quote.price_micro)?)
         }
-        _ => 0,
+        Some(_) => Some(0),
+        None => None,
     };
     Ok(FeeBound {
         code_hex: code_hex.to_owned(),
@@ -182,12 +230,13 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
             bps_percent_string(bound.builder_bps),
             format_micro(bound.notional_micro),
         ),
+        match bound.platform_fee_micro {
+            Some(micro) => format!("Polymarket's own fee up to {} pUSD.", format_micro(micro)),
+            None => "Polymarket's own fee could not be read for this market, so it is NOT inside the total below and will be charged on top."
+                .to_owned(),
+        },
         format!(
-            "Polymarket's own fee up to {} pUSD.",
-            format_micro(bound.platform_fee_micro)
-        ),
-        format!(
-            "Total authorized: {} pUSD including both fees.",
+            "Total authorized: {} pUSD.",
             format_micro(bound.spend_including_fees_micro())
         ),
         "Polymarket sets a builder's rates on its profile and serves no API for them, so the builder figure is this installation's configured ceiling, not a quote. Both fees are charged by the venue at match time and may be less."
@@ -350,7 +399,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bound.builder_fee_micro, 100_000);
-        assert_eq!(bound.platform_fee_micro, 75_000);
+        assert_eq!(bound.platform_fee_micro, Some(75_000));
         assert_eq!(bound.total_fee_micro(), 175_000);
         assert_eq!(bound.spend_including_fees_micro(), 10_175_000);
 
@@ -361,6 +410,44 @@ mod tests {
         assert!(advisory.contains("10.175"), "{advisory}");
         assert!(advisory.contains("serves no API"), "{advisory}");
         assert!(advisory.contains("sized down"), "{advisory}");
+    }
+
+    /// A market whose fee parameters could not be read is not a market that
+    /// charges nothing. The owner must be told the total excludes it rather
+    /// than shown a zero they would read as "free".
+    #[test]
+    fn an_unread_platform_fee_is_disclosed_not_shown_as_zero() {
+        let bound = fee_bound(
+            "0xabc",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+            None,
+            None,
+        )
+        .unwrap();
+        let advisory = String::from_utf8(builder_code_order_advisory(&bound, false)).unwrap();
+        assert!(advisory.contains("could not be read"), "{advisory}");
+        assert!(advisory.contains("charged on top"), "{advisory}");
+        assert!(!advisory.contains("own fee up to 0"), "{advisory}");
+
+        // A market that genuinely charges nothing says so as a number.
+        let free = fee_bound(
+            "0xabc",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+            None,
+            Some(PlatformFeeParams {
+                rate: 0,
+                exponent: 4,
+                taker_only: true,
+            }),
+        )
+        .unwrap();
+        assert_eq!(free.platform_fee_micro, Some(0));
+        let advisory = String::from_utf8(builder_code_order_advisory(&free, false)).unwrap();
+        assert!(advisory.contains("own fee up to 0 pUSD"), "{advisory}");
     }
 
     #[test]
@@ -374,7 +461,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(bound.platform_fee_micro, 0);
+        assert_eq!(bound.platform_fee_micro, None);
         assert_eq!(bound.total_fee_micro(), 100_000);
     }
 }

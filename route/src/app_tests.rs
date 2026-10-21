@@ -155,6 +155,14 @@ mod tests {
         );
     }
 
+    /// The platform fee's parameters come from CLOB V2's market info, which
+    /// also carries the minimum tick and order size. Without this allowance
+    /// the fee cannot be bounded and the advisory has to disclose that.
+    #[test]
+    fn clob_market_info_is_allowed_for_reading_platform_fee_parameters() {
+        assert!(clob_manifest_allows("get", "/clob-market-info"));
+    }
+
     #[test]
     fn path_validation_rejects_escape_segments() {
         assert!(validate_relative_path("").is_ok());

@@ -37,6 +37,7 @@ paths = [
   "/balance-allowance",
   "/balance-allowance/update",
   "/book",
+  "/clob-market-info",
   "/data/orders",
   "/midpoint",
   "/orders",
