@@ -277,9 +277,25 @@ pub fn read_builder_code_status() -> DispatchResponse {
         Ok(code) => code,
         Err(resp) => return resp,
     };
-    petal::read_json_value(&crate::builder_code::builder_code_status(
-        override_code.as_deref(),
-    ))
+    let ceiling_override = match load_fee_ceiling_override() {
+        Ok(ceiling) => ceiling,
+        Err(resp) => return resp,
+    };
+    let status = crate::builder_code::builder_code_status(override_code.as_deref());
+    let ceiling = crate::builder_code::resolve_fee_ceiling(
+        crate::builder_code::RELEASE_DEFAULT_FEE_CEILING,
+        ceiling_override,
+    );
+    petal::read_json_value(&serde_json::json!({
+        "configured": status.configured,
+        "source": status.source,
+        "code": status.code,
+        "fee_ceiling": ceiling.map(|(ceiling, source)| serde_json::json!({
+            "maker_bps": ceiling.maker_bps,
+            "taker_bps": ceiling.taker_bps,
+            "source": source,
+        })),
+    }))
 }
 
 pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
@@ -305,6 +321,83 @@ pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
         Ok(()) => DispatchResponse::Write,
         Err(err) => sdk_error(err),
     }
+}
+
+fn load_fee_ceiling_override()
+-> Result<Option<crate::builder_code::BuilderFeeCeilingBps>, DispatchResponse> {
+    match petal::sdk::store_get("settings/builder-fee-ceiling", 256) {
+        Ok(bytes) => {
+            let parsed: crate::builder_code::BuilderFeeCeilingBps = serde_json::from_slice(&bytes)
+                .map_err(|err| error(-4, format!("stored fee ceiling: {err}")))?;
+            parsed
+                .validate()
+                .map(Some)
+                .map_err(|err| error(-4, format!("stored fee ceiling: {err}")))
+        }
+        Err(SdkError::Host(HostStatus::NotFound)) => Ok(None),
+        Err(err) => Err(sdk_error(err)),
+    }
+}
+
+pub fn write_fee_ceiling_override(body: &[u8]) -> DispatchResponse {
+    let text = match core::str::from_utf8(body) {
+        Ok(value) => value.trim(),
+        Err(_) => return error(-3, "fee ceiling must be UTF-8"),
+    };
+    if text.is_empty() {
+        return match petal::sdk::store_del("settings/builder-fee-ceiling") {
+            Ok(()) => DispatchResponse::Write,
+            Err(err) => sdk_error(err),
+        };
+    }
+    let parsed = match serde_json::from_str::<crate::builder_code::BuilderFeeCeilingBps>(text) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return error(
+                -3,
+                format!("fee ceiling must be {{\"maker_bps\":N,\"taker_bps\":M}}: {err}"),
+            );
+        }
+    };
+    let parsed = match parsed.validate() {
+        Ok(parsed) => parsed,
+        Err(err) => return error(-3, format!("fee ceiling: {err}")),
+    };
+    let encoded = match serde_json::to_vec(&parsed) {
+        Ok(encoded) => encoded,
+        Err(err) => return error(-4, format!("encode fee ceiling: {err}")),
+    };
+    match petal::sdk::store_put("settings/builder-fee-ceiling", &encoded, false) {
+        Ok(()) => DispatchResponse::Write,
+        Err(err) => sdk_error(err),
+    }
+}
+
+/// A builder code and the ceiling its orders are bounded by. Both are needed
+/// to post a builder-coded order: without the ceiling the Petal cannot bound
+/// what the owner is approving, and the venue serves no API for the real rate.
+#[derive(Clone, Copy, Debug)]
+pub struct BuilderAttribution {
+    pub code: B256,
+    pub ceiling: crate::builder_code::BuilderFeeCeilingBps,
+}
+
+/// The attribution a builder-coded order should carry, or `None` when no code
+/// is configured. Errors when a code resolves without a ceiling: that state
+/// is recoverable by writing one, and guessing a rate would put a number in
+/// front of the owner that nothing supports.
+pub fn resolve_builder_attribution() -> Result<Option<BuilderAttribution>, DispatchResponse> {
+    let Some(code) = resolve_builder_code()? else {
+        return Ok(None);
+    };
+    let ceiling_override = load_fee_ceiling_override()?;
+    let Some(ceiling) = crate::builder_code::resolve_default_fee_ceiling(ceiling_override) else {
+        return Err(error(
+            -3,
+            "a builder code is configured but no fee ceiling is; write settings/builder-fee-ceiling as {\"maker_bps\":N,\"taker_bps\":M} before posting a builder-coded order",
+        ));
+    };
+    Ok(Some(BuilderAttribution { code, ceiling }))
 }
 
 /// The builder attribution code every order should carry: the resolved

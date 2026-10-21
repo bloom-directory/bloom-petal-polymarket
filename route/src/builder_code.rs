@@ -23,7 +23,7 @@
 //! came from this release or an operator override that can change it without
 //! a new release.
 use alloy::primitives::B256;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// This release's default builder attribution code, used when no operator
 /// override is stored. A release build embeds it from the
@@ -83,6 +83,95 @@ pub fn builder_code_status(store_override: Option<&str>) -> BuilderCodeStatus {
             code: None,
         },
     }
+}
+
+/// Polymarket's ceiling on a builder's registered rates, by side. A profile
+/// cannot be configured above these, so a ceiling above them could never be
+/// charged and almost certainly means a misconfiguration.
+pub const VENUE_MAX_MAKER_FEE_BPS: u16 = 50;
+pub const VENUE_MAX_TAKER_FEE_BPS: u16 = 100;
+
+/// The most this Petal will let a builder code charge, by side, in basis
+/// points of notional.
+///
+/// Polymarket serves no API for a builder profile's registered rates, so the
+/// Petal cannot read what a code will actually charge. This is the operator's
+/// declared ceiling instead: the owner approves it, and an order is sized and
+/// bounded against it rather than against a rate nobody here can see. A
+/// change to the real profile takes effect three days after it is scheduled,
+/// with a seven-day cooldown, so a configured ceiling has warning before it
+/// drifts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderFeeCeilingBps {
+    pub maker_bps: u16,
+    pub taker_bps: u16,
+}
+
+impl BuilderFeeCeilingBps {
+    /// Rejects a ceiling the venue could never charge. Granularity is 1 bp by
+    /// construction, since the fields are whole basis points.
+    pub fn validate(self) -> Result<Self, String> {
+        if self.maker_bps > VENUE_MAX_MAKER_FEE_BPS {
+            return Err(format!(
+                "maker_bps must be 0..={VENUE_MAX_MAKER_FEE_BPS}; Polymarket caps a maker rate there"
+            ));
+        }
+        if self.taker_bps > VENUE_MAX_TAKER_FEE_BPS {
+            return Err(format!(
+                "taker_bps must be 0..={VENUE_MAX_TAKER_FEE_BPS}; Polymarket caps a taker rate there"
+            ));
+        }
+        Ok(self)
+    }
+}
+
+/// This release's default fee ceiling. Unlike the builder code this is not
+/// sensitive and is not injected at build time, so it stays reproducible from
+/// source. `None` until an operator sets one, which is why a configured code
+/// without a ceiling is refused at post time rather than assumed to be free.
+pub const RELEASE_DEFAULT_FEE_CEILING: Option<BuilderFeeCeilingBps> = None;
+
+/// Resolves the fee ceiling: an operator-set store override first, so it can
+/// change without a release, then this release's default, else none.
+pub fn resolve_fee_ceiling(
+    release_default: Option<BuilderFeeCeilingBps>,
+    store_override: Option<BuilderFeeCeilingBps>,
+) -> Option<(BuilderFeeCeilingBps, BuilderCodeSource)> {
+    if let Some(ceiling) = store_override {
+        return Some((ceiling, BuilderCodeSource::StoreOverride));
+    }
+    release_default.map(|ceiling| (ceiling, BuilderCodeSource::ReleaseDefault))
+}
+
+/// Convenience wrapper baking in this release's default.
+pub fn resolve_default_fee_ceiling(
+    store_override: Option<BuilderFeeCeilingBps>,
+) -> Option<BuilderFeeCeilingBps> {
+    resolve_fee_ceiling(RELEASE_DEFAULT_FEE_CEILING, store_override).map(|(ceiling, _)| ceiling)
+}
+
+/// `bps` as a percentage for an owner-facing line: 1 -> "0.01%", 100 -> "1%".
+pub fn bps_percent_string(bps: u16) -> String {
+    let whole = bps / 100;
+    let frac = bps % 100;
+    if frac == 0 {
+        format!("{whole}%")
+    } else if frac.is_multiple_of(10) {
+        format!("{whole}.{}%", frac / 10)
+    } else {
+        format!("{whole}.{frac:02}%")
+    }
+}
+
+/// `ceil(notional * bps / 10_000)` in micro-pUSD.
+///
+/// Always rounds up. This is a ceiling the owner approves and an order is
+/// sized against, so truncating it would authorize less than the venue can
+/// charge and leave the difference unapproved.
+pub fn builder_fee_ceiling_micro(notional_micro: u64, bps: u16) -> Result<u64, String> {
+    u64::try_from((u128::from(notional_micro) * u128::from(bps)).div_ceil(10_000))
+        .map_err(|_| "builder fee ceiling exceeds the supported pUSD amount".to_owned())
 }
 
 /// Parses a builder code from hex (with or without a `0x` prefix), accepting
