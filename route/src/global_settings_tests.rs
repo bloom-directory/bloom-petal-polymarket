@@ -4,6 +4,9 @@ fn service_settings_have_global_routes_and_exact_shared_keys() {
     let manifest = std::fs::read_to_string(root.join("../petal.toml")).unwrap();
     assert!(root.join("files/settings/enso-api-key.rs").is_file());
     assert!(root.join("files/settings/builder-code.rs").is_file());
+    // A builder code cannot post without a ceiling, so the two settings ship
+    // together and are shared through the same package-global store.
+    assert!(root.join("files/settings/builder-fee-ceiling.rs").is_file());
     assert!(
         root.join("files/settings/builder-code-status.json.rs")
             .is_file()
@@ -15,7 +18,7 @@ fn service_settings_have_global_routes_and_exact_shared_keys() {
     );
     assert!(
         manifest.contains(
-            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code"]"#
+            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code", "state/settings/builder-fee-ceiling"]"#
         )
     );
 }

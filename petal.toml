@@ -84,4 +84,4 @@ allowed_intents = [
 [store]
 namespaces = ["state"]
 secret_namespaces = ["secrets"]
-shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code"]
+shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code", "state/settings/builder-fee-ceiling"]

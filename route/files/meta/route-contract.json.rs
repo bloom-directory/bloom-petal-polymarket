@@ -14,6 +14,7 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
             "enso_settings": "settings/enso-api-key",
             "relayer_settings": "settings/<wallet>/<index>/relayer.json",
             "builder_code_settings": "settings/builder-code",
+            "builder_fee_ceiling_settings": "settings/builder-fee-ceiling",
             "builder_code_status": "settings/builder-code-status.json",
             "venue_settings": "settings/<wallet>/<index>/venue.toml",
             "fund_new": "fund/<wallet>/<index>/new",
