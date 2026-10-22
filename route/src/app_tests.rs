@@ -340,6 +340,48 @@ mod tests {
         assert_eq!(view.fee_microusd, 0);
     }
 
+    /// `quoted_fee_fields` feeds the plan, the review intent and the policy
+    /// cap. Returning nothing unconditionally left all three blank with the
+    /// whole suite green.
+    #[test]
+    fn quoted_fee_fields_reports_the_fee_it_was_configured_with() {
+        use crate::trade_flow_parts::pricing::{SpendFeeInputs, quoted_fee_fields};
+        let quote = crate::polymarket::order::LimitQuote {
+            side: Side::Buy,
+            price_micro: 500_000,
+            size_micro: 20_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 20_000_000,
+        };
+        assert_eq!(
+            quoted_fee_fields(Some(SpendFeeInputs { builder_bps: 100 }), &quote),
+            (Some(100), Some(100_000))
+        );
+        assert_eq!(quoted_fee_fields(None, &quote), (None, None));
+    }
+
+    /// A market buy's sizing already folded the fee into the requested amount,
+    /// so counting it again denied roughly 1% early on every market buy.
+    #[test]
+    fn a_market_buy_does_not_count_its_fee_twice_against_the_cap() {
+        use crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro;
+        let mut draft = draft();
+        draft.builder_fee_micro = Some(99_000);
+
+        draft.side = Side::Buy;
+        for order_type in [OrderType::FAK, OrderType::FOK] {
+            draft.order_type = order_type;
+            assert_eq!(
+                fee_on_top_of_amount_micro(&draft),
+                0,
+                "{order_type:?} already fits its fee inside the requested amount"
+            );
+        }
+        // A resting buy pays the fee on top, so it must still be counted.
+        draft.order_type = OrderType::GTC;
+        assert_eq!(fee_on_top_of_amount_micro(&draft), 99_000);
+    }
+
     #[test]
     fn path_validation_rejects_escape_segments() {
         assert!(validate_relative_path("").is_ok());

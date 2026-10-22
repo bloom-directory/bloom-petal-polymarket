@@ -110,7 +110,7 @@ pub fn fee_bound(
     // so preparing one would sign something no retry could ever resume.
     if builder_bps == 0 {
         return Err(format!(
-            "the configured ceiling is zero on the side this order pays ({}), so it would declare no fee; set a nonzero rate for that side or post without a builder code",
+            "the configured ceiling is zero on the side this order pays ({}), so it would declare no fee; set a nonzero rate for that side in settings/builder-fee-ceiling, or clear settings/builder-code to trade without attribution",
             match basis {
                 FeeRateBasis::Taker => "taker",
                 FeeRateBasis::MakerOrTaker => "maker and taker",
@@ -257,6 +257,38 @@ mod tests {
         assert_eq!(builder_fee_ceiling_micro(1_000_001, 1), Ok(101));
         assert_eq!(builder_fee_ceiling_micro(0, 100), Ok(0));
         assert_eq!(builder_fee_ceiling_micro(10_000_000, 100), Ok(100_000));
+    }
+
+    /// A ceiling may be zero on one side, but not on the side this order
+    /// pays: the fee-bearing class cannot carry a zero fee, and the retry path
+    /// refuses such an artifact, so preparing one would sign something no
+    /// retry could resume.
+    #[test]
+    fn a_ceiling_of_zero_on_the_paying_side_is_refused_at_prepare_time() {
+        let maker_only = ceiling(50, 0);
+        // A market order can only take, so it pays the zero side.
+        for order_type in [OrderType::FAK, OrderType::FOK] {
+            assert!(
+                fee_bound("0x1", maker_only, order_type, &buy(10_000_000, 500_000)).is_err(),
+                "{order_type:?} pays the taker rate, which is zero here"
+            );
+        }
+        // A resting order pays max(50, 0), which is nonzero, so it is fine.
+        for order_type in [OrderType::GTC, OrderType::GTD] {
+            let bound = fee_bound("0x1", maker_only, order_type, &buy(10_000_000, 500_000))
+                .expect("a resting order pays the larger rate");
+            assert_eq!(bound.builder_bps, 50);
+        }
+        // A taker-only ceiling is the mirror image.
+        assert!(
+            fee_bound(
+                "0x1",
+                ceiling(0, 100),
+                OrderType::FAK,
+                &buy(10_000_000, 500_000)
+            )
+            .is_ok()
+        );
     }
 
     /// The bound covers the builder fee only. Polymarket's own fee is stated

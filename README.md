@@ -122,6 +122,12 @@ signs, so an order cannot carry a code the owner did not approve. A build that
 sets nothing has no default, and orders carry a zero builder field exactly as
 they did before this was wired up.
 
+A release build therefore resolves a builder code on every order, which means
+`settings/builder-fee-ceiling` must also be written before any order can be
+placed: a configured code owes a fee, the fee-free route refuses it, and the
+fee-bearing route refuses a code with no ceiling. Both routes fail closed with
+the setting to write named in the error. One write recovers.
+
 `settings/builder-code` writes an operator override (any hex string up to 32
 bytes, with or without `0x`) that takes precedence over the release default,
 or clear it with an empty body; `settings/builder-code-status.json` reports

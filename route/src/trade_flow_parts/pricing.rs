@@ -208,6 +208,22 @@ pub fn quoted_fee_fields(
     (Some(fees.builder_bps), builder)
 }
 
+/// The fee that sits *on top of* a draft's `amount_micro`.
+///
+/// Zero for a market buy: `market_buy_from_spend_with_fees` already reduced
+/// `makerAmount` so the order plus its fee fits the requested amount, so the
+/// fee is inside that figure and counting it twice overstates the outflow.
+/// For every other order the fee is additive.
+pub fn fee_on_top_of_amount_micro(draft: &StoreTradeDraft) -> u64 {
+    let market_buy =
+        matches!(draft.order_type, OrderType::FAK | OrderType::FOK) && draft.side == Side::Buy;
+    if market_buy {
+        0
+    } else {
+        draft.builder_fee_micro.unwrap_or(0)
+    }
+}
+
 /// A one-line fee summary for the owner-facing plan. Covers the builder fee
 /// only; Polymarket's own fee is named as separate, not folded in.
 pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
@@ -252,9 +268,11 @@ pub fn trade_policy_check(
         },
         amount_microusd: draft.amount_micro,
         // A spend cap should bound what leaves the wallet, not the order's
-        // notional alone. An unread platform fee contributes nothing here,
-        // which the owner's advisory discloses separately.
-        fee_microusd: draft.builder_fee_micro.unwrap_or(0),
+        // notional alone — except for a market buy, where the sizing already
+        // reduced `makerAmount` so the order plus its fee fits the requested
+        // amount. Adding the fee again there would deny roughly 1% early on
+        // every market buy.
+        fee_microusd: fee_on_top_of_amount_micro(draft),
         limit_price_micro: draft.limit_price_micro,
         active: draft.active,
         closed: draft.closed,

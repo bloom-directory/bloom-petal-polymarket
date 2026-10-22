@@ -289,6 +289,49 @@ pub fn draft_from_quote(
 
 #[cfg(test)]
 mod tests {
+
+    /// `market_buy_from_spend_with_fees` is tested directly and `build_quote`
+    /// was tested only with no pricer, so nothing asserted the two were wired
+    /// together. Without the wiring a market buy stops being sized for fees.
+    #[test]
+    fn build_quote_applies_the_fee_pricer_to_a_market_buy() {
+        let s = snap(Some(500_000), Some(490_000));
+        let fee = |notional: u64| -> Result<u64> {
+            Ok(u64::try_from((u128::from(notional) * 100).div_ceil(10_000)).expect("fits"))
+        };
+        let unpriced =
+            build_quote(Side::Buy, 10_000_000, 500_000, &s, OrderType::FAK, None).unwrap();
+        let priced = build_quote(
+            Side::Buy,
+            10_000_000,
+            500_000,
+            &s,
+            OrderType::FAK,
+            Some(&fee),
+        )
+        .unwrap();
+        assert!(
+            priced.maker_micro < unpriced.maker_micro,
+            "a priced market buy must be smaller: {} vs {}",
+            priced.maker_micro,
+            unpriced.maker_micro
+        );
+        assert!(priced.maker_micro + fee(priced.maker_micro).unwrap() <= 10_000_000);
+
+        // A resting buy is not reduced: its makerAmount is the exact spend.
+        let resting = build_quote(
+            Side::Buy,
+            10_000_000,
+            500_000,
+            &s,
+            OrderType::GTC,
+            Some(&fee),
+        )
+        .unwrap();
+        let resting_unpriced =
+            build_quote(Side::Buy, 10_000_000, 500_000, &s, OrderType::GTC, None).unwrap();
+        assert_eq!(resting.maker_micro, resting_unpriced.maker_micro);
+    }
     use super::*;
 
     fn snap(best_ask: Option<u64>, best_bid: Option<u64>) -> Snapshot {

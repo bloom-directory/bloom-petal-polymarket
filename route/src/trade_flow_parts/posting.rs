@@ -193,14 +193,8 @@ fn post_trade_draft_in_class(
             // Both routes share this prepared-signing key, so without this a
             // draft prepared under one class could be signed under the other,
             // declaring a fee the class refuses or omitting one it requires.
-            if prepared.intent != class.operation_class() {
-                return error(
-                    -3,
-                    format!(
-                        "this draft was prepared to sign under {}; post it through that route, or cancel and re-stage it",
-                        prepared.intent
-                    ),
-                );
+            if let Err(resp) = class_matches_prepared(&prepared.intent, class) {
+                return resp;
             }
             let order = match order_from_prepared(&prepared.preimage) {
                 Ok(order) => order,
@@ -641,6 +635,33 @@ fn post_trade_draft_in_class(
     }
 }
 
+/// Whether the sizing reduced this order, which is what the owner is told.
+///
+/// Only a market buy is reduced: Polymarket documents the reduction for market
+/// orders, and for a resting limit buy `makerAmount` is the exact spend the
+/// caller named with the fee additive on top.
+pub fn order_was_sized_down(order_type: OrderType, side: crate::polymarket::Side) -> bool {
+    matches!(order_type, OrderType::FAK | OrderType::FOK) && side == crate::polymarket::Side::Buy
+}
+
+/// Both posting routes share one prepared-signing key, so a draft prepared
+/// under one class must not be signed under the other: that would declare a
+/// fee the class refuses, or omit one it requires.
+pub fn class_matches_prepared(
+    prepared_intent: &str,
+    class: PostClass,
+) -> Result<(), DispatchResponse> {
+    if prepared_intent == class.operation_class() {
+        return Ok(());
+    }
+    Err(error(
+        -3,
+        format!(
+            "this draft was prepared to sign under {prepared_intent}; post it through that route, or cancel and re-stage it"
+        ),
+    ))
+}
+
 /// The fee bound a builder-coded order was prepared with.
 ///
 /// Read back, never recomputed. An operator ceiling change between attempts
@@ -688,29 +709,16 @@ fn builder_fee_from_prepared(
         ));
     }
     // Self-consistency is not enough: the three fee fields agreeing with each
-    // other proves nothing if the notional is unrelated to what the signed
-    // order actually gives. For a buy that is `maker_amount`, in the same
-    // preimage, so bind them.
-    // Self-consistency is not enough: the three fee fields agreeing with each
     // other proves nothing if the notional is unrelated to the signed order.
-    // Bind it per side — a buy's floor is what it gives, a sell's is its shares
-    // at par — and require the side to be present rather than skipping the
-    // binding when it is missing.
-    let side = value
-        .get("side")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared builder order is missing side"))?;
-    let floor_key = match side {
-        0 => "maker_amount",
-        1 => "taker_amount",
-        other => {
-            return Err(error(
-                -4,
-                format!("prepared builder order has an unknown side {other}"),
-            ));
-        }
-    };
-    if notional_micro < micro(floor_key)? {
+    //
+    // The floor is `makerAmount` for both sides. A buy's notional is what it
+    // gives, which is `makerAmount`. A sell's is its shares at par, and
+    // `sell_from_shares` sets `maker_micro = size_micro`, so par IS
+    // `makerAmount` too. An earlier revision bound a sell to `takerAmount`,
+    // its USD leg, which is strictly below par at any price under $1 and so
+    // accepted a fee priced on a fraction of what par demands.
+    let maker_amount = micro("maker_amount")?;
+    if notional_micro < maker_amount {
         return Err(error(
             -4,
             "prepared builder fee was priced on less than the order moves",
@@ -1047,18 +1055,27 @@ mod builder_fee_retry_tests {
 
         // A sell was previously unbound entirely: the side conjunct made the
         // binding buy-only, so any notional passed.
-        let mut sell = preimage(100, "1", "1");
+        // A sell binds to par, which is its `makerAmount`. Binding to the USD
+        // leg instead accepted a tenth of par at a $0.10 limit.
+        let mut sell = preimage(100, "1000000", "10000");
         sell["side"] = serde_json::json!(1);
-        sell["taker_amount"] = serde_json::json!("10000000");
+        sell["maker_amount"] = serde_json::json!("10000000");
+        sell["taker_amount"] = serde_json::json!("1000000");
         assert!(
             builder_fee_from_prepared(&sell, OrderType::FAK).is_err(),
-            "a sell's notional must be bound to what the order moves"
+            "a sell's notional must be bound to par, not to its USD leg"
         );
 
-        // An absent side skips nothing now; it is refused.
-        let mut sideless = preimage(100, "10000000", "100000");
-        sideless.as_object_mut().unwrap().remove("side");
-        assert!(builder_fee_from_prepared(&sideless, OrderType::FAK).is_err());
+        // The same sell priced on par is accepted.
+        let mut honest_sell = preimage(100, "10000000", "100000");
+        honest_sell["side"] = serde_json::json!(1);
+        honest_sell["taker_amount"] = serde_json::json!("1000000");
+        assert!(builder_fee_from_prepared(&honest_sell, OrderType::FAK).is_ok());
+
+        // A missing floor is refused rather than skipped.
+        let mut floorless = preimage(100, "10000000", "100000");
+        floorless.as_object_mut().unwrap().remove("maker_amount");
+        assert!(builder_fee_from_prepared(&floorless, OrderType::FAK).is_err());
 
         // A fee-bearing artifact with no builder code cannot be resumed.
         let mut codeless = preimage(100, "10000000", "100000");
@@ -1073,6 +1090,56 @@ mod builder_fee_retry_tests {
     /// Both routes share one prepared-signing key, so the guard compares the
     /// stored intent against the class being posted. Asserting only that the
     /// two class strings differ left the guard itself untested.
+    /// The guard the comment calls load-bearing, exercised rather than
+    /// asserted about: an earlier test compared two class constants, so
+    /// deleting the guard changed nothing the suite could see.
+    #[test]
+    fn the_class_guard_refuses_a_draft_prepared_under_the_other_class() {
+        for (stored, posting) in [
+            (PostClass::PlainOrder, PostClass::BuilderCodeOrder),
+            (PostClass::BuilderCodeOrder, PostClass::PlainOrder),
+        ] {
+            assert!(
+                class_matches_prepared(stored.operation_class(), posting).is_err(),
+                "a draft stored as {} must not post as {}",
+                stored.operation_class(),
+                posting.operation_class()
+            );
+        }
+        for class in [PostClass::PlainOrder, PostClass::BuilderCodeOrder] {
+            assert!(class_matches_prepared(class.operation_class(), class).is_ok());
+        }
+        // An unrelated intent is refused too, not just the sibling class.
+        assert!(class_matches_prepared("polymarket.onboard", PostClass::PlainOrder).is_err());
+    }
+
+    /// Only a market buy is reduced, so only a market buy tells the owner it
+    /// was. This was hardcoded false and the line never reached a ceremony.
+    #[test]
+    fn only_a_market_buy_reports_that_it_was_sized_down() {
+        use crate::polymarket::Side;
+        for order_type in [OrderType::FAK, OrderType::FOK] {
+            assert!(
+                order_was_sized_down(order_type, Side::Buy),
+                "{order_type:?}"
+            );
+            assert!(
+                !order_was_sized_down(order_type, Side::Sell),
+                "{order_type:?}"
+            );
+        }
+        for order_type in [OrderType::GTC, OrderType::GTD] {
+            assert!(
+                !order_was_sized_down(order_type, Side::Buy),
+                "{order_type:?}"
+            );
+            assert!(
+                !order_was_sized_down(order_type, Side::Sell),
+                "{order_type:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_draft_prepared_under_one_class_is_refused_by_the_other() {
         assert_ne!(
