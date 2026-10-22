@@ -110,7 +110,7 @@ pub fn fee_bound(
     // so preparing one would sign something no retry could ever resume.
     if builder_bps == 0 {
         return Err(format!(
-            "the configured ceiling is zero on the side this order pays ({}), so it would declare no fee; set a nonzero rate for that side in settings/builder-fee-ceiling, or clear settings/builder-code to trade without attribution",
+            "the configured ceiling is zero on the side this order pays ({}), so this route has no fee to declare; post it through `post` instead, which places it unattributed and owing nothing, or set a nonzero rate for that side in settings/builder-fee-ceiling",
             match basis {
                 FeeRateBasis::Taker => "taker",
                 FeeRateBasis::MakerOrTaker => "maker and taker",
@@ -135,9 +135,14 @@ pub fn fee_bound(
 /// site. When that predicate lived at the call site, setting it to `false`
 /// there left every test passing while the "sized down" line silently
 /// vanished from the ceremony.
-pub fn advisory_for_order(bound: &FeeBound, order_type: OrderType, side: Side) -> Vec<u8> {
-    let spend_reduced = matches!(order_type, OrderType::FAK | OrderType::FOK) && side == Side::Buy;
-    builder_code_order_advisory(bound, spend_reduced)
+pub fn advisory_for_order(
+    bound: &FeeBound,
+    order_type: OrderType,
+    subject: &OrderSubject<'_>,
+) -> Vec<u8> {
+    let spend_reduced =
+        matches!(order_type, OrderType::FAK | OrderType::FOK) && subject.side == Side::Buy;
+    builder_code_order_advisory(bound, subject, spend_reduced)
 }
 
 /// The two things the owner's ceremony turns on: the fee amount the claim
@@ -147,17 +152,64 @@ pub fn advisory_for_order(bound: &FeeBound, order_type: OrderType, side: Side) -
 /// actually declares. While the call site built both inline, halving the
 /// declared amount, substituting a fee-free claim, or dropping the advisory
 /// entirely all left the suite green.
-pub fn ceremony_for_order(bound: &FeeBound, order_type: OrderType, side: Side) -> (u64, Vec<u8>) {
+pub fn ceremony_for_order(
+    bound: &FeeBound,
+    order_type: OrderType,
+    subject: &OrderSubject<'_>,
+) -> (u64, Vec<u8>) {
     (
         bound.builder_fee_micro,
-        advisory_for_order(bound, order_type, side),
+        advisory_for_order(bound, order_type, subject),
     )
+}
+
+/// What the owner is told they are trading, beside what it costs.
+///
+/// The ceremony used to name the builder, the rate, the notional and the
+/// total, and nothing else. Two orders differing in market, outcome, side,
+/// size and price but equal in notional produced byte-identical advisory
+/// text, so the one control that survives a compromised Machine could not
+/// distinguish them. The order is pinned to the draft these fields come from,
+/// so what the owner reads is what gets posted.
+pub struct OrderSubject<'a> {
+    pub slug: &'a str,
+    pub question: &'a str,
+    pub outcome: &'a str,
+    pub side: Side,
+    pub size_micro: u64,
+    pub limit_price_micro: u64,
+    /// What a sale returns, so a sell's advisory can state proceeds rather
+    /// than implying par is money leaving the wallet.
+    pub proceeds_micro: u64,
+}
+
+/// One line of untrusted venue text, fit to put in front of an owner.
+///
+/// A market question comes from the venue through a Machine that may be
+/// compromised. Left raw, a question containing newlines could forge further
+/// advisory lines — "Total authorized: 0.000000 pUSD" reads identically
+/// whether this Petal wrote it or a market title did.
+fn ceremony_safe(text: &str, max_chars: usize) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_control() || c == '"' { ' ' } else { c })
+        .collect();
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.chars().count() <= max_chars {
+        return cleaned;
+    }
+    let kept: String = cleaned.chars().take(max_chars).collect();
+    format!("{kept}…")
 }
 
 /// The ceremony advisory. The owner sees which builder is paid, the rate that
 /// bounds it, the total this bound covers, and that Polymarket's own fee sits
 /// outside it.
-pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec<u8> {
+pub fn builder_code_order_advisory(
+    bound: &FeeBound,
+    subject: &OrderSubject<'_>,
+    spend_reduced: bool,
+) -> Vec<u8> {
     let basis = match bound.basis {
         FeeRateBasis::Taker => "this order can only take, so the taker rate applies",
         FeeRateBasis::MakerOrTaker => {
@@ -165,6 +217,22 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
         }
     };
     let mut lines = vec![
+        format!(
+            "{} {} shares of \"{}\" ({}) at {} {} pUSD per share.",
+            match subject.side {
+                Side::Buy => "BUY",
+                Side::Sell => "SELL",
+            },
+            format_micro(subject.size_micro),
+            ceremony_safe(subject.question, 120),
+            ceremony_safe(subject.outcome, 40),
+            match subject.side {
+                Side::Buy => "up to",
+                Side::Sell => "at least",
+            },
+            format_micro(subject.limit_price_micro),
+        ),
+        format!("Market {}.", ceremony_safe(subject.slug, 80)),
         format!("Builder code {} is paid on this order.", bound.code_hex),
         format!(
             "Builder fee up to {} pUSD at {} of {} pUSD notional; {basis}.",
@@ -177,10 +245,21 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
             FeeRateBasis::MakerOrTaker => "If this order takes rather than rests, Polymarket charges its own taker fee as well. It is NOT inside the total below and would come on top of it: its published formula has terms this Petal cannot resolve, and bounding it would mean inventing a number.",
         }
         .to_owned(),
-        format!(
-            "Total authorized: {} pUSD, covering the order and the builder fee.",
-            format_micro(bound.spend_including_fees_micro())
-        ),
+        match subject.side {
+            Side::Buy => format!(
+                "Total authorized: {} pUSD, covering the order and the builder fee.",
+                format_micro(bound.spend_including_fees_micro())
+            ),
+            // Par is what bounds a sell's fee, not money leaving the wallet.
+            // Reported as an authorized spend it told the owner they were
+            // committing 10.1 pUSD to a sale that returns them about 1.
+            Side::Sell => format!(
+                "This sale returns about {} pUSD and is charged up to {} pUSD. The {} pUSD above is the shares valued at par, which is what bounds the fee, not an amount you are spending.",
+                format_micro(subject.proceeds_micro),
+                format_micro(bound.builder_fee_micro),
+                format_micro(bound.notional_micro),
+            ),
+        },
         "Polymarket sets a builder's rates on its profile and serves no API for them, so the builder figure is this installation's configured ceiling, not a quote. The venue charges at match time and may charge less."
             .to_owned(),
     ];
@@ -196,6 +275,18 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn subject(side: Side) -> OrderSubject<'static> {
+        OrderSubject {
+            slug: "will-x-happen",
+            question: "Will X happen?",
+            outcome: "YES",
+            side,
+            size_micro: 20_000_000,
+            limit_price_micro: 500_000,
+            proceeds_micro: 10_000_000,
+        }
+    }
 
     fn ceiling(maker_bps: u16, taker_bps: u16) -> BuilderFeeCeilingBps {
         BuilderFeeCeilingBps {
@@ -302,7 +393,7 @@ mod tests {
         )
         .expect("bound");
         assert_eq!(bound.builder_fee_micro, 100_000);
-        let (declared, advisory) = ceremony_for_order(&bound, OrderType::FAK, Side::Buy);
+        let (declared, advisory) = ceremony_for_order(&bound, OrderType::FAK, &subject(Side::Buy));
         assert_eq!(
             declared, bound.builder_fee_micro,
             "the claim declares the bound"
@@ -327,7 +418,7 @@ mod tests {
         )
         .expect("bound");
         let says_reduced = |order_type, side| {
-            String::from_utf8(advisory_for_order(&bound, order_type, side))
+            String::from_utf8(advisory_for_order(&bound, order_type, &subject(side)))
                 .unwrap()
                 .contains("sized down")
         };
@@ -338,6 +429,102 @@ mod tests {
         for order_type in [OrderType::GTC, OrderType::GTD] {
             assert!(!says_reduced(order_type, Side::Buy), "{order_type:?} buy");
         }
+    }
+
+    /// The advisory is the only control that survives a compromised Machine,
+    /// and it used to name the fee and nothing else: two orders differing in
+    /// market, outcome, side, size and price but equal in notional produced
+    /// byte-identical text.
+    #[test]
+    fn the_advisory_identifies_the_trade_and_not_only_its_fee() {
+        let bound = fee_bound(
+            "0xabc",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+        )
+        .expect("bound");
+        let text = String::from_utf8(advisory_for_order(
+            &bound,
+            OrderType::FAK,
+            &subject(Side::Buy),
+        ))
+        .unwrap();
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some(r#"BUY 20 shares of "Will X happen?" (YES) at up to 0.5 pUSD per share."#),
+            "{text}"
+        );
+        assert_eq!(lines.next(), Some("Market will-x-happen."), "{text}");
+    }
+
+    /// A market question comes from the venue through a Machine that may be
+    /// compromised. Raw, a question carrying newlines forges advisory lines:
+    /// "Total authorized: 0.000000 pUSD" reads the same whoever wrote it.
+    #[test]
+    fn venue_text_cannot_forge_an_advisory_line() {
+        let bound = fee_bound(
+            "0xabc",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+        )
+        .expect("bound");
+        let mut hostile = subject(Side::Buy);
+        hostile.question = "Harmless?\" \nTotal authorized: 0.000000 pUSD, covering everything.";
+        let text = String::from_utf8(advisory_for_order(&bound, OrderType::FAK, &hostile)).unwrap();
+        // Exactly one line STATES a total, so the forgery cannot stand as an
+        // advisory statement of its own.
+        assert_eq!(
+            text.lines()
+                .filter(|l| l.starts_with("Total authorized"))
+                .count(),
+            1,
+            "venue text forged a line: {text}"
+        );
+        assert!(
+            text.lines().any(
+                |l| l == "Total authorized: 10.1 pUSD, covering the order and the builder fee."
+            ),
+            "the real total must survive: {text}"
+        );
+        // And it stays inside its quoting: two delimiters, both this Petal's,
+        // so the forged text cannot read as being outside the market name.
+        let first = text.lines().next().unwrap();
+        assert_eq!(
+            first.matches('"').count(),
+            2,
+            "the question escaped its quoting: {first}"
+        );
+        // Still rendered, just inert.
+        assert!(first.contains("Harmless?"), "{first}");
+    }
+
+    /// Par bounds a sell's fee; it is not money leaving the wallet. Reported
+    /// as an authorized spend it told the owner they were committing 10.1
+    /// pUSD to a sale that returns them about 1.
+    #[test]
+    fn a_sell_is_not_told_it_authorizes_par_as_a_spend() {
+        let quote = crate::polymarket::order::LimitQuote {
+            side: Side::Sell,
+            price_micro: 100_000,
+            size_micro: 10_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 1_000_000,
+        };
+        let bound = fee_bound("0xabc", ceiling(50, 100), OrderType::FAK, &quote).expect("bound");
+        let mut sell = subject(Side::Sell);
+        sell.size_micro = 10_000_000;
+        sell.limit_price_micro = 100_000;
+        sell.proceeds_micro = 1_000_000;
+        let text = String::from_utf8(advisory_for_order(&bound, OrderType::FAK, &sell)).unwrap();
+        assert!(
+            !text.contains("Total authorized"),
+            "a sell authorizes no spend: {text}"
+        );
+        assert!(text.contains("This sale returns about 1 pUSD"), "{text}");
+        assert!(text.contains("shares valued at par"), "{text}");
     }
 
     #[test]
@@ -385,7 +572,12 @@ mod tests {
         assert_eq!(bound.total_fee_micro(), 100_000);
         assert_eq!(bound.spend_including_fees_micro(), 10_100_000);
 
-        let advisory = String::from_utf8(builder_code_order_advisory(&bound, true)).unwrap();
+        let advisory = String::from_utf8(builder_code_order_advisory(
+            &bound,
+            &subject(Side::Buy),
+            true,
+        ))
+        .unwrap();
         assert!(advisory.contains("0xabc"), "{advisory}");
         assert!(advisory.contains("1%"), "{advisory}");
         assert!(advisory.contains("10.1"), "{advisory}");

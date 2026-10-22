@@ -210,7 +210,23 @@ fn post_trade_draft_in_class(
                         Err(resp) => return resp,
                     }
                 }
-                PostClass::PlainOrder => None,
+                PostClass::PlainOrder => {
+                    // The fee-free class declares no fee, and its ceremony
+                    // shows no advisory and names no beneficiary at all. An
+                    // order carrying a code under it is still charged by the
+                    // venue and still pays whoever owns that code, and the
+                    // owner approves it having been shown nothing.
+                    //
+                    // The fresh path cannot build one — it passes no code on
+                    // this class — so a stored artifact is the only way one
+                    // can exist, and the digest check above cannot help: an
+                    // artifact and its hash are the same object, so one
+                    // written with both fields consistent is self-validating.
+                    if let Err(resp) = plain_order_carries_no_code(&order) {
+                        return resp;
+                    }
+                    None
+                }
             };
             (order, prepared, bound)
         }
@@ -228,16 +244,24 @@ fn post_trade_draft_in_class(
             };
             let (builder_code, bound) = match class {
                 PostClass::PlainOrder => {
-                    // A configured code means this draft belongs on the
-                    // fee-bearing route, where its fee can be declared.
-                    match crate::account_views::resolve_builder_code() {
-                        Ok(Some(_)) => {
+                    // A code that charges this order belongs on the
+                    // fee-bearing route, where its fee can be declared. A
+                    // ceiling legitimately zero on the side this order pays
+                    // charges nothing, and the fee-bearing route refuses to
+                    // declare a zero fee, so refusing here too left a
+                    // maker-only builder unable to place any FAK or FOK order
+                    // through either route. Such an order posts here, owing
+                    // nothing and carrying no code.
+                    match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
+                        draft.order_type,
+                    ) {
+                        Ok(fees) if code_charges_this_order(fees.as_ref()) => {
                             return error(
                                 -3,
-                                "a builder code is configured, so this order owes a builder fee that polymarket.order.poly1271 cannot declare; post it through `post_builder_code` instead",
+                                "a builder code is configured and charges this order, and polymarket.order.poly1271 cannot declare a fee; post it through `post_builder_code` instead",
                             );
                         }
-                        Ok(None) => (None, None),
+                        Ok(_) => (None, None),
                         Err(resp) => return resp,
                     }
                 }
@@ -261,10 +285,15 @@ fn post_trade_draft_in_class(
                         Ok(bound) => bound,
                         Err(err) => return error(-3, format!("builder fee: {err}")),
                     };
-                    // Live settings decided this bound; the draft decided
-                    // what the agent displayed, what the caps were applied to
-                    // and what the review gate compares. Anchoring them here
-                    // is what makes the two the same thing.
+                    // Not a control: `refresh_trade_post_inputs` has already
+                    // rewritten the draft's fee from these same live settings,
+                    // so in the ordinary case this compares two values of one
+                    // function microseconds apart. It is kept because the two
+                    // are computed by different code — `fee_bound` here,
+                    // `quoted_fee_fields` for the draft — and a divergence
+                    // between them would otherwise size, cap and display one
+                    // fee while declaring another. What actually catches a
+                    // repointed code is the ceremony naming it.
                     if let Err(resp) = fee_matches_draft(
                         &draft,
                         &bound.code_hex,
@@ -359,6 +388,17 @@ fn post_trade_draft_in_class(
         }
         Err(resp) => return resp,
     }
+    // The digest check proves the artifact agrees with itself, which is all it
+    // can prove: a preimage and its hash are one object, and both are public
+    // keccak math over values the writer already holds, so anything that can
+    // edit one can edit the other. What was never pinned is the ORDER. The
+    // review gate compares the review intent to the draft, and
+    // `review_intent_hash` pins the review intent, but no comparison reached
+    // the order, so a resumed post could name a different token, size, price
+    // or maker than the draft the owner reviewed.
+    if let Err(resp) = order_matches_draft(&order, &draft, token_id, funder) {
+        return resp;
+    }
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -392,8 +432,19 @@ fn post_trade_draft_in_class(
     }
     let inner_sig = match &fee_bound {
         Some(bound) => {
-            let (declared_fee_micro, advisory) =
-                crate::builder_fee::ceremony_for_order(bound, draft.order_type, draft.side);
+            let (declared_fee_micro, advisory) = crate::builder_fee::ceremony_for_order(
+                bound,
+                draft.order_type,
+                &crate::builder_fee::OrderSubject {
+                    slug: &draft.slug,
+                    question: &draft.question,
+                    outcome: &draft.outcome,
+                    side: draft.side,
+                    size_micro: draft.size_micro,
+                    limit_price_micro: draft.limit_price_micro,
+                    proceeds_micro: draft.taker_micro,
+                },
+            );
             match crate::approval::sign_prepared_with_fee(
                 ctx,
                 wallet,
@@ -687,6 +738,78 @@ pub fn class_matches_prepared(
             "this draft was prepared to sign under {prepared_intent}; post it through that route, or cancel and re-stage it"
         ),
     ))
+}
+
+/// Whether a configured code actually charges this order.
+///
+/// A ceiling may legitimately be zero on one side. When it is zero on the side
+/// this order pays, the order owes nothing, the fee-bearing route refuses to
+/// declare a zero fee, and refusing here as well left a maker-only builder
+/// unable to place any FAK or FOK order through either route.
+fn code_charges_this_order(
+    fees: Option<&crate::trade_flow_parts::pricing::SpendFeeAttribution>,
+) -> bool {
+    matches!(fees, Some(fees) if fees.inputs.builder_bps > 0)
+}
+
+/// Refuses a fee-free order that carries a builder code.
+///
+/// Extracted so it can be tested at all: the call site sits in the
+/// host-dependent post path, and the one-line version there passed the whole
+/// suite when deleted.
+fn plain_order_carries_no_code(order: &Order) -> Result<(), DispatchResponse> {
+    if order.builder != B256::ZERO {
+        return Err(error(
+            -4,
+            "a fee-free order cannot carry a builder code; its fee could not be declared or disclosed, so this will not be signed",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses when an order is not the order its draft describes.
+///
+/// Every field here is free on the resume path, where the order is rebuilt
+/// entirely from the stored artifact. On the fresh path they hold by
+/// construction, which is why checking both paths costs nothing. `salt` and
+/// `timestamp` are deliberately not compared: both are generated per attempt
+/// and neither moves value.
+fn order_matches_draft(
+    order: &Order,
+    draft: &StoreTradeDraft,
+    token_id: U256,
+    funder: Address,
+) -> Result<(), DispatchResponse> {
+    let mismatch = |field: &str| {
+        Err(error(
+            -4,
+            format!(
+                "prepared order's {field} is not this draft's; it would sign an order the review never covered"
+            ),
+        ))
+    };
+    if order.tokenId != token_id {
+        return mismatch("token");
+    }
+    if order.makerAmount != U256::from(draft.maker_micro) {
+        return mismatch("maker amount");
+    }
+    if order.takerAmount != U256::from(draft.taker_micro) {
+        return mismatch("taker amount");
+    }
+    if order.side != draft.side as u8 {
+        return mismatch("side");
+    }
+    // Both are the funder in a well-formed order. An artifact naming another
+    // maker signs over a wallet the owner's review never covered, even if the
+    // venue would go on to reject the signature.
+    if order.maker != funder || order.signer != funder {
+        return mismatch("maker wallet");
+    }
+    if order.signatureType != SIG_TYPE_POLY_1271 {
+        return mismatch("signature type");
+    }
+    Ok(())
 }
 
 /// Refuses when a builder-coded order's fee or beneficiary has moved away from
@@ -1093,6 +1216,125 @@ mod builder_fee_retry_tests {
     /// The fee checks all reason about amounts, so none of them can see the
     /// recipient change. An artifact repointed to another builder keeps every
     /// figure the draft agreed to and pays somebody else.
+    /// A ceiling zero on the paying side charges nothing, so the fee-free
+    /// route is where such an order belongs. Refusing it there as well, which
+    /// is what the code did, left a maker-only builder with no route at all
+    /// for a FAK or FOK order.
+    #[test]
+    fn a_code_that_charges_nothing_does_not_belong_on_the_fee_bearing_route() {
+        use crate::trade_flow_parts::pricing::{SpendFeeAttribution, SpendFeeInputs};
+        let attribution = |builder_bps| SpendFeeAttribution {
+            inputs: SpendFeeInputs { builder_bps },
+            code_hex: "0xabc".to_owned(),
+        };
+        assert!(!code_charges_this_order(None), "no code charges nothing");
+        assert!(
+            !code_charges_this_order(Some(&attribution(0))),
+            "a zero rate on the paying side charges nothing"
+        );
+        assert!(
+            code_charges_this_order(Some(&attribution(1))),
+            "a nonzero rate must take the fee-bearing route"
+        );
+    }
+
+    const FUNDER: &str = "0x0000000000000000000000000000000000000002";
+
+    fn order_for(draft: &StoreTradeDraft, builder_code: Option<B256>) -> Order {
+        build_order(
+            &OrderParams {
+                token_id: draft.token_id.parse().expect("token id"),
+                maker: FUNDER.parse().expect("funder"),
+                quote: LimitQuote {
+                    side: draft.side,
+                    price_micro: draft.limit_price_micro,
+                    size_micro: draft.size_micro,
+                    maker_micro: draft.maker_micro,
+                    taker_micro: draft.taker_micro,
+                },
+                builder_code,
+                signature_type: SIG_TYPE_POLY_1271,
+            },
+            1_700_000_000_000,
+        )
+    }
+
+    /// The fee-free class declares no fee and its ceremony names no
+    /// beneficiary, so an order carrying a code under it is charged by the
+    /// venue and paid to whoever owns that code, with the owner shown
+    /// nothing. The fresh path cannot build one; a stored artifact can, and
+    /// the digest check cannot catch it because an artifact and its hash are
+    /// one object.
+    #[test]
+    fn a_fee_free_order_may_not_carry_a_builder_code() {
+        let draft = draft_for(100, 100_000);
+        assert!(plain_order_carries_no_code(&order_for(&draft, None)).is_ok());
+        assert!(
+            plain_order_carries_no_code(&order_for(&draft, Some(B256::repeat_byte(0xab)))).is_err(),
+            "a fee-free order carrying a code must not be signed"
+        );
+    }
+
+    /// On a resume every field of the order comes out of the stored artifact,
+    /// and the digest check only proves the artifact agrees with itself.
+    /// Nothing pinned the order to the draft the owner reviewed.
+    #[test]
+    fn a_resumed_order_must_be_the_order_its_draft_describes() {
+        let draft = draft_for(100, 100_000);
+        let token_id: U256 = draft.token_id.parse().expect("token id");
+        let funder: Address = FUNDER.parse().expect("funder");
+        let honest = order_for(&draft, None);
+        order_matches_draft(&honest, &draft, token_id, funder).expect("the honest order matches");
+
+        // Each of these is free on the resume path, and each changes what the
+        // owner pays or what they get, while `salt` and `timestamp` are
+        // deliberately not compared.
+        type Swap = (&'static str, Box<dyn Fn(&mut Order)>);
+        let swaps: Vec<Swap> = vec![
+            (
+                "token",
+                Box::new(|o: &mut Order| o.tokenId = U256::from(999u64)),
+            ),
+            (
+                "maker amount",
+                Box::new(|o: &mut Order| o.makerAmount = U256::from(900_000_000u64)),
+            ),
+            (
+                "taker amount",
+                Box::new(|o: &mut Order| o.takerAmount = U256::from(1u64)),
+            ),
+            ("side", Box::new(|o: &mut Order| o.side ^= 1)),
+            (
+                "maker wallet",
+                Box::new(|o: &mut Order| o.maker = Address::repeat_byte(0x99)),
+            ),
+            (
+                "signer",
+                Box::new(|o: &mut Order| o.signer = Address::repeat_byte(0x99)),
+            ),
+            (
+                "signature type",
+                Box::new(|o: &mut Order| o.signatureType = 1),
+            ),
+        ];
+        for (name, swap) in swaps {
+            let mut tampered = honest.clone();
+            swap(&mut tampered);
+            assert!(
+                order_matches_draft(&tampered, &draft, token_id, funder).is_err(),
+                "a swapped {name} must not be signed"
+            );
+        }
+
+        // Per-attempt values must NOT refuse, or no resume could ever post.
+        for mut regenerated in [honest.clone(), honest.clone()] {
+            regenerated.salt = U256::from(12_345u64);
+            regenerated.timestamp = U256::from(1_800_000_000_000u64);
+            order_matches_draft(&regenerated, &draft, token_id, funder)
+                .expect("salt and timestamp are regenerated per attempt");
+        }
+    }
+
     #[test]
     fn a_prepared_builder_order_repointed_to_another_code_is_refused() {
         let mut repointed = preimage(100, "10000000", "100000");

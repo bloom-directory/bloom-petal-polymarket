@@ -175,26 +175,160 @@ pub fn append_trade_audit(
 /// reaching a signature; this is what makes the change itself visible
 /// afterwards, named and timed rather than inferred from a later balance.
 pub fn append_builder_settings_audit(event: &str, details: serde_json::Value) -> DispatchResponse {
-    append_audit_line(BUILDER_SETTINGS_AUDIT_KEY, event, details)
+    let text = match petal::sdk::store_get(BUILDER_SETTINGS_AUDIT_KEY, MAX_STORE_BYTES) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(SdkError::Host(HostStatus::NotFound)) => String::new(),
+        Err(e) => return sdk_error(e),
+    };
+    let body = builder_settings_audit_body(&text, event, details, now_millis());
+    match petal::sdk::store_put(BUILDER_SETTINGS_AUDIT_KEY, body.as_bytes(), false) {
+        Ok(()) => DispatchResponse::Write,
+        Err(e) => sdk_error(e),
+    }
 }
 
-/// The most recent builder attribution changes, oldest first.
+/// Lines kept in the settings record.
 ///
-/// Surfaced through `settings/builder-code-status.json`, because a record no
-/// route can read is no record at all. Absent or unreadable reads as empty:
-/// the status view is the fee configuration, not the log.
-pub fn builder_settings_audit_tail(limit: usize) -> Vec<serde_json::Value> {
-    let Ok(bytes) = petal::sdk::store_get(BUILDER_SETTINGS_AUDIT_KEY, MAX_STORE_BYTES) else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text
-        .lines()
+/// A bound is not a nicety. `store_get` fails with `BufferTooSmall` once a
+/// value passes the limit it is given, and nothing rotates this key, so an
+/// unbounded log would eventually make every later setting change fail to
+/// record *after it had already applied*, permanently, with no route able to
+/// prune it. At roughly 140 bytes a line this stays well under the 1 MiB read.
+const MAX_BUILDER_SETTINGS_AUDIT_LINES: usize = 2_000;
+
+fn audit_lines(text: &str) -> Vec<&str> {
+    text.lines()
         .filter(|line| !line.trim().is_empty())
-        .collect();
+        .collect()
+}
+
+/// The record's next state: the change appended, sequenced, and the oldest
+/// lines dropped once the bound is reached.
+///
+/// Pure, and taking the clock as an argument, because the store read and write
+/// around it have no double in this suite — this is the part that can be held
+/// to behaving.
+fn builder_settings_audit_body(
+    text: &str,
+    event: &str,
+    details: serde_json::Value,
+    ts_ms: u128,
+) -> String {
+    let mut lines = audit_lines(text);
+    // Sequenced, because a window onto the end of a log can be emptied by
+    // filling it: twenty more changes push a repointed code out of view. The
+    // numbers survive trimming, so a tail starting at 68 says plainly that 67
+    // changes came before it rather than reading as the whole history.
+    let seq = audit_last_seq(&lines).saturating_add(1);
+    let line = serde_json::json!({
+        "seq": seq,
+        "ts_ms": ts_ms,
+        "event": event,
+        "details": details,
+    })
+    .to_string();
+    lines.push(&line);
+    let mut body = lines[lines.len().saturating_sub(MAX_BUILDER_SETTINGS_AUDIT_LINES)..].join("\n");
+    body.push('\n');
+    body
+}
+
+fn audit_last_seq(lines: &[&str]) -> u64 {
+    lines
+        .last()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .and_then(|line| line.get("seq").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0)
+}
+
+fn audit_tail_from_text(text: &str, limit: usize) -> Vec<serde_json::Value> {
+    let lines = audit_lines(text);
     lines
         .iter()
         .skip(lines.len().saturating_sub(limit))
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+/// The most recent builder attribution changes, oldest first, or `None` when
+/// the record exists but could not be read.
+///
+/// The distinction is the point. Reporting an unreadable log as an empty one
+/// renders "nothing has ever changed" and "the history is gone" identically,
+/// which is the more comfortable of the two readings and the wrong one.
+pub fn builder_settings_audit_tail(limit: usize) -> Option<Vec<serde_json::Value>> {
+    let bytes = match petal::sdk::store_get(BUILDER_SETTINGS_AUDIT_KEY, MAX_STORE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SdkError::Host(HostStatus::NotFound)) => return Some(Vec::new()),
+        Err(_) => return None,
+    };
+    Some(audit_tail_from_text(
+        &String::from_utf8_lossy(&bytes),
+        limit,
+    ))
+}
+
+#[cfg(test)]
+mod builder_settings_audit_tests {
+    use super::*;
+
+    fn append(text: &str, event: &str) -> String {
+        builder_settings_audit_body(text, event, serde_json::json!({}), 7)
+    }
+
+    /// A window onto the end of the log can be emptied by filling it, so the
+    /// numbers have to say how much came before. They must survive the trim
+    /// that keeps the log readable at all.
+    #[test]
+    fn changes_are_sequenced_and_the_numbers_survive_trimming() {
+        let mut text = String::new();
+        for _ in 0..(MAX_BUILDER_SETTINGS_AUDIT_LINES + 25) {
+            text = append(&text, "builder_code_set");
+        }
+        let lines = audit_lines(&text);
+        assert_eq!(
+            lines.len(),
+            MAX_BUILDER_SETTINGS_AUDIT_LINES,
+            "the record must stay bounded, or it eventually stops recording at all"
+        );
+        assert_eq!(
+            audit_last_seq(&lines),
+            (MAX_BUILDER_SETTINGS_AUDIT_LINES + 25) as u64,
+            "the sequence must keep counting through a trim"
+        );
+        let tail = audit_tail_from_text(&text, 20);
+        assert_eq!(tail.len(), 20);
+        let seq_of =
+            |entry: &serde_json::Value| entry.get("seq").and_then(serde_json::Value::as_u64);
+        // The tail must be the LAST 20, not the first 20: the recent changes
+        // are the point, and a window onto the oldest ones would hide every
+        // change made since.
+        let total = (MAX_BUILDER_SETTINGS_AUDIT_LINES + 25) as u64;
+        assert_eq!(seq_of(tail.last().unwrap()), Some(total), "{tail:?}");
+        assert_eq!(seq_of(&tail[0]), Some(total - 19), "{tail:?}");
+    }
+
+    #[test]
+    fn a_tail_skips_blank_and_malformed_lines_and_reads_oldest_first() {
+        let text = format!(
+            "\n{{not json\n{}\n",
+            append("", "builder_fee_ceiling_set").trim()
+        );
+        let tail = audit_tail_from_text(&text, 20);
+        assert_eq!(tail.len(), 1, "{tail:?}");
+        assert_eq!(
+            tail[0].get("event").and_then(serde_json::Value::as_str),
+            Some("builder_fee_ceiling_set")
+        );
+
+        let two = append(&append("", "builder_code_set"), "builder_code_cleared");
+        let tail = audit_tail_from_text(&two, 20);
+        assert_eq!(
+            tail.iter()
+                .filter_map(|line| line.get("seq").and_then(serde_json::Value::as_u64))
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "oldest first"
+        );
+    }
 }

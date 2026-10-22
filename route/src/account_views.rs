@@ -281,6 +281,7 @@ pub fn read_builder_code_status() -> DispatchResponse {
         Ok(ceiling) => ceiling,
         Err(resp) => return resp,
     };
+    let changes = builder_settings_audit_tail(20);
     let status = crate::builder_code::builder_code_status(override_code.as_deref());
     let ceiling = crate::builder_code::resolve_fee_ceiling(
         crate::builder_code::RELEASE_DEFAULT_FEE_CEILING,
@@ -297,7 +298,11 @@ pub fn read_builder_code_status() -> DispatchResponse {
         })),
         // Both settings above are agent-writable, so the owner gets the
         // history beside the current value rather than having to ask for it.
-        "recent_changes": builder_settings_audit_tail(20),
+        // Null rather than empty when the record cannot be read, so a lost
+        // history does not render as a quiet one. `seq` numbers the changes,
+        // so a tail that does not begin at 1 says how many preceded it.
+        "recent_changes": changes,
+        "recent_changes_readable": changes.is_some(),
     }))
 }
 

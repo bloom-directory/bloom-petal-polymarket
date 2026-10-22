@@ -128,20 +128,50 @@ placed: a configured code owes a fee, the fee-free route refuses it, and the
 fee-bearing route refuses a code with no ceiling. Both routes fail closed with
 the setting to write named in the error. One write recovers.
 
+A ceiling may be zero on one side. When it is zero on the side an order pays —
+a maker-only builder taking a FAK or FOK order — that order owes nothing, so it
+posts through `post`, unattributed and carrying no code. The fee-bearing route
+will not declare a zero fee, and refusing the order on both routes would leave
+such a builder unable to trade at all.
+
 `settings/builder-code` writes an operator override (any hex string up to 32
 bytes, with or without `0x`) that takes precedence over the release default,
 or clear it with an empty body; `settings/builder-code-status.json` reports
 which one (if either) is currently in effect.
 
 Both that code and its ceiling decide who is paid and how much, and both are
-ordinary agent writes. Two things bound that. Every change is appended to a
-package-global record and reported as `recent_changes` by
-`settings/builder-code-status.json`, so a repointed beneficiary is visible
-rather than inferred from a later balance. And a draft records the code and the
-fee it was quoted against, so a change after the agent revalidated is refused
-at post time on both the fresh and the resumed path, naming the revalidation
-that recovers it — the owner's per-order approval states the beneficiary either
-way, but a review that never named it could not disagree with one.
+ordinary agent writes.
+
+**What bounds that is the owner's per-order ceremony, and only that.** The
+Machine is inside the threat model — the Sealed Approvals architecture says in
+as many words that a compromised Petal or Machine may lie within the claim's
+trust model — and every store object the flow reads is a file that Machine can
+write. So the ceremony states the trade as well as its cost: side, size,
+market, outcome and limit price alongside the builder code, the rate, the fee
+and what the total covers. It used to name the fee and nothing else, which made
+two orders differing in every economic respect but equal in notional produce
+byte-identical approval text. Venue-supplied text in that advisory is stripped
+of control characters and quotes and truncated, so a market title cannot forge
+a line of it.
+
+What the Petal adds on top is consistency, so an honest flow cannot drift and a
+dishonest one has to be deliberate. The signed order is pinned to the draft the
+owner reviewed — token, amounts, side, maker wallet and signature type — which
+is what stops a resumed post naming a different trade; a fee-free order may not
+carry a builder code at all, since its ceremony declares no fee and names no
+beneficiary; the review intent names the code and the fee, so a change between
+the agent's revalidation and the signature fails the comparison; and a resumed
+builder-coded post reads its fee back from the artifact rather than recomputing
+it. The digest cross-check between the reconstructed order and the signed hash
+catches corruption, not an adversary: a preimage and its hash are one object.
+
+Changes to either setting are appended to a package-global record, sequenced,
+bounded, and reported as `recent_changes` by
+`settings/builder-code-status.json`. It is an operational record, **not** a
+tamper-evident one: anything that can write the settings can write the record.
+It is reported as `null` rather than empty when it cannot be read, so a lost
+history does not read as a quiet one, and the sequence numbers mean a tail that
+does not begin at 1 says how many changes preceded it.
 
 ## Account-scoped routes
 
