@@ -447,6 +447,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
+                // Recorded so the daily cap measures what left the wallet. A
+                // plain order genuinely owes nothing, so zero is truthful.
+                fee_microusd: draft
+                    .builder_fee_micro
+                    .unwrap_or(0)
+                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -489,6 +495,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
+                // Recorded so the daily cap measures what left the wallet. A
+                // plain order genuinely owes nothing, so zero is truthful.
+                fee_microusd: draft
+                    .builder_fee_micro
+                    .unwrap_or(0)
+                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -535,6 +547,12 @@ fn post_trade_draft_in_class(
                     funder: Some(funder.to_checksum(None)),
                     signature_type: SIG_TYPE_POLY_1271,
                     amount_microusd: draft.amount_micro,
+                    // Recorded so the daily cap measures what left the wallet. A
+                    // plain order genuinely owes nothing, so zero is truthful.
+                    fee_microusd: draft
+                        .builder_fee_micro
+                        .unwrap_or(0)
+                        .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
                     limit_price_micro: draft.limit_price_micro,
                     size_micro: draft.size_micro,
                     salt,
@@ -595,6 +613,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
+                // Recorded so the daily cap measures what left the wallet. A
+                // plain order genuinely owes nothing, so zero is truthful.
+                fee_microusd: draft
+                    .builder_fee_micro
+                    .unwrap_or(0)
+                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,

@@ -195,6 +195,7 @@ mod tests {
             .parse()
             .unwrap();
         let policy_check = serde_json::json!({"policy_status": "ok"});
+        let fee_fields = crate::trade_flow_parts::revalidate::review_fee_fields(&draft);
         let review = serde_json::json!({
             "wallet": draft.wallet,
             "draft_id": draft.id,
@@ -210,9 +211,11 @@ mod tests {
             "size": crate::polymarket::order::format_micro(draft.size_micro),
             "maker": crate::polymarket::order::format_micro(draft.maker_micro),
             "taker": crate::polymarket::order::format_micro(draft.taker_micro),
-            "builder_fee": "0.1",
-            "builder_fee_rate_bps": "100",
-            "platform_fee": "0.075",
+            // Built from the same helper the writer uses, so this fixture
+            // cannot drift from production the way the first one did.
+            "builder_fee": fee_fields[0].1.clone(),
+            "builder_fee_rate_bps": fee_fields[1].1.clone(),
+            "platform_fee": fee_fields[2].1.clone(),
             "policy_status": "ok",
             "neg_risk": draft.neg_risk,
         });
@@ -236,6 +239,93 @@ mod tests {
                 "a fee-only change must not pass the review comparison"
             );
         }
+    }
+
+    /// With no builder code the three fee fields are absent, and the writer
+    /// used to emit JSON `null` while the comparison read a string, so no post
+    /// could match at all — including a plain order, which worked before fees
+    /// existed. The fields are strings on both sides now; this holds it.
+    #[test]
+    fn a_draft_with_no_builder_code_still_matches_its_own_review() {
+        use crate::trade_flow_parts::revalidate::{review_fee_fields, review_intent_matches_draft};
+        let mut draft = draft();
+        draft.side = Side::Buy;
+        assert_eq!(draft.builder_fee_micro, None);
+        let fee_fields = review_fee_fields(&draft);
+        assert_eq!(fee_fields[0].1, "none");
+        assert_eq!(fee_fields[1].1, "none");
+        assert_eq!(fee_fields[2].1, "unread");
+
+        let owner: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let funder: Address = "0x0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let review = serde_json::json!({
+            "wallet": draft.wallet,
+            "draft_id": draft.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": draft.slug,
+            "condition_id": draft.condition_id,
+            "outcome": draft.outcome,
+            "token_id": draft.token_id,
+            "side": "BUY",
+            "order_type": draft.order_type.as_str(),
+            "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+            "size": crate::polymarket::order::format_micro(draft.size_micro),
+            "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+            "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+            "builder_fee": fee_fields[0].1.clone(),
+            "builder_fee_rate_bps": fee_fields[1].1.clone(),
+            "platform_fee": fee_fields[2].1.clone(),
+            "policy_status": "ok",
+            "neg_risk": draft.neg_risk,
+        });
+        review_intent_matches_draft(
+            &review,
+            &draft,
+            owner,
+            funder,
+            &serde_json::json!({"policy_status": "ok"}),
+            None,
+        )
+        .expect("a plain order must be postable");
+    }
+
+    /// The daily cap's fee term was dead: `StoreTradeReceipt` had no fee
+    /// field, so the sum always added zero. A receipt must carry it, and the
+    /// policy view must read the same field off the serialized form.
+    #[test]
+    fn a_receipt_records_its_fee_and_the_policy_view_reads_it() {
+        let receipt = serde_json::json!({
+            "draft_id": "0001",
+            "wallet": "alice",
+            "slug": "example",
+            "token_id": "111",
+            "side": "BUY",
+            "order_type": "FAK",
+            "funder": null,
+            "signature_type": 3,
+            "amount_microusd": 10_000_000,
+            "fee_microusd": 175_000,
+            "limit_price_micro": 500_000,
+            "size_micro": 20_000_000,
+            "clob_status": "matched",
+            "posted_ms": 1_u64,
+        });
+        let view: crate::app_types::StoreTradeReceiptPolicy =
+            serde_json::from_value(receipt.clone()).expect("the policy view reads a receipt");
+        assert_eq!(view.amount_microusd, 10_000_000);
+        assert_eq!(view.fee_microusd, 175_000, "the fee term must not be dead");
+
+        // A receipt written before fees were accounted still parses as zero.
+        let mut old = receipt;
+        old.as_object_mut().unwrap().remove("fee_microusd");
+        let view: crate::app_types::StoreTradeReceiptPolicy =
+            serde_json::from_value(old).expect("an older receipt must still parse");
+        assert_eq!(view.fee_microusd, 0);
     }
 
     #[test]

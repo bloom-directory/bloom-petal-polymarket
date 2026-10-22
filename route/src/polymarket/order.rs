@@ -360,9 +360,16 @@ impl LimitQuote {
         tick_micro: u64,
         fee_micro: &dyn Fn(u64) -> Result<u64>,
     ) -> Result<Self> {
-        let mut budget = spend_micro;
-        // Each step drops the budget by one cent, the makerAmount grid, so this
-        // terminates; the pre-scale normally makes the first candidate fit.
+        // Pre-scale once, which is what makes this exact rather than a search.
+        // Fees are non-decreasing in notional, and `market_buy_from_spend`
+        // only rounds its budget down, so for `budget = spend - fees(spend)`
+        // the candidate satisfies
+        //   maker + fees(maker) <= budget + fees(budget) <= spend
+        // and the first iteration returns. The loop remains only so a
+        // non-monotonic pricer cannot produce a quote that fails the check;
+        // without the pre-scale it had to walk down a cent at a time and gave
+        // up after $10.24, refusing any order whose fees exceeded that.
+        let mut budget = spend_micro.saturating_sub(fee_micro(spend_micro)?);
         for _ in 0..1024 {
             let candidate = Self::market_buy_from_spend(budget, price_micro, tick_micro)?;
             let fees = fee_micro(candidate.maker_micro)?;
@@ -725,6 +732,33 @@ mod tests {
             // The grids the unscaled function owns are untouched.
             assert_eq!(quote.maker_micro % 10_000, 0, "spend {spend}");
             assert!(quote.taker_micro > 0, "spend {spend}");
+        }
+    }
+
+    /// Walking the budget down a cent at a time capped the reduction at
+    /// $10.24, so any buy whose fees exceeded that was refused outright. These
+    /// spends all need more than that.
+    #[test]
+    fn a_large_fee_aware_market_buy_is_sized_rather_than_refused() {
+        let fee = |notional: u64| -> Result<u64> {
+            Ok(u64::try_from((u128::from(notional) * 100).div_ceil(10_000)).expect("fits"))
+        };
+        for spend in [2_000_000_000_u64, 10_000_000_000, 123_456_789_000] {
+            let quote =
+                LimitQuote::market_buy_from_spend_with_fees(spend, 500_000, 10_000, &fee).unwrap();
+            let fees = fee(quote.maker_micro).unwrap();
+            assert!(
+                quote.maker_micro + fees <= spend,
+                "spend {spend}: maker {} + fees {fees} exceeds it",
+                quote.maker_micro
+            );
+            // The reduction must be proportionate, not a flat few cents.
+            assert!(
+                quote.maker_micro > spend - spend / 50,
+                "spend {spend}: reduced too far to {}",
+                quote.maker_micro
+            );
+            assert_eq!(quote.maker_micro % 10_000, 0, "spend {spend}");
         }
     }
 

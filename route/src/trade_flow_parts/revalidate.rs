@@ -157,6 +157,7 @@ pub fn revalidate_trade_draft(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_string();
+    let review_fee = review_fee_fields(&draft);
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/quote.json"),
         &serde_json::json!({
@@ -175,9 +176,10 @@ pub fn revalidate_trade_draft(
             "maker": format_micro(draft.maker_micro),
             "taker_micro": draft.taker_micro,
             "taker": format_micro(draft.taker_micro),
-            "builder_fee_rate_bps": draft.builder_fee_rate_bps,
-            "builder_fee": draft.builder_fee_micro.map(format_micro),
-            "platform_fee": draft.platform_fee_micro.map(format_micro),
+            // Display only; the compared copy is in review_intent.json.
+            "builder_fee": review_fee[0].1.clone(),
+            "builder_fee_rate_bps": review_fee[1].1.clone(),
+            "platform_fee": review_fee[2].1.clone(),
             "tick_micro": draft.tick_micro,
             "tick": format_micro(draft.tick_micro),
             "min_order_size_micro": draft.min_order_size_micro,
@@ -250,6 +252,7 @@ pub fn revalidate_trade_draft(
         .get("posting_enabled")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let review_fee = review_fee_fields(&draft);
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/review_intent.json"),
         &serde_json::json!({
@@ -267,9 +270,10 @@ pub fn revalidate_trade_draft(
             "size": format_micro(draft.size_micro),
             "maker": format_micro(draft.maker_micro),
             "taker": format_micro(draft.taker_micro),
-            "builder_fee_rate_bps": draft.builder_fee_rate_bps,
-            "builder_fee": draft.builder_fee_micro.map(format_micro),
-            "platform_fee": draft.platform_fee_micro.map(format_micro),
+            // Emitted through the same helper the comparison uses.
+            "builder_fee": review_fee[0].1.clone(),
+            "builder_fee_rate_bps": review_fee[1].1.clone(),
+            "platform_fee": review_fee[2].1.clone(),
             "neg_risk": draft.neg_risk,
             "policy_status": policy_status,
             "sell_preflight": sell_preflight,
@@ -359,6 +363,7 @@ pub fn refresh_trade_post_inputs(
         .get("policy_deny")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let review_fee = review_fee_fields(draft);
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/quote.json"),
         &serde_json::json!({
@@ -377,9 +382,10 @@ pub fn refresh_trade_post_inputs(
             "maker": format_micro(draft.maker_micro),
             "taker_micro": draft.taker_micro,
             "taker": format_micro(draft.taker_micro),
-            "builder_fee_rate_bps": draft.builder_fee_rate_bps,
-            "builder_fee": draft.builder_fee_micro.map(format_micro),
-            "platform_fee": draft.platform_fee_micro.map(format_micro),
+            // Display only; the compared copy is in review_intent.json.
+            "builder_fee": review_fee[0].1.clone(),
+            "builder_fee_rate_bps": review_fee[1].1.clone(),
+            "platform_fee": review_fee[2].1.clone(),
             "tick_micro": draft.tick_micro,
             "tick": format_micro(draft.tick_micro),
             "min_order_size_micro": draft.min_order_size_micro,
@@ -436,6 +442,38 @@ pub fn refresh_trade_post_inputs(
     Ok((policy_check, sell_preflight))
 }
 
+/// The fee fields the review intent carries and the comparison checks.
+///
+/// One source for both, because they drifted: the writer emitted a JSON number
+/// and `null`, the comparison read `as_str()`, and no post could ever match.
+/// Values are strings so a missing fee is distinguishable from an unread one
+/// and from a real zero.
+pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 3] {
+    [
+        (
+            "builder_fee",
+            draft
+                .builder_fee_micro
+                .map(format_micro)
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+        (
+            "builder_fee_rate_bps",
+            draft
+                .builder_fee_rate_bps
+                .map(|bps| bps.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+        (
+            "platform_fee",
+            draft
+                .platform_fee_micro
+                .map(format_micro)
+                .unwrap_or_else(|| "unread".to_owned()),
+        ),
+    ]
+}
+
 pub fn review_intent_matches_draft(
     review: &serde_json::Value,
     draft: &StoreTradeDraft,
@@ -467,32 +505,14 @@ pub fn review_intent_matches_draft(
         ("size", format_micro(draft.size_micro)),
         ("maker", format_micro(draft.maker_micro)),
         ("taker", format_micro(draft.taker_micro)),
-        // Load-bearing: for a sell or a limit buy a ceiling change does not
-        // move `maker` or `taker`, so without these a fee change between the
-        // review the agent showed and the signature would pass unnoticed.
-        (
-            "builder_fee",
-            draft
-                .builder_fee_micro
-                .map(format_micro)
-                .unwrap_or_else(|| "none".to_owned()),
-        ),
-        (
-            "builder_fee_rate_bps",
-            draft
-                .builder_fee_rate_bps
-                .map(|bps| bps.to_string())
-                .unwrap_or_else(|| "none".to_owned()),
-        ),
-        (
-            "platform_fee",
-            draft
-                .platform_fee_micro
-                .map(format_micro)
-                .unwrap_or_else(|| "unread".to_owned()),
-        ),
         ("policy_status", policy_status.to_string()),
-    ] {
+    ]
+    .into_iter()
+    // Load-bearing: for a sell or a limit buy a ceiling change does not move
+    // `maker` or `taker`, so without the fee a change between the review the
+    // agent showed and the signature would pass unnoticed.
+    .chain(review_fee_fields(draft))
+    {
         if review.get(field).and_then(serde_json::Value::as_str) != Some(expected.as_str()) {
             return Err(format!(
                 "final review field '{field}' no longer matches live post inputs"

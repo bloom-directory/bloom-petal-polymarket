@@ -242,6 +242,11 @@ pub struct StoreTradeReceipt {
     pub funder: Option<String>,
     pub signature_type: u8,
     pub amount_microusd: u64,
+    /// Fees charged on this order, so the daily cap measures what actually
+    /// left the wallet. `#[serde(default)]` for receipts written before fees
+    /// were accounted; the policy view reads the same field.
+    #[serde(default)]
+    pub fee_microusd: u64,
     pub limit_price_micro: u64,
     pub size_micro: u64,
     pub salt: u64,
