@@ -197,28 +197,19 @@ impl SpendFeeInputs {
 pub fn quoted_fee_fields(
     fees: Option<SpendFeeInputs>,
     quote: &LimitQuote,
-    best_bid_micro: Option<u64>,
 ) -> (Option<u16>, Option<u64>) {
     let Some(fees) = fees else {
         return (None, None);
     };
-    // The SAME notional the claim declares. Using `usd_leg` here instead gave
-    // a sell the limit notional while the claim used the better of the limit
-    // and the book, so the plan, the review intent and the policy cap could
-    // all show a tenth of the declared fee, and the review comparison could
-    // not see it because both sides shared the wrong formula.
-    let notional = match crate::builder_fee::fee_notional_micro(quote, best_bid_micro) {
-        Ok(notional) => notional,
-        Err(_) => return (Some(fees.builder_bps), None),
-    };
+    // The SAME notional the claim declares, so the plan, the review intent
+    // and the policy cap cannot disagree with what gets signed.
+    let notional = crate::builder_fee::fee_notional_micro(quote);
     let builder = crate::builder_code::builder_fee_ceiling_micro(notional, fees.builder_bps).ok();
     (Some(fees.builder_bps), builder)
 }
 
-/// A one-line fee summary for the owner-facing plan.
-///
-/// An unread platform rate is named rather than shown as nothing, because a
-/// market whose fee could not be read is not a market that charges nothing.
+/// A one-line fee summary for the owner-facing plan. Covers the builder fee
+/// only; Polymarket's own fee is named as separate, not folded in.
 pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
     let Some(builder) = draft.builder_fee_micro else {
         return "none (no builder code configured)".to_owned();

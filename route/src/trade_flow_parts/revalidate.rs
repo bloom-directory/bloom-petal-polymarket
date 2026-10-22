@@ -123,11 +123,8 @@ pub fn revalidate_trade_draft(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee) = crate::trade_flow_parts::pricing::quoted_fee_fields(
-        spend_fees,
-        &quote,
-        draft.best_bid_micro,
-    );
+    let (rate_bps, builder_fee) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
     if draft.side == Side::Sell {
@@ -335,11 +332,8 @@ pub fn refresh_trade_post_inputs(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee) = crate::trade_flow_parts::pricing::quoted_fee_fields(
-        spend_fees,
-        &quote,
-        draft.best_bid_micro,
-    );
+    let (rate_bps, builder_fee) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
     if draft.side == Side::Sell {

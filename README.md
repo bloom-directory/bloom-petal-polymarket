@@ -15,7 +15,7 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 111 route components. Directory endpoints use
+The route tree currently builds 113 route components. Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 

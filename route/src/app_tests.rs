@@ -158,14 +158,40 @@ mod tests {
         );
     }
 
-    /// A spend cap should bound what leaves the wallet. Measuring the order's
-    /// notional alone would let the fees push the real spend past the cap.
+    /// A spend cap should bound what leaves the wallet. Testing only the
+    /// helper left every call site free to go back to the bare notional, so
+    /// this drives the evaluator and asserts the cap actually denies.
     #[test]
-    fn a_spend_cap_measures_the_notional_plus_its_fees() {
-        let mut ctx = policy_ctx();
+    fn a_spend_cap_denies_when_the_fee_pushes_the_order_over_it() {
+        use crate::trade_flow_parts::policy::evaluate_local_polymarket_order;
+        let policy = crate::app_types::PolymarketVenueConfig {
+            enabled: true,
+            max_order_usd: Some(10_000_000),
+            ..Default::default()
+        };
+
+        // Notional alone is exactly at the cap: allowed.
+        let ctx = policy_ctx();
         assert_eq!(ctx.total_spend_microusd(), 10_000_000);
-        ctx.fee_microusd = 175_000;
-        assert_eq!(ctx.total_spend_microusd(), 10_175_000);
+        let denied = |checks: Vec<crate::app_types::LocalPolicyCheck>| {
+            checks.iter().any(|check| {
+                check.rule == "polymarket.max_order_usd"
+                    && matches!(check.outcome, crate::app_types::LocalPolicyOutcome::Deny)
+            })
+        };
+        assert!(
+            !denied(evaluate_local_polymarket_order(&policy, &ctx)),
+            "notional at the cap must be allowed"
+        );
+
+        // The same notional with a fee is over it, and must be denied.
+        let mut with_fee = policy_ctx();
+        with_fee.fee_microusd = 1;
+        assert_eq!(with_fee.total_spend_microusd(), 10_000_001);
+        assert!(
+            denied(evaluate_local_polymarket_order(&policy, &with_fee)),
+            "the cap must measure the fee, not just the notional"
+        );
     }
 
     /// For a sell or a limit buy a ceiling change does not move `maker` or

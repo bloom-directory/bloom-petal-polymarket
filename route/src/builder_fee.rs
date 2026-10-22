@@ -1,23 +1,29 @@
 //! Bounding what a builder-coded order can cost the owner.
 //!
-//! Neither fee Polymarket charges is in the signed order. The Fees Service
-//! prices both at match time and the Builders Service accrues the builder
-//! share from indexed `OrderFilled` events, so nothing the owner signs commits
-//! the venue to an amount. What the owner can be given instead is a **ceiling**
-//! that never understates, computed from the configured builder rate and the
-//! market's published platform rate, and `makerAmount` — which *is* signed —
-//! sized so the order plus those fees fits the spend they approved.
+//! Polymarket charges two fees and neither is in the signed order: both are
+//! priced by its services at match time, so nothing the owner signs commits
+//! the venue to an amount. What the owner can be given is a **ceiling** on the
+//! one fee this Petal can compute, and `makerAmount` — which *is* signed —
+//! sized so the order plus that ceiling fits the spend they approved.
 //!
-//! Two layers, with different availability:
-//!
-//! - **Builder fee**: `notional * rate_bps / 10_000`, flat and additive. No API
-//!   serves a builder profile's registered rates, so the rate is the operator's
-//!   declared ceiling (see [`crate::builder_code::BuilderFeeCeilingBps`]).
-//! - **Platform fee**: `C * feeRate * p * (1 - p)`, taker only, per market, read
-//!   from `getClobMarketInfo`.
+//! - **Builder fee**: `notional * rate_bps / 10_000`, flat. Fully specified by
+//!   Polymarket's documentation, with a worked example confirming notional
+//!   means pUSD. No API serves a builder profile's registered rates, so the
+//!   rate is the operator's declared ceiling (see
+//!   [`crate::builder_code::BuilderFeeCeilingBps`]). This is the leg declared
+//!   in the claim and sized against.
+//! - **Platform fee**: not computed here at all. Three of its inputs are
+//!   unresolved: the documentation defines its first term only as "the trade
+//!   size" and never links it to notional the way the builder section does,
+//!   giving no worked example to disambiguate shares from pUSD; the exponent's
+//!   meaning is unverified; and its `p * (1 - p)` factor peaks at $0.50 rather
+//!   than rising with price, so pricing it at an order's limit understated
+//!   real fills by 3-5x in an earlier revision. The owner is told it is
+//!   charged separately and sits outside the bound, which is true where a
+//!   number would not be.
 use crate::builder_code::{BuilderFeeCeilingBps, bps_percent_string, builder_fee_ceiling_micro};
 use crate::polymarket::Side;
-use crate::polymarket::order::{LimitQuote, MICRO, OrderType, format_micro};
+use crate::polymarket::order::{LimitQuote, OrderType, format_micro};
 
 /// Which side's rate a builder fee is bounded by, and why.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,25 +75,23 @@ impl FeeBound {
 /// The pUSD notional a fee is charged on.
 ///
 /// A buy's `maker_micro` is the most pUSD the maker can give, so it bounds the
-/// buy exactly. A sell is different: `taker_micro` is derived from the limit,
-/// but a taker sell can match at the maker's better price, so realized pUSD can
-/// exceed it. Bound a sell by the better of its limit and what the book would
-/// pay, clamped at $1 per share because an outcome share cannot fill above par.
-/// A builder-coded sell with no bid has no bound at all and is refused.
-pub fn fee_notional_micro(quote: &LimitQuote, best_bid_micro: Option<u64>) -> Result<u64, String> {
+/// buy exactly: a taker buy that fills better spends less.
+///
+/// A sell is bounded at par — `size_micro`, the shares valued at $1 each —
+/// rather than at its limit or at the book. An outcome share cannot fill above
+/// $1, so par can never understate. The alternatives both fail: the limit
+/// understates whenever a taker sell matches at the maker's better price, and
+/// the best bid moves, which would make the declared fee drift between the
+/// draft, the revalidation and the post. The fee is compared across those
+/// stages, so a bid-dependent bound would refuse a builder-coded sell on any
+/// tick of the book while its maker and taker legs sat still. Par costs
+/// tightness — at a $0.10 fill it over-declares tenfold — but the rate is at
+/// most 1%, so the absolute over-statement is at most 1% of par, and the owner
+/// sees the figure before approving it.
+pub fn fee_notional_micro(quote: &LimitQuote) -> u64 {
     match quote.side {
-        Side::Buy => Ok(quote.maker_micro),
-        Side::Sell => {
-            let bid = best_bid_micro.ok_or(
-                "a builder-coded sell needs a best bid to bound its fee: the book is empty, so what it would fill at is unknown",
-            )?;
-            let bid = bid.min(MICRO);
-            let at_bid = u64::try_from(
-                (u128::from(quote.size_micro) * u128::from(bid)).div_ceil(u128::from(MICRO)),
-            )
-            .map_err(|_| "sell notional exceeds the supported pUSD amount".to_owned())?;
-            Ok(quote.taker_micro.max(at_bid))
-        }
+        Side::Buy => quote.maker_micro,
+        Side::Sell => quote.size_micro,
     }
 }
 
@@ -97,11 +101,23 @@ pub fn fee_bound(
     ceiling: BuilderFeeCeilingBps,
     order_type: OrderType,
     quote: &LimitQuote,
-    best_bid_micro: Option<u64>,
 ) -> Result<FeeBound, String> {
     let basis = FeeRateBasis::for_order_type(order_type);
     let builder_bps = basis.bps(ceiling);
-    let notional_micro = fee_notional_micro(quote, best_bid_micro)?;
+    // A ceiling may legitimately be zero on one side, but the side this order
+    // can actually be charged on must not be: the fee-bearing class cannot
+    // carry a zero fee, and the retry path refuses such an artifact outright,
+    // so preparing one would sign something no retry could ever resume.
+    if builder_bps == 0 {
+        return Err(format!(
+            "the configured ceiling is zero on the side this order pays ({}), so it would declare no fee; set a nonzero rate for that side or post without a builder code",
+            match basis {
+                FeeRateBasis::Taker => "taker",
+                FeeRateBasis::MakerOrTaker => "maker and taker",
+            }
+        ));
+    }
+    let notional_micro = fee_notional_micro(quote);
     let builder_fee_micro = builder_fee_ceiling_micro(notional_micro, builder_bps)?;
     Ok(FeeBound {
         code_hex: code_hex.to_owned(),
@@ -130,8 +146,11 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
             bps_percent_string(bound.builder_bps),
             format_micro(bound.notional_micro),
         ),
-        "Polymarket charges its own taker fee on this trade. It is NOT inside the total below and comes on top of it: its published formula has terms this Petal cannot resolve, and bounding it would mean inventing a number."
-            .to_owned(),
+        match bound.basis {
+            FeeRateBasis::Taker => "Polymarket charges its own taker fee on this trade. It is NOT inside the total below and comes on top of it: its published formula has terms this Petal cannot resolve, and bounding it would mean inventing a number.",
+            FeeRateBasis::MakerOrTaker => "If this order takes rather than rests, Polymarket charges its own taker fee as well. It is NOT inside the total below and would come on top of it: its published formula has terms this Petal cannot resolve, and bounding it would mean inventing a number.",
+        }
+        .to_owned(),
         format!(
             "Total authorized: {} pUSD, covering the order and the builder fee.",
             format_micro(bound.spend_including_fees_micro())
@@ -179,33 +198,34 @@ mod tests {
         }
     }
 
+    /// A buy is bounded by what it gives. The fixture uses different maker
+    /// and taker legs on purpose: equal ones cannot tell the two apart, so a
+    /// regression to `taker_micro` would pass unnoticed.
     #[test]
     fn a_buy_is_bounded_by_what_the_maker_gives() {
-        assert_eq!(
-            fee_notional_micro(&buy(10_000_000, 500_000), None),
-            Ok(10_000_000)
-        );
+        let quote = LimitQuote {
+            side: Side::Buy,
+            price_micro: 500_000,
+            size_micro: 20_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 20_000_000,
+        };
+        assert_eq!(fee_notional_micro(&quote), 10_000_000);
     }
 
+    /// A sell is bounded at par, independent of its limit and of the book. A
+    /// share cannot fill above $1, so par never understates, and because it
+    /// does not move the declared fee cannot drift between the stages that
+    /// compare it.
     #[test]
-    fn a_sell_takes_the_larger_of_its_limit_and_the_book() {
-        // Limit implies 5 pUSD; the bid would pay 9 pUSD. Take the bid.
-        let quote = sell(5_000_000, 10_000_000, 500_000);
-        assert_eq!(fee_notional_micro(&quote, Some(900_000)), Ok(9_000_000));
-        // A bid below the limit cannot lower the bound.
-        assert_eq!(fee_notional_micro(&quote, Some(100_000)), Ok(5_000_000));
-    }
-
-    #[test]
-    fn a_sell_bid_above_par_is_clamped_at_one_dollar_a_share() {
-        let quote = sell(1_000_000, 10_000_000, 100_000);
-        assert_eq!(fee_notional_micro(&quote, Some(5_000_000)), Ok(10_000_000));
-    }
-
-    #[test]
-    fn a_builder_coded_sell_with_no_bid_is_refused() {
-        let quote = sell(5_000_000, 10_000_000, 500_000);
-        assert!(fee_notional_micro(&quote, None).is_err());
+    fn a_sell_is_bounded_at_par_regardless_of_limit_or_book() {
+        let cheap = sell(1_000_000, 10_000_000, 100_000);
+        let dear = sell(9_000_000, 10_000_000, 900_000);
+        // Same shares, wildly different limits: same bound.
+        assert_eq!(fee_notional_micro(&cheap), 10_000_000);
+        assert_eq!(fee_notional_micro(&dear), 10_000_000);
+        // And it is never below what the limit alone implies.
+        assert!(fee_notional_micro(&dear) >= dear.taker_micro);
     }
 
     #[test]
@@ -216,11 +236,17 @@ mod tests {
                 100
             );
         }
-        // Inverted pair proves the max is taken rather than the taker field.
+        // Two pairs, so the max is pinned against BOTH fields: an inverted
+        // pair rules out reading the taker field, and a taker-dominant pair
+        // rules out reading the maker field. One pair alone cannot.
         for order_type in [OrderType::GTC, OrderType::GTD] {
             assert_eq!(
                 FeeRateBasis::for_order_type(order_type).bps(ceiling(50, 10)),
                 50
+            );
+            assert_eq!(
+                FeeRateBasis::for_order_type(order_type).bps(ceiling(10, 100)),
+                100
             );
         }
     }
@@ -244,7 +270,6 @@ mod tests {
             ceiling(50, 100),
             OrderType::FAK,
             &buy(10_000_000, 500_000),
-            None,
         )
         .unwrap();
         assert_eq!(bound.builder_fee_micro, 100_000);

@@ -263,7 +263,6 @@ fn post_trade_draft_in_class(
                         attribution.ceiling,
                         draft.order_type,
                         &quote,
-                        draft.best_bid_micro,
                     ) {
                         Ok(bound) => bound,
                         Err(err) => return error(-3, format!("builder fee: {err}")),
@@ -369,7 +368,13 @@ fn post_trade_draft_in_class(
     }
     let inner_sig = match &fee_bound {
         Some(bound) => {
-            let advisory = crate::builder_fee::builder_code_order_advisory(bound, false);
+            // A market buy is the one order type the sizing actually
+            // reduces, so it is the one case the owner must be told about.
+            let spend_reduced = matches!(
+                draft.order_type,
+                crate::polymarket::order::OrderType::FAK | crate::polymarket::order::OrderType::FOK
+            ) && draft.side == crate::polymarket::Side::Buy;
+            let advisory = crate::builder_fee::builder_code_order_advisory(bound, spend_reduced);
             match crate::approval::sign_prepared_with_fee(
                 ctx,
                 wallet,
@@ -686,22 +691,38 @@ fn builder_fee_from_prepared(
     // other proves nothing if the notional is unrelated to what the signed
     // order actually gives. For a buy that is `maker_amount`, in the same
     // preimage, so bind them.
-    if let Some(maker) = value
-        .get("maker_amount")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        && value.get("side").and_then(serde_json::Value::as_u64) == Some(0)
-        && notional_micro < maker
-    {
+    // Self-consistency is not enough: the three fee fields agreeing with each
+    // other proves nothing if the notional is unrelated to the signed order.
+    // Bind it per side — a buy's floor is what it gives, a sell's is its shares
+    // at par — and require the side to be present rather than skipping the
+    // binding when it is missing.
+    let side = value
+        .get("side")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| error(-4, "prepared builder order is missing side"))?;
+    let floor_key = match side {
+        0 => "maker_amount",
+        1 => "taker_amount",
+        other => {
+            return Err(error(
+                -4,
+                format!("prepared builder order has an unknown side {other}"),
+            ));
+        }
+    };
+    if notional_micro < micro(floor_key)? {
         return Err(error(
             -4,
-            "prepared builder fee was priced on less than the order gives",
+            "prepared builder fee was priced on less than the order moves",
         ));
     }
+    // Blanking this would show the owner "Builder code  is paid on this
+    // order." A fee-bearing artifact without a code is not resumable.
     let code_hex = value
         .get("builder")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
+        .filter(|code| !code.is_empty())
+        .ok_or_else(|| error(-4, "prepared builder order is missing its builder code"))?
         .to_owned();
     Ok(crate::builder_fee::FeeBound {
         code_hex,
@@ -959,6 +980,8 @@ mod builder_fee_retry_tests {
     fn preimage(rate: u64, notional: &str, ceiling: &str) -> serde_json::Value {
         serde_json::json!({
             "builder": "0xabc",
+            "side": 0,
+            "maker_amount": notional,
             "builder_fee_rate_bps": rate,
             "builder_fee_notional_micro": notional,
             "builder_fee_ceiling_micro": ceiling,
@@ -1017,16 +1040,33 @@ mod builder_fee_retry_tests {
         // Internally consistent, but priced on a tenth of what the order gives.
         let mut understated = preimage(100, "1000000", "10000");
         understated["maker_amount"] = serde_json::json!("10000000");
-        understated["side"] = serde_json::json!(0);
         assert!(
             builder_fee_from_prepared(&understated, OrderType::FAK).is_err(),
             "the notional must be bound to what the signed order gives"
         );
 
+        // A sell was previously unbound entirely: the side conjunct made the
+        // binding buy-only, so any notional passed.
+        let mut sell = preimage(100, "1", "1");
+        sell["side"] = serde_json::json!(1);
+        sell["taker_amount"] = serde_json::json!("10000000");
+        assert!(
+            builder_fee_from_prepared(&sell, OrderType::FAK).is_err(),
+            "a sell's notional must be bound to what the order moves"
+        );
+
+        // An absent side skips nothing now; it is refused.
+        let mut sideless = preimage(100, "10000000", "100000");
+        sideless.as_object_mut().unwrap().remove("side");
+        assert!(builder_fee_from_prepared(&sideless, OrderType::FAK).is_err());
+
+        // A fee-bearing artifact with no builder code cannot be resumed.
+        let mut codeless = preimage(100, "10000000", "100000");
+        codeless["builder"] = serde_json::json!("");
+        assert!(builder_fee_from_prepared(&codeless, OrderType::FAK).is_err());
+
         // The honest version of the same order is accepted.
-        let mut honest = preimage(100, "10000000", "100000");
-        honest["maker_amount"] = serde_json::json!("10000000");
-        honest["side"] = serde_json::json!(0);
+        let honest = preimage(100, "10000000", "100000");
         assert!(builder_fee_from_prepared(&honest, OrderType::FAK).is_ok());
     }
 

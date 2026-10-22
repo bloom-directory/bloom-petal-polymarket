@@ -1,6 +1,5 @@
-// Placement for builder-coded posting: the route and the fee-bearing
-// operation class exist and are enrolled, but posting through it is refused
-// until the builder fee is declared in the claim.
+// Builder-coded posting. Signs under the fee-bearing operation class with
+// the builder fee declared in the approval claim.
 //
 // Why a second route at all: Broker requires an operation class to be
 // uniformly fee-bearing or uniformly fee-free. A class catalogued with a fee
