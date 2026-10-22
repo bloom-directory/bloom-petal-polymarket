@@ -229,6 +229,41 @@ mod tests {
         assert_eq!(resolve_default(None, None), None);
     }
 
+    /// The code side of this resolution has three tests; the ceiling side had
+    /// none, even though it takes the override as a plain parameter.
+    #[test]
+    fn a_stored_ceiling_overrides_the_release_default() {
+        let release = BuilderFeeCeilingBps {
+            maker_bps: 10,
+            taker_bps: 20,
+        };
+        let stored = BuilderFeeCeilingBps {
+            maker_bps: 30,
+            taker_bps: 40,
+        };
+
+        assert_eq!(
+            resolve_fee_ceiling(Some(release), Some(stored)),
+            Some((stored, BuilderCodeSource::StoreOverride))
+        );
+        assert_eq!(
+            resolve_fee_ceiling(Some(release), None),
+            Some((release, BuilderCodeSource::ReleaseDefault))
+        );
+        assert_eq!(resolve_fee_ceiling(None, None), None);
+        // With nothing declared by the release, the override still resolves.
+        assert_eq!(
+            resolve_fee_ceiling(None, Some(stored)),
+            Some((stored, BuilderCodeSource::StoreOverride))
+        );
+        // The wrapper resolves exactly this release's default.
+        assert_eq!(
+            resolve_default_fee_ceiling(None),
+            RELEASE_DEFAULT_FEE_CEILING
+        );
+        assert_eq!(resolve_default_fee_ceiling(Some(stored)), Some(stored));
+    }
+
     #[test]
     fn a_ceiling_is_bounded_by_the_venue_and_cannot_be_zero_on_both_sides() {
         // Boundaries: the venue's own maxima are accepted, one above is not.

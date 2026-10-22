@@ -25,7 +25,7 @@ petal::route_file!(
         .caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]),
     read: |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(
-            b"write {\"post\":true} to sign and post a revalidated draft under the fee-bearing polymarket.builder_code_order.poly1271 class. The claim declares the builder fee as a ceiling from settings/builder-fee-ceiling, and the ceremony states the builder, both fees and the total. Requires a configured builder code and ceiling; plain orders post through `post`. This performs a value-moving CLOB POST /order.\n"
+            b"write {\"post\":true} to sign and post a revalidated draft under the fee-bearing polymarket.builder_code_order.poly1271 class. The claim declares the builder fee as a ceiling from settings/builder-fee-ceiling, and the ceremony states the builder, the builder fee and the total it covers, and that Polymarket's own fee sits outside that total. Requires a configured builder code and ceiling; plain orders post through `post`. This performs a value-moving CLOB POST /order.\n"
                 .to_vec(),
         )
     },

@@ -128,6 +128,32 @@ pub fn fee_bound(
     })
 }
 
+/// The advisory for one order, deciding for itself whether the sizing reduced
+/// it.
+///
+/// Production calls this rather than computing `spend_reduced` at the call
+/// site. When that predicate lived at the call site, setting it to `false`
+/// there left every test passing while the "sized down" line silently
+/// vanished from the ceremony.
+pub fn advisory_for_order(bound: &FeeBound, order_type: OrderType, side: Side) -> Vec<u8> {
+    let spend_reduced = matches!(order_type, OrderType::FAK | OrderType::FOK) && side == Side::Buy;
+    builder_code_order_advisory(bound, spend_reduced)
+}
+
+/// The two things the owner's ceremony turns on: the fee amount the claim
+/// declares, and the advisory explaining it.
+///
+/// Returned together from one place so a test can assert the number production
+/// actually declares. While the call site built both inline, halving the
+/// declared amount, substituting a fee-free claim, or dropping the advisory
+/// entirely all left the suite green.
+pub fn ceremony_for_order(bound: &FeeBound, order_type: OrderType, side: Side) -> (u64, Vec<u8>) {
+    (
+        bound.builder_fee_micro,
+        advisory_for_order(bound, order_type, side),
+    )
+}
+
 /// The ceremony advisory. The owner sees which builder is paid, the rate that
 /// bounds it, the total this bound covers, and that Polymarket's own fee sits
 /// outside it.
@@ -263,6 +289,57 @@ mod tests {
     /// pays: the fee-bearing class cannot carry a zero fee, and the retry path
     /// refuses such an artifact, so preparing one would sign something no
     /// retry could resume.
+    /// The claim must declare the bound's own fee, unhalved and unsubstituted.
+    /// The shape test pins a number handed to `ClaimEffects`; this pins the
+    /// number production hands it.
+    #[test]
+    fn the_ceremony_declares_exactly_the_bound_fee() {
+        let bound = fee_bound(
+            "0x1",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+        )
+        .expect("bound");
+        assert_eq!(bound.builder_fee_micro, 100_000);
+        let (declared, advisory) = ceremony_for_order(&bound, OrderType::FAK, Side::Buy);
+        assert_eq!(
+            declared, bound.builder_fee_micro,
+            "the claim declares the bound"
+        );
+        assert!(!advisory.is_empty(), "the ceremony must carry an advisory");
+        // And the advisory states that same figure, so the owner reads what
+        // the claim declares rather than a different number.
+        let text = String::from_utf8(advisory).unwrap();
+        assert!(text.contains("0.1"), "{text}");
+    }
+
+    /// The "sized down" line reaches the ceremony only for the order type the
+    /// sizing actually reduces. Computing that at the call site instead left
+    /// it droppable with every test still green.
+    #[test]
+    fn only_a_market_buy_is_told_it_was_sized_down() {
+        let bound = fee_bound(
+            "0x1",
+            ceiling(50, 100),
+            OrderType::FAK,
+            &buy(10_000_000, 500_000),
+        )
+        .expect("bound");
+        let says_reduced = |order_type, side| {
+            String::from_utf8(advisory_for_order(&bound, order_type, side))
+                .unwrap()
+                .contains("sized down")
+        };
+        for order_type in [OrderType::FAK, OrderType::FOK] {
+            assert!(says_reduced(order_type, Side::Buy), "{order_type:?} buy");
+            assert!(!says_reduced(order_type, Side::Sell), "{order_type:?} sell");
+        }
+        for order_type in [OrderType::GTC, OrderType::GTD] {
+            assert!(!says_reduced(order_type, Side::Buy), "{order_type:?} buy");
+        }
+    }
+
     #[test]
     fn a_ceiling_of_zero_on_the_paying_side_is_refused_at_prepare_time() {
         let maker_only = ceiling(50, 0);

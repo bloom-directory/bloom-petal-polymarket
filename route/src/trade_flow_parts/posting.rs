@@ -205,7 +205,7 @@ fn post_trade_draft_in_class(
             // ceremony never showed.
             let bound = match class {
                 PostClass::BuilderCodeOrder => {
-                    match builder_fee_from_prepared(&prepared.preimage, draft.order_type) {
+                    match builder_fee_from_prepared(&prepared.preimage, draft.order_type, &draft) {
                         Ok(bound) => Some(bound),
                         Err(resp) => return resp,
                     }
@@ -362,19 +362,14 @@ fn post_trade_draft_in_class(
     }
     let inner_sig = match &fee_bound {
         Some(bound) => {
-            // A market buy is the one order type the sizing actually
-            // reduces, so it is the one case the owner must be told about.
-            let spend_reduced = matches!(
-                draft.order_type,
-                crate::polymarket::order::OrderType::FAK | crate::polymarket::order::OrderType::FOK
-            ) && draft.side == crate::polymarket::Side::Buy;
-            let advisory = crate::builder_fee::builder_code_order_advisory(bound, spend_reduced);
+            let (declared_fee_micro, advisory) =
+                crate::builder_fee::ceremony_for_order(bound, draft.order_type, draft.side);
             match crate::approval::sign_prepared_with_fee(
                 ctx,
                 wallet,
                 &prepared,
                 &approval_key,
-                bound.builder_fee_micro,
+                declared_fee_micro,
                 advisory,
             ) {
                 Ok(signature) => signature,
@@ -439,9 +434,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
-                // Recorded so the daily cap measures what left the wallet. A
-                // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
+                // The daily cap sums `amount_microusd + fee_microusd`, and a
+                // market buy's `amount_micro` already contains its fee
+                // because the sizing folded it in. Recording the fee again
+                // here charged the cap up to 1% more than ever left the
+                // wallet. Same rule as the per-order cap.
+                fee_microusd: crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro(&draft),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -484,9 +482,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
-                // Recorded so the daily cap measures what left the wallet. A
-                // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
+                // The daily cap sums `amount_microusd + fee_microusd`, and a
+                // market buy's `amount_micro` already contains its fee
+                // because the sizing folded it in. Recording the fee again
+                // here charged the cap up to 1% more than ever left the
+                // wallet. Same rule as the per-order cap.
+                fee_microusd: crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro(&draft),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -533,9 +534,11 @@ fn post_trade_draft_in_class(
                     funder: Some(funder.to_checksum(None)),
                     signature_type: SIG_TYPE_POLY_1271,
                     amount_microusd: draft.amount_micro,
-                    // Recorded so the daily cap measures what left the wallet. A
-                    // plain order genuinely owes nothing, so zero is truthful.
-                    fee_microusd: draft.builder_fee_micro.unwrap_or(0),
+                    // Same rule as the other receipt writers: a market buy's
+                    // fee is already inside `amount_micro`.
+                    fee_microusd: crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro(
+                        &draft,
+                    ),
                     limit_price_micro: draft.limit_price_micro,
                     size_micro: draft.size_micro,
                     salt,
@@ -596,9 +599,12 @@ fn post_trade_draft_in_class(
                 funder: Some(funder.to_checksum(None)),
                 signature_type: SIG_TYPE_POLY_1271,
                 amount_microusd: draft.amount_micro,
-                // Recorded so the daily cap measures what left the wallet. A
-                // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
+                // The daily cap sums `amount_microusd + fee_microusd`, and a
+                // market buy's `amount_micro` already contains its fee
+                // because the sizing folded it in. Recording the fee again
+                // here charged the cap up to 1% more than ever left the
+                // wallet. Same rule as the per-order cap.
+                fee_microusd: crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro(&draft),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -635,15 +641,6 @@ fn post_trade_draft_in_class(
     }
 }
 
-/// Whether the sizing reduced this order, which is what the owner is told.
-///
-/// Only a market buy is reduced: Polymarket documents the reduction for market
-/// orders, and for a resting limit buy `makerAmount` is the exact spend the
-/// caller named with the fee additive on top.
-pub fn order_was_sized_down(order_type: OrderType, side: crate::polymarket::Side) -> bool {
-    matches!(order_type, OrderType::FAK | OrderType::FOK) && side == crate::polymarket::Side::Buy
-}
-
 /// Both posting routes share one prepared-signing key, so a draft prepared
 /// under one class must not be signed under the other: that would declare a
 /// fee the class refuses, or omit one it requires.
@@ -673,6 +670,7 @@ pub fn class_matches_prepared(
 fn builder_fee_from_prepared(
     value: &serde_json::Value,
     order_type: crate::polymarket::order::OrderType,
+    draft: &StoreTradeDraft,
 ) -> Result<crate::builder_fee::FeeBound, DispatchResponse> {
     let micro = |key: &str| -> Result<u64, DispatchResponse> {
         value
@@ -722,6 +720,26 @@ fn builder_fee_from_prepared(
         return Err(error(
             -4,
             "prepared builder fee was priced on less than the order moves",
+        ));
+    }
+    // Self-consistency does not anchor the RATE, and the rate is the whole
+    // multiplier: shrinking the rate and the ceiling together satisfies both
+    // the consistency check and the floor, so a tampered artifact could have
+    // declared a hundredth of the real fee and raised a fresh ceremony
+    // showing that figure to the owner.
+    //
+    // By the time this runs, the review gate has already forced the draft's
+    // rate and fee to the live configuration, and a genuine mid-flow ceiling
+    // change is refused before here with "write revalidate again". So in the
+    // honest case the artifact equals the draft, and requiring that costs
+    // nothing while closing the gap. The stored value is still what gets
+    // signed, so a lost response resumes the figure the ceremony showed.
+    if draft.builder_fee_rate_bps != Some(builder_bps)
+        || draft.builder_fee_micro != Some(builder_fee_micro)
+    {
+        return Err(error(
+            -4,
+            "prepared builder fee disagrees with this draft's resolved fee; write revalidate again before posting",
         ));
     }
     // Blanking this would show the owner "Builder code  is paid on this
@@ -985,6 +1003,30 @@ mod builder_fee_retry_tests {
     use super::*;
     use crate::polymarket::order::OrderType;
 
+    /// A draft whose resolved fee matches the artifact, which is the honest
+    /// case. The rate anchor compares the two, so a test that wants the
+    /// artifact accepted must agree with it.
+    fn draft_for(rate: u16, ceiling_micro: u64) -> StoreTradeDraft {
+        let mut draft: StoreTradeDraft = serde_json::from_value(serde_json::json!({
+            "id": "0001", "wallet": "alice", "slug": "s", "question": "q",
+            "condition_id": "0xabc", "outcome": "YES", "token_id": "111",
+            "side": "BUY", "order_type": "FAK", "amount_micro": 10_000_000u64,
+            "price_bound_micro": 100_000u64, "limit_price": null,
+            "marketable": true, "limit_price_micro": 500_000u64,
+            "size_micro": 20_000_000u64, "maker_micro": 10_000_000u64,
+            "taker_micro": 20_000_000u64, "tick_micro": 10_000u64,
+            "min_order_size_micro": 1_000_000u64, "neg_risk": false,
+            "active": true, "closed": false, "order_book_enabled": true,
+            "binary_outcomes": true, "best_ask_micro": null,
+            "best_bid_micro": null, "book_snapshot_secs": 1u64,
+            "status": "signed"
+        }))
+        .expect("draft fixture");
+        draft.builder_fee_rate_bps = Some(rate);
+        draft.builder_fee_micro = Some(ceiling_micro);
+        draft
+    }
+
     fn preimage(rate: u64, notional: &str, ceiling: &str) -> serde_json::Value {
         serde_json::json!({
             "builder": "0xabc",
@@ -998,8 +1040,12 @@ mod builder_fee_retry_tests {
 
     #[test]
     fn a_retry_reads_the_stored_fee_rather_than_recomputing_it() {
-        let bound = builder_fee_from_prepared(&preimage(100, "10000000", "100000"), OrderType::FAK)
-            .unwrap();
+        let bound = builder_fee_from_prepared(
+            &preimage(100, "10000000", "100000"),
+            OrderType::FAK,
+            &draft_for(100, 100_000),
+        )
+        .unwrap();
         assert_eq!(bound.builder_bps, 100);
         assert_eq!(bound.notional_micro, 10_000_000);
         assert_eq!(bound.builder_fee_micro, 100_000);
@@ -1018,7 +1064,8 @@ mod builder_fee_retry_tests {
             let mut value = preimage(100, "10000000", "100000");
             value.as_object_mut().unwrap().remove(key);
             assert!(
-                builder_fee_from_prepared(&value, OrderType::FAK).is_err(),
+                builder_fee_from_prepared(&value, OrderType::FAK, &draft_for(100, 100_000))
+                    .is_err(),
                 "{key} must be required"
             );
         }
@@ -1028,20 +1075,63 @@ mod builder_fee_retry_tests {
     fn a_tampered_fee_that_disagrees_with_its_notional_is_refused() {
         // 10 pUSD at 100 bps is 0.1 pUSD; claiming less is caught.
         assert!(
-            builder_fee_from_prepared(&preimage(100, "10000000", "1"), OrderType::FAK).is_err()
+            builder_fee_from_prepared(
+                &preimage(100, "10000000", "1"),
+                OrderType::FAK,
+                &draft_for(100, 100_000)
+            )
+            .is_err()
         );
     }
 
     /// A zero rate and a notional unrelated to the signed amount both passed
     /// the old self-consistency check, which only proved the three stored fee
     /// fields agreed with each other.
+    /// Self-consistency does not anchor the rate, and the rate is the whole
+    /// multiplier. Shrinking the rate and the ceiling together satisfies both
+    /// the consistency check and the notional floor, so a tampered artifact
+    /// could raise a fresh ceremony showing a hundredth of the real fee.
+    #[test]
+    fn a_proportionally_shrunk_rate_and_ceiling_is_refused() {
+        let live = draft_for(100, 100_000);
+
+        // Internally consistent at 1 bp: 10 pUSD * 1 / 10_000 = 0.001 pUSD,
+        // and the notional still clears `maker_amount`.
+        let tampered = preimage(1, "10000000", "1000");
+        assert!(
+            builder_fee_from_prepared(&tampered, OrderType::FAK, &live).is_err(),
+            "a 1 bp artifact must not be accepted for a 100 bp configuration"
+        );
+
+        // The honest artifact for that same draft is accepted, and the fee it
+        // yields is the one the ceremony showed rather than a recomputation.
+        let honest = preimage(100, "10000000", "100000");
+        let bound = builder_fee_from_prepared(&honest, OrderType::FAK, &live)
+            .expect("the artifact matching the draft is accepted");
+        assert_eq!(bound.builder_fee_micro, 100_000);
+
+        // A ceiling raised above the draft's is refused too, not just lowered.
+        let inflated = preimage(100, "20000000", "200000");
+        assert!(builder_fee_from_prepared(&inflated, OrderType::FAK, &live).is_err());
+
+        // The rate must be anchored in its own right, not just via the
+        // ceiling: an inflated notional reaches the draft's exact ceiling at
+        // the wrong rate — 1e9 * 1 / 10_000 == 100_000 — so the declared
+        // amount is right while the advisory would read "0.01% of 1000 pUSD".
+        let misleading = preimage(1, "1000000000", "100000");
+        assert!(
+            builder_fee_from_prepared(&misleading, OrderType::FAK, &live).is_err(),
+            "the rate the owner is shown must be anchored too"
+        );
+    }
+
     #[test]
     fn a_prepared_builder_order_cannot_declare_a_zero_rate_or_an_unrelated_notional() {
         let mut zero = preimage(100, "10000000", "100000");
         zero["builder_fee_rate_bps"] = serde_json::json!(0);
         zero["builder_fee_ceiling_micro"] = serde_json::json!("0");
         assert!(
-            builder_fee_from_prepared(&zero, OrderType::FAK).is_err(),
+            builder_fee_from_prepared(&zero, OrderType::FAK, &draft_for(100, 100_000)).is_err(),
             "a zero rate declares nothing while the order still pays"
         );
 
@@ -1049,7 +1139,8 @@ mod builder_fee_retry_tests {
         let mut understated = preimage(100, "1000000", "10000");
         understated["maker_amount"] = serde_json::json!("10000000");
         assert!(
-            builder_fee_from_prepared(&understated, OrderType::FAK).is_err(),
+            builder_fee_from_prepared(&understated, OrderType::FAK, &draft_for(100, 100_000))
+                .is_err(),
             "the notional must be bound to what the signed order gives"
         );
 
@@ -1062,7 +1153,7 @@ mod builder_fee_retry_tests {
         sell["maker_amount"] = serde_json::json!("10000000");
         sell["taker_amount"] = serde_json::json!("1000000");
         assert!(
-            builder_fee_from_prepared(&sell, OrderType::FAK).is_err(),
+            builder_fee_from_prepared(&sell, OrderType::FAK, &draft_for(100, 100_000)).is_err(),
             "a sell's notional must be bound to par, not to its USD leg"
         );
 
@@ -1070,21 +1161,31 @@ mod builder_fee_retry_tests {
         let mut honest_sell = preimage(100, "10000000", "100000");
         honest_sell["side"] = serde_json::json!(1);
         honest_sell["taker_amount"] = serde_json::json!("1000000");
-        assert!(builder_fee_from_prepared(&honest_sell, OrderType::FAK).is_ok());
+        assert!(
+            builder_fee_from_prepared(&honest_sell, OrderType::FAK, &draft_for(100, 100_000))
+                .is_ok()
+        );
 
         // A missing floor is refused rather than skipped.
         let mut floorless = preimage(100, "10000000", "100000");
         floorless.as_object_mut().unwrap().remove("maker_amount");
-        assert!(builder_fee_from_prepared(&floorless, OrderType::FAK).is_err());
+        assert!(
+            builder_fee_from_prepared(&floorless, OrderType::FAK, &draft_for(100, 100_000))
+                .is_err()
+        );
 
         // A fee-bearing artifact with no builder code cannot be resumed.
         let mut codeless = preimage(100, "10000000", "100000");
         codeless["builder"] = serde_json::json!("");
-        assert!(builder_fee_from_prepared(&codeless, OrderType::FAK).is_err());
+        assert!(
+            builder_fee_from_prepared(&codeless, OrderType::FAK, &draft_for(100, 100_000)).is_err()
+        );
 
         // The honest version of the same order is accepted.
         let honest = preimage(100, "10000000", "100000");
-        assert!(builder_fee_from_prepared(&honest, OrderType::FAK).is_ok());
+        assert!(
+            builder_fee_from_prepared(&honest, OrderType::FAK, &draft_for(100, 100_000)).is_ok()
+        );
     }
 
     /// Both routes share one prepared-signing key, so the guard compares the
@@ -1111,33 +1212,6 @@ mod builder_fee_retry_tests {
         }
         // An unrelated intent is refused too, not just the sibling class.
         assert!(class_matches_prepared("polymarket.onboard", PostClass::PlainOrder).is_err());
-    }
-
-    /// Only a market buy is reduced, so only a market buy tells the owner it
-    /// was. This was hardcoded false and the line never reached a ceremony.
-    #[test]
-    fn only_a_market_buy_reports_that_it_was_sized_down() {
-        use crate::polymarket::Side;
-        for order_type in [OrderType::FAK, OrderType::FOK] {
-            assert!(
-                order_was_sized_down(order_type, Side::Buy),
-                "{order_type:?}"
-            );
-            assert!(
-                !order_was_sized_down(order_type, Side::Sell),
-                "{order_type:?}"
-            );
-        }
-        for order_type in [OrderType::GTC, OrderType::GTD] {
-            assert!(
-                !order_was_sized_down(order_type, Side::Buy),
-                "{order_type:?}"
-            );
-            assert!(
-                !order_was_sized_down(order_type, Side::Sell),
-                "{order_type:?}"
-            );
-        }
     }
 
     #[test]

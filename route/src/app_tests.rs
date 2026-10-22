@@ -358,6 +358,22 @@ mod tests {
             (Some(100), Some(100_000))
         );
         assert_eq!(quoted_fee_fields(None, &quote), (None, None));
+
+        // A sell is where par and the USD leg diverge, so this is the case
+        // that pins the par binding. A buy cannot: its maker leg IS its USD
+        // leg, so substituting one for the other is invisible there.
+        let sell = crate::polymarket::order::LimitQuote {
+            side: Side::Sell,
+            price_micro: 100_000,
+            size_micro: 10_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 1_000_000,
+        };
+        assert_eq!(
+            quoted_fee_fields(Some(SpendFeeInputs { builder_bps: 100 }), &sell),
+            (Some(100), Some(100_000)),
+            "a sell's fee must be priced on par, not on its USD leg"
+        );
     }
 
     /// A market buy's sizing already folded the fee into the requested amount,
