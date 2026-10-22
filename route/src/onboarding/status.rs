@@ -160,10 +160,9 @@ pub fn local_status_for_wallet(
     owner: Address,
 ) -> Result<serde_json::Value, DispatchResponse> {
     let mut status = stored_status_for_wallet(wallet, owner)?;
-    status["creds_present"] =
-        serde_json::json!(store_get(&format!("creds/{wallet}/clob.json")).is_some());
-    if status["creds_present"] == true
-        && crate::relayer_config::load_relayer_config()?.legacy_eoa_mode
+    let creds_present = store_get(&format!("creds/{wallet}/clob.json")).is_some();
+    status["creds_present"] = serde_json::json!(creds_present);
+    if creds_present && crate::relayer_config::load_relayer_config()?.legacy_eoa_mode
     {
         return Ok(crate::relayer_config::legacy_eoa_status(wallet, owner));
     }
@@ -181,7 +180,6 @@ pub fn local_status_for_wallet(
         .ok_or_else(|| error(-4, "stored onboarding status is missing deposit wallet"))?
         .parse::<Address>()
         .map_err(|e| error(-4, format!("stored deposit wallet parse: {e}")))?;
-    let creds_present = store_get(&format!("creds/{wallet}/clob.json")).is_some();
     let mut refreshed = refreshed_live_onboard_status(wallet, owner, deposit, creds_present)?;
     preserve_onboard_metadata(&status, &mut refreshed);
     if refreshed != status
