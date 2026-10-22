@@ -199,6 +199,49 @@ impl SpendFeeInputs {
     }
 }
 
+/// The fee a quote was sized against, as stored on the draft and compared at
+/// every later stage. `None` throughout when no builder code is configured.
+pub fn quoted_fee_fields(
+    fees: Option<SpendFeeInputs>,
+    quote: &LimitQuote,
+) -> (Option<u16>, Option<u64>, Option<u64>) {
+    let Some(fees) = fees else {
+        return (None, None, None);
+    };
+    let notional = shared_trade::usd_leg(quote);
+    let builder = crate::builder_code::builder_fee_ceiling_micro(notional, fees.builder_bps).ok();
+    let platform = fees
+        .platform
+        .and_then(|params| params.ceiling_micro(notional, quote.price_micro).ok());
+    (Some(fees.builder_bps), builder, platform)
+}
+
+/// A one-line fee summary for the owner-facing plan.
+///
+/// An unread platform rate is named rather than shown as nothing, because a
+/// market whose fee could not be read is not a market that charges nothing.
+pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
+    let Some(builder) = draft.builder_fee_micro else {
+        return "none (no builder code configured)".to_owned();
+    };
+    let rate = draft
+        .builder_fee_rate_bps
+        .map(crate::builder_code::bps_percent_string)
+        .unwrap_or_else(|| "unknown".to_owned());
+    match draft.platform_fee_micro {
+        Some(platform) => format!(
+            "up to {} pUSD builder ({rate}) plus {} pUSD Polymarket, {} pUSD total",
+            crate::polymarket::order::format_micro(builder),
+            crate::polymarket::order::format_micro(platform),
+            crate::polymarket::order::format_micro(builder.saturating_add(platform)),
+        ),
+        None => format!(
+            "up to {} pUSD builder ({rate}); Polymarket's own fee could not be read and is charged on top",
+            crate::polymarket::order::format_micro(builder),
+        ),
+    }
+}
+
 /// Resolves the fee inputs for a draft, or `None` when no builder code is
 /// configured. One place, so every stage that quotes agrees.
 pub fn resolve_spend_fee_inputs(
@@ -230,6 +273,13 @@ pub fn trade_policy_check(
             Side::Sell => LocalPolicySide::Sell,
         },
         amount_microusd: draft.amount_micro,
+        // A spend cap should bound what leaves the wallet, not the order's
+        // notional alone. An unread platform fee contributes nothing here,
+        // which the owner's advisory discloses separately.
+        fee_microusd: draft
+            .builder_fee_micro
+            .unwrap_or(0)
+            .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
         limit_price_micro: draft.limit_price_micro,
         active: draft.active,
         closed: draft.closed,

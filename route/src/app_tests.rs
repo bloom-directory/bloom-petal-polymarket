@@ -49,6 +49,7 @@ mod tests {
             condition_id: "0xabc".into(),
             side: LocalPolicySide::Buy,
             amount_microusd: 10_000_000,
+            fee_microusd: 0,
             limit_price_micro: 695_000,
             active: true,
             closed: false,
@@ -89,6 +90,9 @@ mod tests {
             best_ask_micro: Some(90_000),
             best_bid_micro: Some(80_000),
             book_snapshot_secs: 1,
+            builder_fee_rate_bps: None,
+            builder_fee_micro: None,
+            platform_fee_micro: None,
             status: "signed".into(),
             salt: Some(42),
             clob_order_id: None,
@@ -161,6 +165,77 @@ mod tests {
     #[test]
     fn clob_market_info_is_allowed_for_reading_platform_fee_parameters() {
         assert!(clob_manifest_allows("get", "/clob-market-info"));
+    }
+
+    /// A spend cap should bound what leaves the wallet. Measuring the order's
+    /// notional alone would let the fees push the real spend past the cap.
+    #[test]
+    fn a_spend_cap_measures_the_notional_plus_its_fees() {
+        let mut ctx = policy_ctx();
+        assert_eq!(ctx.total_spend_microusd(), 10_000_000);
+        ctx.fee_microusd = 175_000;
+        assert_eq!(ctx.total_spend_microusd(), 10_175_000);
+    }
+
+    /// For a sell or a limit buy a ceiling change does not move `maker` or
+    /// `taker`, so the review intent has to compare the fee itself or a change
+    /// between the review and the signature would pass unnoticed.
+    #[test]
+    fn the_review_intent_notices_a_fee_only_change() {
+        use crate::trade_flow_parts::revalidate::review_intent_matches_draft;
+        let mut draft = draft();
+        draft.side = Side::Buy;
+        draft.builder_fee_rate_bps = Some(100);
+        draft.builder_fee_micro = Some(100_000);
+        draft.platform_fee_micro = Some(75_000);
+        let owner: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let funder: Address = "0x0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let policy_check = serde_json::json!({"policy_status": "ok"});
+        let review = serde_json::json!({
+            "wallet": draft.wallet,
+            "draft_id": draft.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": draft.slug,
+            "condition_id": draft.condition_id,
+            "outcome": draft.outcome,
+            "token_id": draft.token_id,
+            "side": "BUY",
+            "order_type": draft.order_type.as_str(),
+            "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+            "size": crate::polymarket::order::format_micro(draft.size_micro),
+            "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+            "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+            "builder_fee": "0.1",
+            "builder_fee_rate_bps": "100",
+            "platform_fee": "0.075",
+            "policy_status": "ok",
+            "neg_risk": draft.neg_risk,
+        });
+
+        // The draft the review was taken from still matches it.
+        review_intent_matches_draft(&review, &draft, owner, funder, &policy_check, None)
+            .expect("the draft its review was built from must match");
+
+        // Only the fee moves, and it is caught. Nothing else differs, so a
+        // comparison that ignored the fee would pass this.
+        for mutate in [
+            |d: &mut StoreTradeDraft| d.builder_fee_micro = Some(50_000),
+            |d: &mut StoreTradeDraft| d.builder_fee_rate_bps = Some(50),
+            |d: &mut StoreTradeDraft| d.platform_fee_micro = None,
+        ] {
+            let mut changed = draft.clone();
+            mutate(&mut changed);
+            assert!(
+                review_intent_matches_draft(&review, &changed, owner, funder, &policy_check, None)
+                    .is_err(),
+                "a fee-only change must not pass the review comparison"
+            );
+        }
     }
 
     #[test]

@@ -106,6 +106,8 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
         Ok(quote) => quote,
         Err(resp) => return resp,
     };
+    let (builder_fee_rate_bps, builder_fee_micro, platform_fee_micro) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
     let id = next_id(&format!("trade/{wallet}/drafts/"), "/order.json");
     let draft = StoreTradeDraft {
         id: id.clone(),
@@ -132,6 +134,9 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
         closed: snapshot.closed,
         order_book_enabled: snapshot.order_book_enabled,
         binary_outcomes: true,
+        builder_fee_rate_bps,
+        builder_fee_micro,
+        platform_fee_micro,
         best_ask_micro: snapshot.best_ask_micro,
         best_bid_micro: snapshot.best_bid_micro,
         book_snapshot_secs: now_secs(),
