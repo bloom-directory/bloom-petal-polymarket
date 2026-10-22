@@ -2,8 +2,10 @@
 
 Onboarding has two authority routes: write `onboard/<wallet>/<index>/begin`
 to obtain CLOB credentials, then write `onboard/<wallet>/<index>/continue`
-to deploy, fund and approve the deposit wallet. `begin` acknowledges success;
-read `onboard/<wallet>/<index>/status.json` for the next action. With existing
+to deploy the deposit wallet. `continue` does not fund it: while the wallet
+holds no pUSD it stops at stage `fund`. Fund it with
+`fund/<wallet>/<index>/new`, then write `continue` again to approve.
+`status.json` names the next action at every stage. With existing
 credentials, `begin` acknowledges without another authentication signature.
 
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
@@ -21,7 +23,7 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 109 route components. Directory endpoints use
+Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
