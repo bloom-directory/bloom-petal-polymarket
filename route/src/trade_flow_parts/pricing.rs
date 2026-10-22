@@ -144,14 +144,76 @@ pub fn build_trade_quote(
     snapshot: &TradeSnapshot,
     order_type: OrderType,
 ) -> Result<LimitQuote, DispatchResponse> {
+    build_trade_quote_with_fees(side, amount_micro, limit_micro, snapshot, order_type, None)
+}
+
+/// As [`build_trade_quote`], sizing a market buy so its fees fit the spend.
+///
+/// Every stage that quotes a draft must pass the same fee inputs. Draft,
+/// revalidate and post all resolve them through
+/// [`resolve_spend_fee_inputs`], so their numbers agree and
+/// `review_intent_matches_draft` does not fail on a quote that moved.
+pub fn build_trade_quote_with_fees(
+    side: Side,
+    amount_micro: u64,
+    limit_micro: u64,
+    snapshot: &TradeSnapshot,
+    order_type: OrderType,
+    fees: Option<SpendFeeInputs>,
+) -> Result<LimitQuote, DispatchResponse> {
+    let pricer = fees.map(|fees| {
+        move |notional: u64| -> crate::polymarket::Result<u64> {
+            fees.total_micro(notional, limit_micro)
+                .map_err(crate::polymarket::PolymarketError::invalid)
+        }
+    });
     shared_trade::build_quote(
         side,
         amount_micro,
         limit_micro,
         &snapshot.as_shared(),
         order_type,
+        pricer
+            .as_ref()
+            .map(|pricer| pricer as &dyn Fn(u64) -> crate::polymarket::Result<u64>),
     )
     .map_err(polymarket_error)
+}
+
+/// The fee inputs a market buy is sized against.
+#[derive(Clone, Copy, Debug)]
+pub struct SpendFeeInputs {
+    pub builder_bps: u16,
+    pub platform: Option<crate::builder_fee::PlatformFeeParams>,
+}
+
+impl SpendFeeInputs {
+    fn total_micro(self, notional_micro: u64, price_micro: u64) -> Result<u64, String> {
+        let builder =
+            crate::builder_code::builder_fee_ceiling_micro(notional_micro, self.builder_bps)?;
+        let platform = match self.platform {
+            Some(params) => params.ceiling_micro(notional_micro, price_micro)?,
+            None => 0,
+        };
+        Ok(builder.saturating_add(platform))
+    }
+}
+
+/// Resolves the fee inputs for a draft, or `None` when no builder code is
+/// configured. One place, so every stage that quotes agrees.
+pub fn resolve_spend_fee_inputs(
+    condition_id: &str,
+    order_type: OrderType,
+) -> Result<Option<SpendFeeInputs>, DispatchResponse> {
+    let Some(attribution) = crate::account_views::resolve_builder_attribution()? else {
+        return Ok(None);
+    };
+    let builder_bps =
+        crate::builder_fee::FeeRateBasis::for_order_type(order_type).bps(attribution.ceiling);
+    Ok(Some(SpendFeeInputs {
+        builder_bps,
+        platform: crate::builder_fee::read_platform_fee_params(condition_id),
+    }))
 }
 
 pub fn trade_policy_check(

@@ -93,12 +93,20 @@ pub fn revalidate_trade_draft(
         Ok(limit) => limit,
         Err(resp) => return resp,
     };
-    let quote = match build_trade_quote(
+    let spend_fees = match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
+        &draft.condition_id,
+        draft.order_type,
+    ) {
+        Ok(fees) => fees,
+        Err(resp) => return resp,
+    };
+    let quote = match crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
         limit_micro,
         &snapshot,
         draft.order_type,
+        spend_fees,
     ) {
         Ok(quote) => quote,
         Err(resp) => return resp,
@@ -301,12 +309,17 @@ pub fn refresh_trade_post_inputs(
         draft.limit_price_micro,
         &snapshot,
     )?;
-    let quote = build_trade_quote(
+    let spend_fees = crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
+        &draft.condition_id,
+        draft.order_type,
+    )?;
+    let quote = crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
         limit_micro,
         &snapshot,
         draft.order_type,
+        spend_fees,
     )?;
     draft.limit_price_micro = quote.price_micro;
     draft.size_micro = quote.size_micro;

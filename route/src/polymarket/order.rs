@@ -342,6 +342,42 @@ impl LimitQuote {
         })
     }
 
+    /// Build a market BUY quote whose notional plus its fees fits `spend_micro`.
+    ///
+    /// Polymarket documents a market buy as reducing `makerAmount` so the order
+    /// and its fees fit the cap, rather than charging the fees on top. Omitting
+    /// the cap is what pays fees on top of the amount, which would spend more
+    /// than the caller asked for.
+    ///
+    /// The budget is pre-scaled and then handed to
+    /// [`Self::market_buy_from_spend`] unchanged, so the cents grid for
+    /// `makerAmount` and the tick grid for `takerAmount` stay entirely inside
+    /// the function that already owns them. `fee_micro` prices a candidate's
+    /// fees; the explicit post-check is the guarantee rather than the algebra.
+    pub fn market_buy_from_spend_with_fees(
+        spend_micro: u64,
+        price_micro: u64,
+        tick_micro: u64,
+        fee_micro: &dyn Fn(u64) -> Result<u64>,
+    ) -> Result<Self> {
+        let mut budget = spend_micro;
+        // Each step drops the budget by one cent, the makerAmount grid, so this
+        // terminates; the pre-scale normally makes the first candidate fit.
+        for _ in 0..1024 {
+            let candidate = Self::market_buy_from_spend(budget, price_micro, tick_micro)?;
+            let fees = fee_micro(candidate.maker_micro)?;
+            if candidate.maker_micro.saturating_add(fees) <= spend_micro {
+                return Ok(candidate);
+            }
+            budget = budget.checked_sub(10_000).ok_or_else(|| {
+                PolymarketError::invalid("spend cannot cover an order and its fees")
+            })?;
+        }
+        Err(PolymarketError::invalid(
+            "could not size an order whose fees fit the spend",
+        ))
+    }
+
     /// Build a SELL quote from a share size and a limit price. Size must be on
     /// the 0.01-share grid. The USD leg is `trunc(size * price)` exactly as the
     /// SDK computes it.
@@ -664,6 +700,54 @@ impl OrderBody {
 
 #[cfg(test)]
 mod tests {
+
+    /// Polymarket sizes a market buy so the order plus its fees fits the cap.
+    /// Charging the fees on top would spend more than the caller asked for.
+    #[test]
+    fn a_fee_aware_market_buy_keeps_its_notional_plus_fees_inside_the_spend() {
+        let taker_bps = 100_u16;
+        let fee = |notional: u64| -> Result<u64> {
+            Ok(
+                u64::try_from((u128::from(notional) * u128::from(taker_bps)).div_ceil(10_000))
+                    .expect("fee fits"),
+            )
+        };
+        // Spends on and off the cents grid, and one that only just buys shares.
+        for spend in [10_000_000_u64, 9_999_999, 1_234_567, 100_000, 55_000] {
+            let quote =
+                LimitQuote::market_buy_from_spend_with_fees(spend, 500_000, 10_000, &fee).unwrap();
+            let fees = fee(quote.maker_micro).unwrap();
+            assert!(
+                quote.maker_micro + fees <= spend,
+                "spend {spend}: maker {} + fees {fees} exceeds it",
+                quote.maker_micro
+            );
+            // The grids the unscaled function owns are untouched.
+            assert_eq!(quote.maker_micro % 10_000, 0, "spend {spend}");
+            assert!(quote.taker_micro > 0, "spend {spend}");
+        }
+    }
+
+    #[test]
+    fn a_zero_fee_reproduces_the_unscaled_market_buy_exactly() {
+        let free = |_: u64| -> Result<u64> { Ok(0) };
+        for spend in [10_000_000_u64, 9_999_999, 1_234_567] {
+            assert_eq!(
+                LimitQuote::market_buy_from_spend_with_fees(spend, 500_000, 10_000, &free).unwrap(),
+                LimitQuote::market_buy_from_spend(spend, 500_000, 10_000).unwrap(),
+                "spend {spend}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spend_that_cannot_cover_an_order_and_its_fees_errors() {
+        // A fee larger than any order the spend can buy never fits.
+        let ruinous = |notional: u64| -> Result<u64> { Ok(notional.saturating_mul(2)) };
+        assert!(
+            LimitQuote::market_buy_from_spend_with_fees(20_000, 500_000, 10_000, &ruinous).is_err()
+        );
+    }
     use super::*;
     use alloy::primitives::address;
 

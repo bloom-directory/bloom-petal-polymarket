@@ -182,18 +182,32 @@ pub fn choose_limit(
 /// Build the integer quote. `amount_micro` is the USD spend for buys and the
 /// share size for sells. Market-class buys (FAK/FOK) use the CLOB's market-order
 /// precision rules (maker ≤ 2 dp, taker ≤ 4 dp), which differ from limit orders.
+/// Build a quote, optionally sizing a market buy so its fees fit the spend.
+///
+/// `fee_micro` prices a candidate notional's fees. It applies only to the
+/// market-buy arm, because Polymarket documents the reduction for market
+/// orders: for a resting limit buy `makerAmount` is the exact spend the caller
+/// named and the fee is additive on top, which is what the displayed cost and
+/// the policy cap reflect. Do not "fix" that by reducing a limit buy.
 pub fn build_quote(
     side: Side,
     amount_micro: u64,
     limit_micro: u64,
     snap: &Snapshot,
     order_type: OrderType,
+    fee_micro: Option<&dyn Fn(u64) -> Result<u64>>,
 ) -> Result<LimitQuote> {
     let market_class = matches!(order_type, OrderType::FAK | OrderType::FOK);
     let quote = match (side, market_class) {
-        (Side::Buy, true) => {
-            LimitQuote::market_buy_from_spend(amount_micro, limit_micro, snap.tick_micro)
-        }
+        (Side::Buy, true) => match fee_micro {
+            Some(fee_micro) => LimitQuote::market_buy_from_spend_with_fees(
+                amount_micro,
+                limit_micro,
+                snap.tick_micro,
+                fee_micro,
+            ),
+            None => LimitQuote::market_buy_from_spend(amount_micro, limit_micro, snap.tick_micro),
+        },
         (Side::Buy, false) => {
             LimitQuote::buy_from_spend(amount_micro, limit_micro, snap.tick_micro)
         }
@@ -321,8 +335,8 @@ mod tests {
     #[test]
     fn build_quote_enforces_min_size() {
         let s = snap(Some(500_000), Some(490_000));
-        assert!(build_quote(Side::Buy, 2_000_000, 500_000, &s, OrderType::FAK).is_err());
-        let q = build_quote(Side::Buy, 5_000_000, 500_000, &s, OrderType::FAK).unwrap();
+        assert!(build_quote(Side::Buy, 2_000_000, 500_000, &s, OrderType::FAK, None).is_err());
+        let q = build_quote(Side::Buy, 5_000_000, 500_000, &s, OrderType::FAK, None).unwrap();
         assert!(q.size_micro >= s.min_size_micro);
         assert_eq!(usd_leg(&q), q.maker_micro);
     }

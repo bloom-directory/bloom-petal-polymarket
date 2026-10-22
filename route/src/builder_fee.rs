@@ -38,7 +38,7 @@ impl FeeRateBasis {
         }
     }
 
-    fn bps(self, ceiling: BuilderFeeCeilingBps) -> u16 {
+    pub fn bps(self, ceiling: BuilderFeeCeilingBps) -> u16 {
         match self {
             Self::Taker => ceiling.taker_bps,
             Self::MakerOrTaker => ceiling.maker_bps.max(ceiling.taker_bps),

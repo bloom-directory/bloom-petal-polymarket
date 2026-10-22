@@ -86,7 +86,23 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
             Ok(limit) => limit,
             Err(resp) => return resp,
         };
-    let quote = match build_trade_quote(side, amount_micro, limit_micro, &snapshot, order_type) {
+    // Resolved here and at every later stage through the same helper, so the
+    // draft, its revalidation and the post all size against one set of fees.
+    let spend_fees = match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
+        &snapshot.market.condition_id,
+        order_type,
+    ) {
+        Ok(fees) => fees,
+        Err(resp) => return resp,
+    };
+    let quote = match crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
+        side,
+        amount_micro,
+        limit_micro,
+        &snapshot,
+        order_type,
+        spend_fees,
+    ) {
         Ok(quote) => quote,
         Err(resp) => return resp,
     };
