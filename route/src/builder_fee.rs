@@ -44,94 +44,6 @@ impl FeeRateBasis {
             Self::MakerOrTaker => ceiling.maker_bps.max(ceiling.taker_bps),
         }
     }
-
-    /// Only a taker pays Polymarket's platform fee. A resting order may still
-    /// cross on placement, so it is bounded as if it takes.
-    fn pays_platform_fee(self) -> bool {
-        true
-    }
-}
-
-/// The published platform fee parameters for one market, from
-/// `getClobMarketInfo`'s `fd` object.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PlatformFeeParams {
-    /// `fd.r`: the rate numerator.
-    pub rate: u64,
-    /// `fd.e`: the decimal exponent the rate is scaled by.
-    pub exponent: u32,
-    /// `fd.to`: charged to takers only.
-    pub taker_only: bool,
-}
-
-impl PlatformFeeParams {
-    /// `ceil(C * rate / 10^e * p * (1 - p))` in micro-pUSD, with `p` in micros.
-    ///
-    /// The exponent's meaning is taken as a decimal scale on the rate, so an
-    /// effective rate of `rate / 10^exponent`. That reading is not confirmed
-    /// against a live fee-enabled market, and getting it wrong scales the fee
-    /// by a power of ten, which is why `exponent` is carried explicitly rather
-    /// than folded into a constant: one place to correct.
-    pub fn ceiling_micro(self, notional_micro: u64, price_micro: u64) -> Result<u64, String> {
-        if price_micro > MICRO {
-            return Err("order price exceeds $1 per share".to_owned());
-        }
-        let scale = 10_u128
-            .checked_pow(self.exponent)
-            .ok_or("platform fee exponent is out of range")?;
-        // p * (1 - p) in micros^2, then divided back out by MICRO^2.
-        let p = u128::from(price_micro);
-        let complement = u128::from(MICRO) - p;
-        let numerator = u128::from(notional_micro) * u128::from(self.rate) * p * complement;
-        let denominator = scale * u128::from(MICRO) * u128::from(MICRO);
-        u64::try_from(numerator.div_ceil(denominator))
-            .map_err(|_| "platform fee ceiling exceeds the supported pUSD amount".to_owned())
-    }
-}
-
-/// `getClobMarketInfo`'s fee details. CLOB V2 returns these per market
-/// alongside the minimum tick size and order size.
-#[derive(Debug, serde::Deserialize)]
-pub struct ClobFeeDetails {
-    /// `r`: the rate numerator.
-    pub r: u64,
-    /// `e`: the decimal exponent the rate is scaled by.
-    pub e: u32,
-    /// `to`: charged to takers only.
-    #[serde(default)]
-    pub to: bool,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct ClobMarketInfo {
-    pub fd: Option<ClobFeeDetails>,
-}
-
-impl ClobMarketInfo {
-    pub fn platform_fee_params(&self) -> Option<PlatformFeeParams> {
-        self.fd.as_ref().map(|fd| PlatformFeeParams {
-            rate: fd.r,
-            exponent: fd.e,
-            taker_only: fd.to,
-        })
-    }
-}
-
-/// Reads one market's published platform fee parameters.
-///
-/// A failure here is **not** fatal to posting. Platform fees already go
-/// unaccounted on plain orders, so refusing to post on a transient read would
-/// be a new way to fail rather than a fix. The caller treats `None` as "the
-/// platform fee is not bounded in this approval" and the advisory says so, so
-/// the owner is told what the number does and does not include.
-pub fn read_platform_fee_params(condition_id: &str) -> Option<PlatformFeeParams> {
-    let url = format!(
-        "{}/clob-market-info?condition_id={condition_id}",
-        crate::runtime_config::clob_url()
-    );
-    crate::infra_parts::http::get_json::<ClobMarketInfo>(&url)
-        .ok()
-        .and_then(|info| info.platform_fee_params())
 }
 
 /// Everything the owner is shown and the order is sized against.
@@ -142,15 +54,11 @@ pub struct FeeBound {
     pub basis: FeeRateBasis,
     pub notional_micro: u64,
     pub builder_fee_micro: u64,
-    /// `None` when the market's fee parameters could not be read, which is
-    /// different from a market that charges nothing.
-    pub platform_fee_micro: Option<u64>,
 }
 
 impl FeeBound {
     pub fn total_fee_micro(&self) -> u64 {
         self.builder_fee_micro
-            .saturating_add(self.platform_fee_micro.unwrap_or(0))
     }
 
     pub fn spend_including_fees_micro(&self) -> u64 {
@@ -190,31 +98,23 @@ pub fn fee_bound(
     order_type: OrderType,
     quote: &LimitQuote,
     best_bid_micro: Option<u64>,
-    platform: Option<PlatformFeeParams>,
 ) -> Result<FeeBound, String> {
     let basis = FeeRateBasis::for_order_type(order_type);
     let builder_bps = basis.bps(ceiling);
     let notional_micro = fee_notional_micro(quote, best_bid_micro)?;
     let builder_fee_micro = builder_fee_ceiling_micro(notional_micro, builder_bps)?;
-    let platform_fee_micro = match platform {
-        Some(params) if !params.taker_only || basis.pays_platform_fee() => {
-            Some(params.ceiling_micro(notional_micro, quote.price_micro)?)
-        }
-        Some(_) => Some(0),
-        None => None,
-    };
     Ok(FeeBound {
         code_hex: code_hex.to_owned(),
         builder_bps,
         basis,
         notional_micro,
         builder_fee_micro,
-        platform_fee_micro,
     })
 }
 
 /// The ceremony advisory. The owner sees which builder is paid, the rate that
-/// bounds it, Polymarket's own fee, and the total they are authorizing.
+/// bounds it, the total this bound covers, and that Polymarket's own fee sits
+/// outside it.
 pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec<u8> {
     let basis = match bound.basis {
         FeeRateBasis::Taker => "this order can only take, so the taker rate applies",
@@ -230,21 +130,18 @@ pub fn builder_code_order_advisory(bound: &FeeBound, spend_reduced: bool) -> Vec
             bps_percent_string(bound.builder_bps),
             format_micro(bound.notional_micro),
         ),
-        match bound.platform_fee_micro {
-            Some(micro) => format!("Polymarket's own fee up to {} pUSD.", format_micro(micro)),
-            None => "Polymarket's own fee could not be read for this market, so it is NOT inside the total below and will be charged on top."
-                .to_owned(),
-        },
+        "Polymarket charges its own taker fee on this trade. It is NOT inside the total below and comes on top of it: its published formula has terms this Petal cannot resolve, and bounding it would mean inventing a number."
+            .to_owned(),
         format!(
-            "Total authorized: {} pUSD.",
+            "Total authorized: {} pUSD, covering the order and the builder fee.",
             format_micro(bound.spend_including_fees_micro())
         ),
-        "Polymarket sets a builder's rates on its profile and serves no API for them, so the builder figure is this installation's configured ceiling, not a quote. Both fees are charged by the venue at match time and may be less."
+        "Polymarket sets a builder's rates on its profile and serves no API for them, so the builder figure is this installation's configured ceiling, not a quote. The venue charges at match time and may charge less."
             .to_owned(),
     ];
     if spend_reduced {
         lines.push(
-            "The order was sized down so its notional plus these fees fits the amount requested."
+            "The order was sized down so its notional plus the builder fee fits the amount requested."
                 .to_owned(),
         );
     }
@@ -336,132 +233,33 @@ mod tests {
         assert_eq!(builder_fee_ceiling_micro(10_000_000, 100), Ok(100_000));
     }
 
+    /// The bound covers the builder fee only. Polymarket's own fee is stated
+    /// as outside it, because its formula has terms this Petal cannot resolve
+    /// and an earlier revision that bounded it at the limit price understated
+    /// real fills by several times.
     #[test]
-    fn a_platform_fee_rate_of_zero_costs_nothing_and_par_prices_cost_nothing() {
-        let params = PlatformFeeParams {
-            rate: 0,
-            exponent: 4,
-            taker_only: true,
-        };
-        assert_eq!(params.ceiling_micro(10_000_000, 500_000), Ok(0));
-        // p * (1 - p) is zero at both ends of the range.
-        let params = PlatformFeeParams {
-            rate: 300,
-            exponent: 4,
-            taker_only: true,
-        };
-        assert_eq!(params.ceiling_micro(10_000_000, MICRO), Ok(0));
-        assert_eq!(params.ceiling_micro(10_000_000, 0), Ok(0));
-    }
-
-    #[test]
-    fn the_platform_fee_follows_its_published_formula() {
-        // 10 pUSD at p = 0.5, rate 300 / 10^4 = 0.03: 10 * 0.03 * 0.25 = 0.075
-        let params = PlatformFeeParams {
-            rate: 300,
-            exponent: 4,
-            taker_only: true,
-        };
-        assert_eq!(params.ceiling_micro(10_000_000, 500_000), Ok(75_000));
-        // The exponent is a decimal scale, so raising it by one divides by ten.
-        let shifted = PlatformFeeParams {
-            rate: 300,
-            exponent: 5,
-            taker_only: true,
-        };
-        assert_eq!(shifted.ceiling_micro(10_000_000, 500_000), Ok(7_500));
-    }
-
-    #[test]
-    fn a_price_above_par_is_refused_rather_than_priced() {
-        let params = PlatformFeeParams {
-            rate: 300,
-            exponent: 4,
-            taker_only: true,
-        };
-        assert!(params.ceiling_micro(10_000_000, MICRO + 1).is_err());
-    }
-
-    #[test]
-    fn the_bound_sums_both_fees_and_the_advisory_states_each() {
-        let params = PlatformFeeParams {
-            rate: 300,
-            exponent: 4,
-            taker_only: true,
-        };
+    fn the_bound_covers_the_builder_fee_and_says_the_venue_fee_is_outside_it() {
         let bound = fee_bound(
             "0xabc",
             ceiling(50, 100),
             OrderType::FAK,
             &buy(10_000_000, 500_000),
             None,
-            Some(params),
         )
         .unwrap();
         assert_eq!(bound.builder_fee_micro, 100_000);
-        assert_eq!(bound.platform_fee_micro, Some(75_000));
-        assert_eq!(bound.total_fee_micro(), 175_000);
-        assert_eq!(bound.spend_including_fees_micro(), 10_175_000);
+        assert_eq!(bound.total_fee_micro(), 100_000);
+        assert_eq!(bound.spend_including_fees_micro(), 10_100_000);
 
         let advisory = String::from_utf8(builder_code_order_advisory(&bound, true)).unwrap();
         assert!(advisory.contains("0xabc"), "{advisory}");
         assert!(advisory.contains("1%"), "{advisory}");
-        assert!(advisory.contains("0.1"), "{advisory}");
-        assert!(advisory.contains("10.175"), "{advisory}");
+        assert!(advisory.contains("10.1"), "{advisory}");
+        // The owner must be told the venue fee is not in the total, not shown
+        // a number for it.
+        assert!(advisory.contains("NOT inside the total"), "{advisory}");
+        assert!(advisory.contains("on top of it"), "{advisory}");
         assert!(advisory.contains("serves no API"), "{advisory}");
         assert!(advisory.contains("sized down"), "{advisory}");
-    }
-
-    /// A market whose fee parameters could not be read is not a market that
-    /// charges nothing. The owner must be told the total excludes it rather
-    /// than shown a zero they would read as "free".
-    #[test]
-    fn an_unread_platform_fee_is_disclosed_not_shown_as_zero() {
-        let bound = fee_bound(
-            "0xabc",
-            ceiling(50, 100),
-            OrderType::FAK,
-            &buy(10_000_000, 500_000),
-            None,
-            None,
-        )
-        .unwrap();
-        let advisory = String::from_utf8(builder_code_order_advisory(&bound, false)).unwrap();
-        assert!(advisory.contains("could not be read"), "{advisory}");
-        assert!(advisory.contains("charged on top"), "{advisory}");
-        assert!(!advisory.contains("own fee up to 0"), "{advisory}");
-
-        // A market that genuinely charges nothing says so as a number.
-        let free = fee_bound(
-            "0xabc",
-            ceiling(50, 100),
-            OrderType::FAK,
-            &buy(10_000_000, 500_000),
-            None,
-            Some(PlatformFeeParams {
-                rate: 0,
-                exponent: 4,
-                taker_only: true,
-            }),
-        )
-        .unwrap();
-        assert_eq!(free.platform_fee_micro, Some(0));
-        let advisory = String::from_utf8(builder_code_order_advisory(&free, false)).unwrap();
-        assert!(advisory.contains("own fee up to 0 pUSD"), "{advisory}");
-    }
-
-    #[test]
-    fn with_no_platform_params_only_the_builder_fee_is_bounded() {
-        let bound = fee_bound(
-            "0xabc",
-            ceiling(50, 100),
-            OrderType::FAK,
-            &buy(10_000_000, 500_000),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(bound.platform_fee_micro, None);
-        assert_eq!(bound.total_fee_micro(), 100_000);
     }
 }

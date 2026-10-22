@@ -258,15 +258,12 @@ fn post_trade_draft_in_class(
                         }
                         Err(resp) => return resp,
                     };
-                    let platform =
-                        crate::builder_fee::read_platform_fee_params(&draft.condition_id);
                     let bound = match crate::builder_fee::fee_bound(
                         &format!("{:#x}", attribution.code),
                         attribution.ceiling,
                         draft.order_type,
                         &quote,
                         draft.best_bid_micro,
-                        platform,
                     ) {
                         Ok(bound) => bound,
                         Err(err) => return error(-3, format!("builder fee: {err}")),
@@ -309,10 +306,6 @@ fn post_trade_draft_in_class(
                     "builder_fee_rate_bps": bound.as_ref().map(|b| b.builder_bps),
                     "builder_fee_notional_micro": bound.as_ref().map(|b| b.notional_micro.to_string()),
                     "builder_fee_ceiling_micro": bound.as_ref().map(|b| b.builder_fee_micro.to_string()),
-                    "platform_fee_micro": bound
-                        .as_ref()
-                        .and_then(|b| b.platform_fee_micro)
-                        .map(|micro| micro.to_string()),
                     "neg_risk": draft.neg_risk,
                     "chain_id": chain_id,
                     "review_intent_hash": review_intent_hash,
@@ -449,10 +442,7 @@ fn post_trade_draft_in_class(
                 amount_microusd: draft.amount_micro,
                 // Recorded so the daily cap measures what left the wallet. A
                 // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft
-                    .builder_fee_micro
-                    .unwrap_or(0)
-                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
+                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -497,10 +487,7 @@ fn post_trade_draft_in_class(
                 amount_microusd: draft.amount_micro,
                 // Recorded so the daily cap measures what left the wallet. A
                 // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft
-                    .builder_fee_micro
-                    .unwrap_or(0)
-                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
+                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -549,10 +536,7 @@ fn post_trade_draft_in_class(
                     amount_microusd: draft.amount_micro,
                     // Recorded so the daily cap measures what left the wallet. A
                     // plain order genuinely owes nothing, so zero is truthful.
-                    fee_microusd: draft
-                        .builder_fee_micro
-                        .unwrap_or(0)
-                        .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
+                    fee_microusd: draft.builder_fee_micro.unwrap_or(0),
                     limit_price_micro: draft.limit_price_micro,
                     size_micro: draft.size_micro,
                     salt,
@@ -615,10 +599,7 @@ fn post_trade_draft_in_class(
                 amount_microusd: draft.amount_micro,
                 // Recorded so the daily cap measures what left the wallet. A
                 // plain order genuinely owes nothing, so zero is truthful.
-                fee_microusd: draft
-                    .builder_fee_micro
-                    .unwrap_or(0)
-                    .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
+                fee_microusd: draft.builder_fee_micro.unwrap_or(0),
                 limit_price_micro: draft.limit_price_micro,
                 size_micro: draft.size_micro,
                 salt,
@@ -684,6 +665,15 @@ fn builder_fee_from_prepared(
     .map_err(|_| error(-4, "prepared builder_fee_rate_bps is out of range"))?;
     let notional_micro = micro("builder_fee_notional_micro")?;
     let builder_fee_micro = micro("builder_fee_ceiling_micro")?;
+    // A zero rate under the fee-bearing class is the same lie as an absent
+    // one: it declares nothing while the order still pays. Only the absent
+    // case was checked before.
+    if builder_bps == 0 {
+        return Err(error(
+            -4,
+            "prepared builder order declares a zero fee rate, which this class cannot carry",
+        ));
+    }
     let expected = crate::builder_code::builder_fee_ceiling_micro(notional_micro, builder_bps)
         .map_err(|err| error(-4, format!("prepared builder fee: {err}")))?;
     if expected != builder_fee_micro {
@@ -692,10 +682,22 @@ fn builder_fee_from_prepared(
             "prepared builder fee does not match its stored notional and rate",
         ));
     }
-    let platform_fee_micro = match value.get("platform_fee_micro") {
-        None | Some(serde_json::Value::Null) => None,
-        Some(_) => Some(micro("platform_fee_micro")?),
-    };
+    // Self-consistency is not enough: the three fee fields agreeing with each
+    // other proves nothing if the notional is unrelated to what the signed
+    // order actually gives. For a buy that is `maker_amount`, in the same
+    // preimage, so bind them.
+    if let Some(maker) = value
+        .get("maker_amount")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        && value.get("side").and_then(serde_json::Value::as_u64) == Some(0)
+        && notional_micro < maker
+    {
+        return Err(error(
+            -4,
+            "prepared builder fee was priced on less than the order gives",
+        ));
+    }
     let code_hex = value
         .get("builder")
         .and_then(serde_json::Value::as_str)
@@ -709,7 +711,6 @@ fn builder_fee_from_prepared(
         basis: crate::builder_fee::FeeRateBasis::for_order_type(order_type),
         notional_micro,
         builder_fee_micro,
-        platform_fee_micro,
     })
 }
 
@@ -961,7 +962,6 @@ mod builder_fee_retry_tests {
             "builder_fee_rate_bps": rate,
             "builder_fee_notional_micro": notional,
             "builder_fee_ceiling_micro": ceiling,
-            "platform_fee_micro": "75000",
         })
     }
 
@@ -972,8 +972,7 @@ mod builder_fee_retry_tests {
         assert_eq!(bound.builder_bps, 100);
         assert_eq!(bound.notional_micro, 10_000_000);
         assert_eq!(bound.builder_fee_micro, 100_000);
-        assert_eq!(bound.platform_fee_micro, Some(75_000));
-        assert_eq!(bound.total_fee_micro(), 175_000);
+        assert_eq!(bound.total_fee_micro(), 100_000);
     }
 
     /// A zero or absent fee under the fee-bearing class is a lie, not a legacy
@@ -1002,16 +1001,40 @@ mod builder_fee_retry_tests {
         );
     }
 
+    /// A zero rate and a notional unrelated to the signed amount both passed
+    /// the old self-consistency check, which only proved the three stored fee
+    /// fields agreed with each other.
     #[test]
-    fn an_absent_platform_leg_stays_absent_rather_than_reading_as_zero() {
-        let mut value = preimage(100, "10000000", "100000");
-        value.as_object_mut().unwrap().remove("platform_fee_micro");
-        let bound = builder_fee_from_prepared(&value, OrderType::FAK).unwrap();
-        assert_eq!(bound.platform_fee_micro, None);
+    fn a_prepared_builder_order_cannot_declare_a_zero_rate_or_an_unrelated_notional() {
+        let mut zero = preimage(100, "10000000", "100000");
+        zero["builder_fee_rate_bps"] = serde_json::json!(0);
+        zero["builder_fee_ceiling_micro"] = serde_json::json!("0");
+        assert!(
+            builder_fee_from_prepared(&zero, OrderType::FAK).is_err(),
+            "a zero rate declares nothing while the order still pays"
+        );
+
+        // Internally consistent, but priced on a tenth of what the order gives.
+        let mut understated = preimage(100, "1000000", "10000");
+        understated["maker_amount"] = serde_json::json!("10000000");
+        understated["side"] = serde_json::json!(0);
+        assert!(
+            builder_fee_from_prepared(&understated, OrderType::FAK).is_err(),
+            "the notional must be bound to what the signed order gives"
+        );
+
+        // The honest version of the same order is accepted.
+        let mut honest = preimage(100, "10000000", "100000");
+        honest["maker_amount"] = serde_json::json!("10000000");
+        honest["side"] = serde_json::json!(0);
+        assert!(builder_fee_from_prepared(&honest, OrderType::FAK).is_ok());
     }
 
+    /// Both routes share one prepared-signing key, so the guard compares the
+    /// stored intent against the class being posted. Asserting only that the
+    /// two class strings differ left the guard itself untested.
     #[test]
-    fn the_two_classes_are_distinct_so_a_draft_cannot_cross_routes() {
+    fn a_draft_prepared_under_one_class_is_refused_by_the_other() {
         assert_ne!(
             PostClass::PlainOrder.operation_class(),
             PostClass::BuilderCodeOrder.operation_class()
@@ -1020,5 +1043,17 @@ mod builder_fee_retry_tests {
             PostClass::BuilderCodeOrder.operation_class(),
             "polymarket.builder_code_order.poly1271"
         );
+        // The comparison the guard performs, in both directions.
+        for (stored, posting) in [
+            (PostClass::PlainOrder, PostClass::BuilderCodeOrder),
+            (PostClass::BuilderCodeOrder, PostClass::PlainOrder),
+        ] {
+            assert!(
+                stored.operation_class() != posting.operation_class(),
+                "a draft stored as {} must not post as {}",
+                stored.operation_class(),
+                posting.operation_class()
+            );
+        }
     }
 }

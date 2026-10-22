@@ -93,13 +93,11 @@ pub fn revalidate_trade_draft(
         Ok(limit) => limit,
         Err(resp) => return resp,
     };
-    let spend_fees = match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
-        &draft.condition_id,
-        draft.order_type,
-    ) {
-        Ok(fees) => fees,
-        Err(resp) => return resp,
-    };
+    let spend_fees =
+        match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(draft.order_type) {
+            Ok(fees) => fees,
+            Err(resp) => return resp,
+        };
     let quote = match crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
@@ -125,11 +123,13 @@ pub fn revalidate_trade_draft(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee, platform_fee) =
-        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
+    let (rate_bps, builder_fee) = crate::trade_flow_parts::pricing::quoted_fee_fields(
+        spend_fees,
+        &quote,
+        draft.best_bid_micro,
+    );
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
-    draft.platform_fee_micro = platform_fee;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -179,7 +179,6 @@ pub fn revalidate_trade_draft(
             // Display only; the compared copy is in review_intent.json.
             "builder_fee": review_fee[0].1.clone(),
             "builder_fee_rate_bps": review_fee[1].1.clone(),
-            "platform_fee": review_fee[2].1.clone(),
             "tick_micro": draft.tick_micro,
             "tick": format_micro(draft.tick_micro),
             "min_order_size_micro": draft.min_order_size_micro,
@@ -273,7 +272,6 @@ pub fn revalidate_trade_draft(
             // Emitted through the same helper the comparison uses.
             "builder_fee": review_fee[0].1.clone(),
             "builder_fee_rate_bps": review_fee[1].1.clone(),
-            "platform_fee": review_fee[2].1.clone(),
             "neg_risk": draft.neg_risk,
             "policy_status": policy_status,
             "sell_preflight": sell_preflight,
@@ -324,10 +322,7 @@ pub fn refresh_trade_post_inputs(
         draft.limit_price_micro,
         &snapshot,
     )?;
-    let spend_fees = crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(
-        &draft.condition_id,
-        draft.order_type,
-    )?;
+    let spend_fees = crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(draft.order_type)?;
     let quote = crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
@@ -340,11 +335,13 @@ pub fn refresh_trade_post_inputs(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee, platform_fee) =
-        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
+    let (rate_bps, builder_fee) = crate::trade_flow_parts::pricing::quoted_fee_fields(
+        spend_fees,
+        &quote,
+        draft.best_bid_micro,
+    );
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
-    draft.platform_fee_micro = platform_fee;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -385,7 +382,6 @@ pub fn refresh_trade_post_inputs(
             // Display only; the compared copy is in review_intent.json.
             "builder_fee": review_fee[0].1.clone(),
             "builder_fee_rate_bps": review_fee[1].1.clone(),
-            "platform_fee": review_fee[2].1.clone(),
             "tick_micro": draft.tick_micro,
             "tick": format_micro(draft.tick_micro),
             "min_order_size_micro": draft.min_order_size_micro,
@@ -448,7 +444,7 @@ pub fn refresh_trade_post_inputs(
 /// and `null`, the comparison read `as_str()`, and no post could ever match.
 /// Values are strings so a missing fee is distinguishable from an unread one
 /// and from a real zero.
-pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 3] {
+pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 2] {
     [
         (
             "builder_fee",
@@ -463,13 +459,6 @@ pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 3]
                 .builder_fee_rate_bps
                 .map(|bps| bps.to_string())
                 .unwrap_or_else(|| "none".to_owned()),
-        ),
-        (
-            "platform_fee",
-            draft
-                .platform_fee_micro
-                .map(format_micro)
-                .unwrap_or_else(|| "unread".to_owned()),
         ),
     ]
 }

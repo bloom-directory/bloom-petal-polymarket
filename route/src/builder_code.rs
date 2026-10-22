@@ -112,6 +112,15 @@ impl BuilderFeeCeilingBps {
     /// Rejects a ceiling the venue could never charge. Granularity is 1 bp by
     /// construction, since the fields are whole basis points.
     pub fn validate(self) -> Result<Self, String> {
+        // Refusing a configured code with no ceiling, then accepting an
+        // all-zero one, would let the same zero-fee claim through the front
+        // door. A builder charging nothing does not need a code attached.
+        if self.maker_bps == 0 && self.taker_bps == 0 {
+            return Err(
+                "a ceiling of zero on both sides would declare no fee; clear settings/builder-code instead if the builder charges nothing"
+                    .to_owned(),
+            );
+        }
         if self.maker_bps > VENUE_MAX_MAKER_FEE_BPS {
             return Err(format!(
                 "maker_bps must be 0..={VENUE_MAX_MAKER_FEE_BPS}; Polymarket caps a maker rate there"
@@ -218,6 +227,54 @@ mod tests {
     #[test]
     fn nothing_configured_resolves_to_none() {
         assert_eq!(resolve_default(None, None), None);
+    }
+
+    #[test]
+    fn a_ceiling_is_bounded_by_the_venue_and_cannot_be_zero_on_both_sides() {
+        // Boundaries: the venue's own maxima are accepted, one above is not.
+        assert!(
+            BuilderFeeCeilingBps {
+                maker_bps: 50,
+                taker_bps: 100
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            BuilderFeeCeilingBps {
+                maker_bps: 51,
+                taker_bps: 100
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            BuilderFeeCeilingBps {
+                maker_bps: 50,
+                taker_bps: 101
+            }
+            .validate()
+            .is_err()
+        );
+        // All-zero would declare no fee through the front door, which is the
+        // state a configured code without a ceiling is refused for.
+        assert!(
+            BuilderFeeCeilingBps {
+                maker_bps: 0,
+                taker_bps: 0
+            }
+            .validate()
+            .is_err()
+        );
+        // One side zero is legitimate: a builder may charge takers only.
+        assert!(
+            BuilderFeeCeilingBps {
+                maker_bps: 0,
+                taker_bps: 25
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]

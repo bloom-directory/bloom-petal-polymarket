@@ -163,7 +163,7 @@ pub fn build_trade_quote_with_fees(
 ) -> Result<LimitQuote, DispatchResponse> {
     let pricer = fees.map(|fees| {
         move |notional: u64| -> crate::polymarket::Result<u64> {
-            fees.total_micro(notional, limit_micro)
+            fees.total_micro(notional)
                 .map_err(crate::polymarket::PolymarketError::invalid)
         }
     });
@@ -184,18 +184,11 @@ pub fn build_trade_quote_with_fees(
 #[derive(Clone, Copy, Debug)]
 pub struct SpendFeeInputs {
     pub builder_bps: u16,
-    pub platform: Option<crate::builder_fee::PlatformFeeParams>,
 }
 
 impl SpendFeeInputs {
-    fn total_micro(self, notional_micro: u64, price_micro: u64) -> Result<u64, String> {
-        let builder =
-            crate::builder_code::builder_fee_ceiling_micro(notional_micro, self.builder_bps)?;
-        let platform = match self.platform {
-            Some(params) => params.ceiling_micro(notional_micro, price_micro)?,
-            None => 0,
-        };
-        Ok(builder.saturating_add(platform))
+    fn total_micro(self, notional_micro: u64) -> Result<u64, String> {
+        crate::builder_code::builder_fee_ceiling_micro(notional_micro, self.builder_bps)
     }
 }
 
@@ -204,16 +197,22 @@ impl SpendFeeInputs {
 pub fn quoted_fee_fields(
     fees: Option<SpendFeeInputs>,
     quote: &LimitQuote,
-) -> (Option<u16>, Option<u64>, Option<u64>) {
+    best_bid_micro: Option<u64>,
+) -> (Option<u16>, Option<u64>) {
     let Some(fees) = fees else {
-        return (None, None, None);
+        return (None, None);
     };
-    let notional = shared_trade::usd_leg(quote);
+    // The SAME notional the claim declares. Using `usd_leg` here instead gave
+    // a sell the limit notional while the claim used the better of the limit
+    // and the book, so the plan, the review intent and the policy cap could
+    // all show a tenth of the declared fee, and the review comparison could
+    // not see it because both sides shared the wrong formula.
+    let notional = match crate::builder_fee::fee_notional_micro(quote, best_bid_micro) {
+        Ok(notional) => notional,
+        Err(_) => return (Some(fees.builder_bps), None),
+    };
     let builder = crate::builder_code::builder_fee_ceiling_micro(notional, fees.builder_bps).ok();
-    let platform = fees
-        .platform
-        .and_then(|params| params.ceiling_micro(notional, quote.price_micro).ok());
-    (Some(fees.builder_bps), builder, platform)
+    (Some(fees.builder_bps), builder)
 }
 
 /// A one-line fee summary for the owner-facing plan.
@@ -228,24 +227,15 @@ pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
         .builder_fee_rate_bps
         .map(crate::builder_code::bps_percent_string)
         .unwrap_or_else(|| "unknown".to_owned());
-    match draft.platform_fee_micro {
-        Some(platform) => format!(
-            "up to {} pUSD builder ({rate}) plus {} pUSD Polymarket, {} pUSD total",
-            crate::polymarket::order::format_micro(builder),
-            crate::polymarket::order::format_micro(platform),
-            crate::polymarket::order::format_micro(builder.saturating_add(platform)),
-        ),
-        None => format!(
-            "up to {} pUSD builder ({rate}); Polymarket's own fee could not be read and is charged on top",
-            crate::polymarket::order::format_micro(builder),
-        ),
-    }
+    format!(
+        "up to {} pUSD builder ({rate}); Polymarket's own taker fee is charged separately and is not in this figure",
+        crate::polymarket::order::format_micro(builder),
+    )
 }
 
 /// Resolves the fee inputs for a draft, or `None` when no builder code is
 /// configured. One place, so every stage that quotes agrees.
 pub fn resolve_spend_fee_inputs(
-    condition_id: &str,
     order_type: OrderType,
 ) -> Result<Option<SpendFeeInputs>, DispatchResponse> {
     let Some(attribution) = crate::account_views::resolve_builder_attribution()? else {
@@ -253,10 +243,7 @@ pub fn resolve_spend_fee_inputs(
     };
     let builder_bps =
         crate::builder_fee::FeeRateBasis::for_order_type(order_type).bps(attribution.ceiling);
-    Ok(Some(SpendFeeInputs {
-        builder_bps,
-        platform: crate::builder_fee::read_platform_fee_params(condition_id),
-    }))
+    Ok(Some(SpendFeeInputs { builder_bps }))
 }
 
 pub fn trade_policy_check(
@@ -276,10 +263,7 @@ pub fn trade_policy_check(
         // A spend cap should bound what leaves the wallet, not the order's
         // notional alone. An unread platform fee contributes nothing here,
         // which the owner's advisory discloses separately.
-        fee_microusd: draft
-            .builder_fee_micro
-            .unwrap_or(0)
-            .saturating_add(draft.platform_fee_micro.unwrap_or(0)),
+        fee_microusd: draft.builder_fee_micro.unwrap_or(0),
         limit_price_micro: draft.limit_price_micro,
         active: draft.active,
         closed: draft.closed,

@@ -92,7 +92,6 @@ mod tests {
             book_snapshot_secs: 1,
             builder_fee_rate_bps: None,
             builder_fee_micro: None,
-            platform_fee_micro: None,
             status: "signed".into(),
             salt: Some(42),
             clob_order_id: None,
@@ -159,14 +158,6 @@ mod tests {
         );
     }
 
-    /// The platform fee's parameters come from CLOB V2's market info, which
-    /// also carries the minimum tick and order size. Without this allowance
-    /// the fee cannot be bounded and the advisory has to disclose that.
-    #[test]
-    fn clob_market_info_is_allowed_for_reading_platform_fee_parameters() {
-        assert!(clob_manifest_allows("get", "/clob-market-info"));
-    }
-
     /// A spend cap should bound what leaves the wallet. Measuring the order's
     /// notional alone would let the fees push the real spend past the cap.
     #[test]
@@ -187,7 +178,6 @@ mod tests {
         draft.side = Side::Buy;
         draft.builder_fee_rate_bps = Some(100);
         draft.builder_fee_micro = Some(100_000);
-        draft.platform_fee_micro = Some(75_000);
         let owner: Address = "0x0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
@@ -215,7 +205,6 @@ mod tests {
             // cannot drift from production the way the first one did.
             "builder_fee": fee_fields[0].1.clone(),
             "builder_fee_rate_bps": fee_fields[1].1.clone(),
-            "platform_fee": fee_fields[2].1.clone(),
             "policy_status": "ok",
             "neg_risk": draft.neg_risk,
         });
@@ -229,7 +218,6 @@ mod tests {
         for mutate in [
             |d: &mut StoreTradeDraft| d.builder_fee_micro = Some(50_000),
             |d: &mut StoreTradeDraft| d.builder_fee_rate_bps = Some(50),
-            |d: &mut StoreTradeDraft| d.platform_fee_micro = None,
         ] {
             let mut changed = draft.clone();
             mutate(&mut changed);
@@ -254,7 +242,6 @@ mod tests {
         let fee_fields = review_fee_fields(&draft);
         assert_eq!(fee_fields[0].1, "none");
         assert_eq!(fee_fields[1].1, "none");
-        assert_eq!(fee_fields[2].1, "unread");
 
         let owner: Address = "0x0000000000000000000000000000000000000001"
             .parse()
@@ -279,7 +266,6 @@ mod tests {
             "taker": crate::polymarket::order::format_micro(draft.taker_micro),
             "builder_fee": fee_fields[0].1.clone(),
             "builder_fee_rate_bps": fee_fields[1].1.clone(),
-            "platform_fee": fee_fields[2].1.clone(),
             "policy_status": "ok",
             "neg_risk": draft.neg_risk,
         });

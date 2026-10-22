@@ -203,10 +203,6 @@ pub struct StoreTradeDraft {
     pub builder_fee_rate_bps: Option<u16>,
     #[serde(default)]
     pub builder_fee_micro: Option<u64>,
-    /// `None` when the market's platform rate could not be read, which is not
-    /// the same as a market that charges nothing.
-    #[serde(default)]
-    pub platform_fee_micro: Option<u64>,
     #[serde(default)]
     pub salt: Option<u64>,
     #[serde(default)]
