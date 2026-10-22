@@ -138,13 +138,11 @@ pub fn store_trade_receipt(
     )
 }
 
-pub fn append_trade_audit(
-    wallet: &str,
-    event: &str,
-    details: serde_json::Value,
-) -> DispatchResponse {
-    let key = format!("trade/{wallet}/audit.jsonl");
-    let mut text = match petal::sdk::store_get(&key, MAX_STORE_BYTES) {
+/// The package-global record of builder attribution changes.
+pub const BUILDER_SETTINGS_AUDIT_KEY: &str = "settings/builder-audit.jsonl";
+
+fn append_audit_line(key: &str, event: &str, details: serde_json::Value) -> DispatchResponse {
+    let mut text = match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(SdkError::Host(HostStatus::NotFound)) => String::new(),
         Err(e) => return sdk_error(e),
@@ -156,8 +154,47 @@ pub fn append_trade_audit(
     });
     text.push_str(&line.to_string());
     text.push('\n');
-    match petal::sdk::store_put(&key, text.as_bytes(), false) {
+    match petal::sdk::store_put(key, text.as_bytes(), false) {
         Ok(()) => DispatchResponse::Write,
         Err(e) => sdk_error(e),
     }
+}
+
+pub fn append_trade_audit(
+    wallet: &str,
+    event: &str,
+    details: serde_json::Value,
+) -> DispatchResponse {
+    append_audit_line(&format!("trade/{wallet}/audit.jsonl"), event, details)
+}
+
+/// Records a change to the builder code or its fee ceiling.
+///
+/// Those two settings decide who is paid and how much, and both are ordinary
+/// agent writes. The per-order ceremony is what stops an undisclosed fee
+/// reaching a signature; this is what makes the change itself visible
+/// afterwards, named and timed rather than inferred from a later balance.
+pub fn append_builder_settings_audit(event: &str, details: serde_json::Value) -> DispatchResponse {
+    append_audit_line(BUILDER_SETTINGS_AUDIT_KEY, event, details)
+}
+
+/// The most recent builder attribution changes, oldest first.
+///
+/// Surfaced through `settings/builder-code-status.json`, because a record no
+/// route can read is no record at all. Absent or unreadable reads as empty:
+/// the status view is the fee configuration, not the log.
+pub fn builder_settings_audit_tail(limit: usize) -> Vec<serde_json::Value> {
+    let Ok(bytes) = petal::sdk::store_get(BUILDER_SETTINGS_AUDIT_KEY, MAX_STORE_BYTES) else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines
+        .iter()
+        .skip(lines.len().saturating_sub(limit))
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
 }

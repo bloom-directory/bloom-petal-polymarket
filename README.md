@@ -133,6 +133,16 @@ bytes, with or without `0x`) that takes precedence over the release default,
 or clear it with an empty body; `settings/builder-code-status.json` reports
 which one (if either) is currently in effect.
 
+Both that code and its ceiling decide who is paid and how much, and both are
+ordinary agent writes. Two things bound that. Every change is appended to a
+package-global record and reported as `recent_changes` by
+`settings/builder-code-status.json`, so a repointed beneficiary is visible
+rather than inferred from a later balance. And a draft records the code and the
+fee it was quoted against, so a change after the agent revalidated is refused
+at post time on both the fresh and the resumed path, naming the revalidation
+that recovers it — the owner's per-order approval states the beneficiary either
+way, but a review that never named it could not disagree with one.
+
 ## Account-scoped routes
 
 Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,account,positions,fund,trade,builder-keys,redeem,withdraw,revoke-approvals}/<wallet>/<index>/`. Obligations use `/petals/polymarket/obligations/<wallet>/<index>/status.json`.

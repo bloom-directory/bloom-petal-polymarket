@@ -92,6 +92,7 @@ mod tests {
             book_snapshot_secs: 1,
             builder_fee_rate_bps: None,
             builder_fee_micro: None,
+            builder_code: None,
             status: "signed".into(),
             salt: Some(42),
             clob_order_id: None,
@@ -204,6 +205,7 @@ mod tests {
         draft.side = Side::Buy;
         draft.builder_fee_rate_bps = Some(100);
         draft.builder_fee_micro = Some(100_000);
+        draft.builder_code = Some("0x000000000000000000000000000000000000000a".to_owned());
         let owner: Address = "0x0000000000000000000000000000000000000001"
             .parse()
             .unwrap();
@@ -211,8 +213,8 @@ mod tests {
             .parse()
             .unwrap();
         let policy_check = serde_json::json!({"policy_status": "ok"});
-        let fee_fields = crate::trade_flow_parts::revalidate::review_fee_fields(&draft);
-        let review = serde_json::json!({
+        let review = crate::trade_flow_parts::revalidate::with_review_fee_fields(
+            serde_json::json!({
             "wallet": draft.wallet,
             "draft_id": draft.id,
             "owner": owner.to_checksum(None),
@@ -227,13 +229,14 @@ mod tests {
             "size": crate::polymarket::order::format_micro(draft.size_micro),
             "maker": crate::polymarket::order::format_micro(draft.maker_micro),
             "taker": crate::polymarket::order::format_micro(draft.taker_micro),
-            // Built from the same helper the writer uses, so this fixture
-            // cannot drift from production the way the first one did.
-            "builder_fee": fee_fields[0].1.clone(),
-            "builder_fee_rate_bps": fee_fields[1].1.clone(),
-            "policy_status": "ok",
-            "neg_risk": draft.neg_risk,
-        });
+                "policy_status": "ok",
+                "neg_risk": draft.neg_risk,
+            }),
+            // Merged by the same helper the writer uses, so this fixture
+            // cannot drift from production the way the first one did, and a
+            // fee field added later lands here without being hand-typed.
+            &draft,
+        );
 
         // The draft the review was taken from still matches it.
         review_intent_matches_draft(&review, &draft, owner, funder, &policy_check, None)
@@ -244,6 +247,11 @@ mod tests {
         for mutate in [
             |d: &mut StoreTradeDraft| d.builder_fee_micro = Some(50_000),
             |d: &mut StoreTradeDraft| d.builder_fee_rate_bps = Some(50),
+            // The beneficiary moves without the amount moving at all, which
+            // the fee comparison alone cannot see.
+            |d: &mut StoreTradeDraft| {
+                d.builder_code = Some("0x00000000000000000000000000000000000000ff".to_owned());
+            },
         ] {
             let mut changed = draft.clone();
             mutate(&mut changed);
@@ -261,13 +269,18 @@ mod tests {
     /// existed. The fields are strings on both sides now; this holds it.
     #[test]
     fn a_draft_with_no_builder_code_still_matches_its_own_review() {
-        use crate::trade_flow_parts::revalidate::{review_fee_fields, review_intent_matches_draft};
+        use crate::trade_flow_parts::revalidate::{
+            review_fee_fields, review_intent_matches_draft, with_review_fee_fields,
+        };
         let mut draft = draft();
         draft.side = Side::Buy;
         assert_eq!(draft.builder_fee_micro, None);
-        let fee_fields = review_fee_fields(&draft);
-        assert_eq!(fee_fields[0].1, "none");
-        assert_eq!(fee_fields[1].1, "none");
+        assert!(
+            review_fee_fields(&draft)
+                .iter()
+                .all(|(_, rendered)| rendered == "none"),
+            "every fee field must render as the string `none`, not JSON null"
+        );
 
         let owner: Address = "0x0000000000000000000000000000000000000001"
             .parse()
@@ -275,26 +288,27 @@ mod tests {
         let funder: Address = "0x0000000000000000000000000000000000000002"
             .parse()
             .unwrap();
-        let review = serde_json::json!({
-            "wallet": draft.wallet,
-            "draft_id": draft.id,
-            "owner": owner.to_checksum(None),
-            "funder": funder.to_checksum(None),
-            "slug": draft.slug,
-            "condition_id": draft.condition_id,
-            "outcome": draft.outcome,
-            "token_id": draft.token_id,
-            "side": "BUY",
-            "order_type": draft.order_type.as_str(),
-            "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
-            "size": crate::polymarket::order::format_micro(draft.size_micro),
-            "maker": crate::polymarket::order::format_micro(draft.maker_micro),
-            "taker": crate::polymarket::order::format_micro(draft.taker_micro),
-            "builder_fee": fee_fields[0].1.clone(),
-            "builder_fee_rate_bps": fee_fields[1].1.clone(),
-            "policy_status": "ok",
-            "neg_risk": draft.neg_risk,
-        });
+        let review = with_review_fee_fields(
+            serde_json::json!({
+                "wallet": draft.wallet,
+                "draft_id": draft.id,
+                "owner": owner.to_checksum(None),
+                "funder": funder.to_checksum(None),
+                "slug": draft.slug,
+                "condition_id": draft.condition_id,
+                "outcome": draft.outcome,
+                "token_id": draft.token_id,
+                "side": "BUY",
+                "order_type": draft.order_type.as_str(),
+                "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+                "size": crate::polymarket::order::format_micro(draft.size_micro),
+                "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+                "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+                "policy_status": "ok",
+                "neg_risk": draft.neg_risk,
+            }),
+            &draft,
+        );
         review_intent_matches_draft(
             &review,
             &draft,
@@ -345,7 +359,14 @@ mod tests {
     /// whole suite green.
     #[test]
     fn quoted_fee_fields_reports_the_fee_it_was_configured_with() {
-        use crate::trade_flow_parts::pricing::{SpendFeeInputs, quoted_fee_fields};
+        use crate::trade_flow_parts::pricing::{
+            SpendFeeAttribution, SpendFeeInputs, quoted_fee_fields,
+        };
+        const CODE: &str = "0x00000000000000000000000000000000000000000000000000000000000000ab";
+        let configured = SpendFeeAttribution {
+            inputs: SpendFeeInputs { builder_bps: 100 },
+            code_hex: CODE.to_owned(),
+        };
         let quote = crate::polymarket::order::LimitQuote {
             side: Side::Buy,
             price_micro: 500_000,
@@ -354,10 +375,10 @@ mod tests {
             taker_micro: 20_000_000,
         };
         assert_eq!(
-            quoted_fee_fields(Some(SpendFeeInputs { builder_bps: 100 }), &quote),
-            (Some(100), Some(100_000))
+            quoted_fee_fields(Some(&configured), &quote),
+            (Some(100), Some(100_000), Some(CODE.to_owned()))
         );
-        assert_eq!(quoted_fee_fields(None, &quote), (None, None));
+        assert_eq!(quoted_fee_fields(None, &quote), (None, None, None));
 
         // A sell is where par and the USD leg diverge, so this is the case
         // that pins the par binding. A buy cannot: its maker leg IS its USD
@@ -370,8 +391,8 @@ mod tests {
             taker_micro: 1_000_000,
         };
         assert_eq!(
-            quoted_fee_fields(Some(SpendFeeInputs { builder_bps: 100 }), &sell),
-            (Some(100), Some(100_000)),
+            quoted_fee_fields(Some(&configured), &sell),
+            (Some(100), Some(100_000), Some(CODE.to_owned())),
             "a sell's fee must be priced on par, not on its USD leg"
         );
     }

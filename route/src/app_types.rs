@@ -203,6 +203,11 @@ pub struct StoreTradeDraft {
     pub builder_fee_rate_bps: Option<u16>,
     #[serde(default)]
     pub builder_fee_micro: Option<u64>,
+    /// The builder code this draft's fee was priced for, as `0x…`. Carried for
+    /// the same reason: the ceremony names the beneficiary, but a review that
+    /// never named it cannot disagree with a code repointed since.
+    #[serde(default)]
+    pub builder_code: Option<String>,
     #[serde(default)]
     pub salt: Option<u64>,
     #[serde(default)]

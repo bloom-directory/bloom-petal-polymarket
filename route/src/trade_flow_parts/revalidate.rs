@@ -104,7 +104,7 @@ pub fn revalidate_trade_draft(
         limit_micro,
         &snapshot,
         draft.order_type,
-        spend_fees,
+        spend_fees.as_ref().map(|fees| fees.inputs),
     ) {
         Ok(quote) => quote,
         Err(resp) => return resp,
@@ -123,10 +123,11 @@ pub fn revalidate_trade_draft(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee) =
-        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
+    let (rate_bps, builder_fee, builder_code) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees.as_ref(), &quote);
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
+    draft.builder_code = builder_code;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -326,16 +327,17 @@ pub fn refresh_trade_post_inputs(
         limit_micro,
         &snapshot,
         draft.order_type,
-        spend_fees,
+        spend_fees.as_ref().map(|fees| fees.inputs),
     )?;
     draft.limit_price_micro = quote.price_micro;
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
-    let (rate_bps, builder_fee) =
-        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees, &quote);
+    let (rate_bps, builder_fee, builder_code) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees.as_ref(), &quote);
     draft.builder_fee_rate_bps = rate_bps;
     draft.builder_fee_micro = builder_fee;
+    draft.builder_code = builder_code;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -457,8 +459,19 @@ pub fn with_review_fee_fields(
     value
 }
 
-pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 2] {
+pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 3] {
     [
+        // Who is paid, not just how much. Disclosed in the ceremony either
+        // way, but a review that never named the beneficiary could not
+        // disagree with one repointed between the agent's revalidation and
+        // the signature.
+        (
+            "builder_code",
+            draft
+                .builder_code
+                .clone()
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
         (
             "builder_fee",
             draft

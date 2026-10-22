@@ -186,6 +186,16 @@ pub struct SpendFeeInputs {
     pub builder_bps: u16,
 }
 
+/// A builder code and the fee inputs its orders are sized against, resolved in
+/// one pass so the code a draft records is the one its fee was priced for.
+#[derive(Clone, Debug)]
+pub struct SpendFeeAttribution {
+    pub inputs: SpendFeeInputs,
+    /// `0x…`, rendered the way the signed order's `builder` field is, so the
+    /// draft, the review intent and the prepared artifact all compare.
+    pub code_hex: String,
+}
+
 impl SpendFeeInputs {
     fn total_micro(self, notional_micro: u64) -> Result<u64, String> {
         crate::builder_code::builder_fee_ceiling_micro(notional_micro, self.builder_bps)
@@ -195,17 +205,22 @@ impl SpendFeeInputs {
 /// The fee a quote was sized against, as stored on the draft and compared at
 /// every later stage. `None` throughout when no builder code is configured.
 pub fn quoted_fee_fields(
-    fees: Option<SpendFeeInputs>,
+    fees: Option<&SpendFeeAttribution>,
     quote: &LimitQuote,
-) -> (Option<u16>, Option<u64>) {
+) -> (Option<u16>, Option<u64>, Option<String>) {
     let Some(fees) = fees else {
-        return (None, None);
+        return (None, None, None);
     };
     // The SAME notional the claim declares, so the plan, the review intent
     // and the policy cap cannot disagree with what gets signed.
     let notional = crate::builder_fee::fee_notional_micro(quote);
-    let builder = crate::builder_code::builder_fee_ceiling_micro(notional, fees.builder_bps).ok();
-    (Some(fees.builder_bps), builder)
+    let builder =
+        crate::builder_code::builder_fee_ceiling_micro(notional, fees.inputs.builder_bps).ok();
+    (
+        Some(fees.inputs.builder_bps),
+        builder,
+        Some(fees.code_hex.clone()),
+    )
 }
 
 /// The fee that sits *on top of* a draft's `amount_micro`.
@@ -244,13 +259,16 @@ pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
 /// configured. One place, so every stage that quotes agrees.
 pub fn resolve_spend_fee_inputs(
     order_type: OrderType,
-) -> Result<Option<SpendFeeInputs>, DispatchResponse> {
+) -> Result<Option<SpendFeeAttribution>, DispatchResponse> {
     let Some(attribution) = crate::account_views::resolve_builder_attribution()? else {
         return Ok(None);
     };
     let builder_bps =
         crate::builder_fee::FeeRateBasis::for_order_type(order_type).bps(attribution.ceiling);
-    Ok(Some(SpendFeeInputs { builder_bps }))
+    Ok(Some(SpendFeeAttribution {
+        inputs: SpendFeeInputs { builder_bps },
+        code_hex: format!("{:#x}", attribution.code),
+    }))
 }
 
 pub fn trade_policy_check(

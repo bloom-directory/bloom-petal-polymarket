@@ -295,7 +295,25 @@ pub fn read_builder_code_status() -> DispatchResponse {
             "taker_bps": ceiling.taker_bps,
             "source": source,
         })),
+        // Both settings above are agent-writable, so the owner gets the
+        // history beside the current value rather than having to ask for it.
+        "recent_changes": builder_settings_audit_tail(20),
     }))
+}
+
+/// Records a builder attribution change, after the setting it describes.
+///
+/// Its failure is reported rather than swallowed: a repointed beneficiary with
+/// no record is precisely the state worth knowing about. Writing the record
+/// first would trade that for a record of a change that never applied.
+fn record_builder_settings_change(event: &str, details: serde_json::Value) -> DispatchResponse {
+    match append_builder_settings_audit(event, details) {
+        DispatchResponse::Error { .. } => error(
+            -4,
+            "the setting was written but its audit record was not; read settings/builder-code-status.json to confirm what is now in effect",
+        ),
+        other => other,
+    }
 }
 
 pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
@@ -305,7 +323,10 @@ pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
     };
     if text.is_empty() {
         return match petal::sdk::store_del("settings/builder-code") {
-            Ok(()) => DispatchResponse::Write,
+            Ok(()) => record_builder_settings_change(
+                "builder_code_cleared",
+                serde_json::json!({ "source": "override removed" }),
+            ),
             Err(err) => sdk_error(err),
         };
     }
@@ -313,12 +334,12 @@ pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
         Ok(parsed) => parsed,
         Err(err) => return error(-3, format!("builder code: {err}")),
     };
-    match petal::sdk::store_put(
-        "settings/builder-code",
-        format!("0x{}", hex::encode(parsed.0)).as_bytes(),
-        false,
-    ) {
-        Ok(()) => DispatchResponse::Write,
+    let encoded = format!("0x{}", hex::encode(parsed.0));
+    match petal::sdk::store_put("settings/builder-code", encoded.as_bytes(), false) {
+        Ok(()) => record_builder_settings_change(
+            "builder_code_set",
+            serde_json::json!({ "builder_code": encoded }),
+        ),
         Err(err) => sdk_error(err),
     }
 }
@@ -346,7 +367,10 @@ pub fn write_fee_ceiling_override(body: &[u8]) -> DispatchResponse {
     };
     if text.is_empty() {
         return match petal::sdk::store_del("settings/builder-fee-ceiling") {
-            Ok(()) => DispatchResponse::Write,
+            Ok(()) => record_builder_settings_change(
+                "builder_fee_ceiling_cleared",
+                serde_json::json!({ "source": "override removed" }),
+            ),
             Err(err) => sdk_error(err),
         };
     }
@@ -368,7 +392,13 @@ pub fn write_fee_ceiling_override(body: &[u8]) -> DispatchResponse {
         Err(err) => return error(-4, format!("encode fee ceiling: {err}")),
     };
     match petal::sdk::store_put("settings/builder-fee-ceiling", &encoded, false) {
-        Ok(()) => DispatchResponse::Write,
+        Ok(()) => record_builder_settings_change(
+            "builder_fee_ceiling_set",
+            serde_json::json!({
+                "maker_bps": parsed.maker_bps,
+                "taker_bps": parsed.taker_bps,
+            }),
+        ),
         Err(err) => sdk_error(err),
     }
 }

@@ -261,6 +261,18 @@ fn post_trade_draft_in_class(
                         Ok(bound) => bound,
                         Err(err) => return error(-3, format!("builder fee: {err}")),
                     };
+                    // Live settings decided this bound; the draft decided
+                    // what the agent displayed, what the caps were applied to
+                    // and what the review gate compares. Anchoring them here
+                    // is what makes the two the same thing.
+                    if let Err(resp) = fee_matches_draft(
+                        &draft,
+                        &bound.code_hex,
+                        bound.builder_bps,
+                        bound.builder_fee_micro,
+                    ) {
+                        return resp;
+                    }
                     (Some(attribution.code), Some(bound))
                 }
             };
@@ -328,6 +340,25 @@ fn post_trade_draft_in_class(
     {
         return error(-4, "prepared order does not match configured chain");
     }
+    // The signature is produced over `prepared.signing_hash`, while the body
+    // posted to the venue is built from the order reconstructed out of the
+    // preimage. Nothing compared the two: on a resume, a preimage edited in
+    // the store would be posted under a signature committing to different
+    // bytes, and the mismatch would surface as a venue rejection rather than
+    // as a refusal here, with the ceremony already spent. Equal by
+    // construction on the fresh path, which is why it costs nothing to check
+    // on both.
+    let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
+    match prepared.hash() {
+        Ok(stored) if stored == digest => {}
+        Ok(_) => {
+            return error(
+                -4,
+                "prepared order does not hash to its own signing hash; delete the prepared signing artifact and post again",
+            );
+        }
+        Err(resp) => return resp,
+    }
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -335,7 +366,6 @@ fn post_trade_draft_in_class(
     draft.salt = Some(salt);
     draft.status = "signing_prepared".into();
     draft.last_error = None;
-    let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
     let digest_hash = blake3_hex(digest.as_slice());
     if let DispatchResponse::Error { .. } =
         store_put_json(&format!("{base}/order.json"), &draft, false)
@@ -659,6 +689,37 @@ pub fn class_matches_prepared(
     ))
 }
 
+/// Refuses when a builder-coded order's fee or beneficiary has moved away from
+/// the figures its draft was quoted, sized and reviewed against.
+///
+/// Both post paths anchor here, for the same reason from opposite directions.
+/// The resume path reads its figures back out of the prepared artifact, where
+/// this catches a tampered one. The fresh path resolves them from live
+/// settings, where without this it would size, display and cap against the
+/// draft while signing whatever the settings happen to say now: a ceiling
+/// raised or a code repointed after the agent revalidated would reach the
+/// ceremony having never appeared in the review the agent showed.
+///
+/// A draft predating this field fails here rather than posting unanchored,
+/// which is the same "write revalidate again" the operator already handles.
+fn fee_matches_draft(
+    draft: &StoreTradeDraft,
+    code_hex: &str,
+    builder_bps: u16,
+    builder_fee_micro: u64,
+) -> Result<(), DispatchResponse> {
+    if draft.builder_code.as_deref() == Some(code_hex)
+        && draft.builder_fee_rate_bps == Some(builder_bps)
+        && draft.builder_fee_micro == Some(builder_fee_micro)
+    {
+        return Ok(());
+    }
+    Err(error(
+        -4,
+        "builder fee or beneficiary disagrees with this draft's resolved values; write revalidate again before posting",
+    ))
+}
+
 /// The fee bound a builder-coded order was prepared with.
 ///
 /// Read back, never recomputed. An operator ceiling change between attempts
@@ -722,26 +783,6 @@ fn builder_fee_from_prepared(
             "prepared builder fee was priced on less than the order moves",
         ));
     }
-    // Self-consistency does not anchor the RATE, and the rate is the whole
-    // multiplier: shrinking the rate and the ceiling together satisfies both
-    // the consistency check and the floor, so a tampered artifact could have
-    // declared a hundredth of the real fee and raised a fresh ceremony
-    // showing that figure to the owner.
-    //
-    // By the time this runs, the review gate has already forced the draft's
-    // rate and fee to the live configuration, and a genuine mid-flow ceiling
-    // change is refused before here with "write revalidate again". So in the
-    // honest case the artifact equals the draft, and requiring that costs
-    // nothing while closing the gap. The stored value is still what gets
-    // signed, so a lost response resumes the figure the ceremony showed.
-    if draft.builder_fee_rate_bps != Some(builder_bps)
-        || draft.builder_fee_micro != Some(builder_fee_micro)
-    {
-        return Err(error(
-            -4,
-            "prepared builder fee disagrees with this draft's resolved fee; write revalidate again before posting",
-        ));
-    }
     // Blanking this would show the owner "Builder code  is paid on this
     // order." A fee-bearing artifact without a code is not resumable.
     let code_hex = value
@@ -750,6 +791,16 @@ fn builder_fee_from_prepared(
         .filter(|code| !code.is_empty())
         .ok_or_else(|| error(-4, "prepared builder order is missing its builder code"))?
         .to_owned();
+    // Self-consistency does not anchor the RATE, and the rate is the whole
+    // multiplier: shrinking the rate and the ceiling together satisfies both
+    // the consistency check and the floor, so a tampered artifact could have
+    // declared a hundredth of the real fee and raised a fresh ceremony
+    // showing that figure to the owner. Nor does it anchor the beneficiary,
+    // which the floor and the consistency check never touch at all.
+    //
+    // The stored values are still what gets signed, so a lost response
+    // resumes the figures the ceremony showed.
+    fee_matches_draft(draft, &code_hex, builder_bps, builder_fee_micro)?;
     Ok(crate::builder_fee::FeeBound {
         code_hex,
         builder_bps,
@@ -1024,6 +1075,7 @@ mod builder_fee_retry_tests {
         .expect("draft fixture");
         draft.builder_fee_rate_bps = Some(rate);
         draft.builder_fee_micro = Some(ceiling_micro);
+        draft.builder_code = Some("0xabc".to_owned());
         draft
     }
 
@@ -1036,6 +1088,62 @@ mod builder_fee_retry_tests {
             "builder_fee_notional_micro": notional,
             "builder_fee_ceiling_micro": ceiling,
         })
+    }
+
+    /// The fee checks all reason about amounts, so none of them can see the
+    /// recipient change. An artifact repointed to another builder keeps every
+    /// figure the draft agreed to and pays somebody else.
+    #[test]
+    fn a_prepared_builder_order_repointed_to_another_code_is_refused() {
+        let mut repointed = preimage(100, "10000000", "100000");
+        repointed["builder"] = serde_json::json!("0xdef");
+        assert!(
+            builder_fee_from_prepared(&repointed, OrderType::FAK, &draft_for(100, 100_000))
+                .is_err(),
+            "a code the draft never named must not post"
+        );
+        // The same artifact against a draft that does name it is fine, so the
+        // refusal is the beneficiary and not some other field.
+        let mut agreed = draft_for(100, 100_000);
+        agreed.builder_code = Some("0xdef".to_owned());
+        assert!(builder_fee_from_prepared(&repointed, OrderType::FAK, &agreed).is_ok());
+    }
+
+    /// The posted body is rebuilt from the preimage while the signature
+    /// commits to the stored hash, so the post cross-checks one against the
+    /// other. This pins the property that makes that check work: an edited
+    /// preimage reconstructs to an order with a different digest.
+    #[test]
+    fn an_edited_preimage_no_longer_hashes_to_the_stored_digest() {
+        let honest = serde_json::json!({
+            "funder": "0x0000000000000000000000000000000000000002",
+            "salt": "7",
+            "token_id": "111",
+            "maker_amount": "10000000",
+            "taker_amount": "20000000",
+            "side": 0,
+            "signature_type": 3,
+            "timestamp_ms": "1700000000000",
+            "builder": "0x00000000000000000000000000000000000000000000000000000000000000ab",
+        });
+        let order = order_from_prepared(&honest).expect("honest preimage");
+        let stored = poly1271_digest(&order, crate::polymarket::POLYGON, false);
+
+        for field in ["maker_amount", "taker_amount", "salt", "builder"] {
+            let mut tampered = honest.clone();
+            tampered[field] = match field {
+                "builder" => serde_json::json!(
+                    "0x00000000000000000000000000000000000000000000000000000000000000cd"
+                ),
+                _ => serde_json::json!("1"),
+            };
+            let rebuilt = order_from_prepared(&tampered).expect("tampered preimage still parses");
+            assert_ne!(
+                poly1271_digest(&rebuilt, crate::polymarket::POLYGON, false),
+                stored,
+                "editing {field} must move the digest away from the signed hash"
+            );
+        }
     }
 
     #[test]

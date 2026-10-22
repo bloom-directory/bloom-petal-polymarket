@@ -18,7 +18,7 @@ fn service_settings_have_global_routes_and_exact_shared_keys() {
     );
     assert!(
         manifest.contains(
-            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code", "state/settings/builder-fee-ceiling"]"#
+            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router", "state/settings/builder-code", "state/settings/builder-fee-ceiling", "state/settings/builder-audit.jsonl"]"#
         )
     );
 }
