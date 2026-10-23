@@ -142,6 +142,21 @@ which one (if either) is currently in effect.
 Both that code and its ceiling decide who is paid and how much, and both are
 ordinary agent writes.
 
+**Known gap, tracked as a pre-merge gate.** Everything below about what the
+ceremony shows the owner describes advisory text that, at the pinned Bloom and
+Broker revisions, reaches no screen. `bloom-daemon` reduces a Petal advisory to
+`advisory_digest`, `sign_or_prepare_petal` in `bloom-vfs::exact_signing` takes
+no advisory parameter, and the pinned `bloom-broker-api` has no field for one;
+the Broker ceremony's `attributed_advisory_items` is populated nowhere outside
+its own tests. The digest is bound into the signing identity, so changing the
+advisory invalidates an approval — it is committed and not displayed, which is
+exactly why it reads like a working control.
+
+The advisory content below is therefore necessary but not yet sufficient. What
+bounds an agent today is the Broker's approved-capacity limits, the declared
+fee under a fee-bearing class, and the Petal-side consistency checks in the
+next section — not anything the owner reads at approval time.
+
 **What bounds that is the owner's per-order ceremony, and only that.** The
 Machine is inside the threat model — the Sealed Approvals architecture says in
 as many words that a compromised Petal or Machine may lie within the claim's
