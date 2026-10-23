@@ -65,6 +65,43 @@ impl PreparedSigning {
     }
 }
 
+/// The economic effects a claim declares. Broker matches the class's
+/// `fee_asset` against `declared_fee` and refuses a mismatch either way: a
+/// fee-bearing class denies a claim declaring no fee, and a fee-free class
+/// denies one that declares a fee. So this must follow the route's class.
+///
+/// `declared_debits` stays empty even for a fee-bearing order. The order's own
+/// pUSD notional is not declared as a debit on the fee-free class either, and
+/// declaring it on only one route would give two otherwise identical orders
+/// different value limits. Declaring notional is a separate change covering
+/// both routes.
+pub struct ClaimEffects {
+    declared_fee: serde_json::Value,
+}
+
+impl ClaimEffects {
+    /// For a class catalogued fee-free.
+    pub fn none() -> Self {
+        Self {
+            declared_fee: serde_json::json!({"kind": "none"}),
+        }
+    }
+
+    /// For `polymarket.builder_code_order.poly1271`. The chain and asset must
+    /// match what Bloom catalogues for that class or Broker answers
+    /// `FEE_ASSET_MISMATCH`; `amount` is micro-pUSD.
+    pub fn builder_code_order_fee(fee_micro: u64) -> Self {
+        Self {
+            declared_fee: serde_json::json!({
+                "kind": "fee",
+                "chain": "polygon",
+                "asset": "pusd",
+                "amount": fee_micro.to_string(),
+            }),
+        }
+    }
+}
+
 fn sign_prepared_items(
     ctx: &petal::Ctx,
     wallet: &str,
@@ -72,6 +109,8 @@ fn sign_prepared_items(
     operation_class: &str,
     approval_key: &str,
     selector: petal::SignSelector,
+    effects: &ClaimEffects,
+    advisory: Option<Vec<u8>>,
 ) -> Result<Vec<Vec<u8>>, DispatchResponse> {
     if prepared.is_empty() {
         return Err(error(-3, "prepared signing batch is empty"));
@@ -92,7 +131,7 @@ fn sign_prepared_items(
     let approval_hint =
         existing_approval_hint(approval_key, &prepared_artifact_digest, selector_label)?;
     let sent_hint = approval_hint.is_some();
-    let claim = batch_claim(ctx, operation_class, &payloads)?;
+    let claim = batch_claim(ctx, operation_class, &payloads, effects)?;
     match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
         wallet: wallet.into(),
         payloads,
@@ -102,7 +141,7 @@ fn sign_prepared_items(
         claim_assurance_evidence: None,
         approval_hint,
         action: Some(prepared_bytes),
-        advisory: None,
+        advisory,
         selector: selector.clone(),
         key_ref_jcs: None,
     }) {
@@ -288,6 +327,34 @@ pub fn sign_prepared(
         &prepared.intent,
         approval_key,
         petal::SignSelector::Exact,
+        &ClaimEffects::none(),
+        None,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| error(-4, "payload batch returned no signature"))
+}
+
+/// Sign one prepared payload under an owner approval that declares a builder
+/// fee. The ceremony carries `advisory` so the owner reads the builder and the
+/// bound rather than only the raw review.
+pub fn sign_prepared_with_fee(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    prepared: &PreparedSigning,
+    approval_key: &str,
+    fee_micro: u64,
+    advisory: Vec<u8>,
+) -> Result<Vec<u8>, DispatchResponse> {
+    sign_prepared_items(
+        ctx,
+        wallet,
+        &[prepared],
+        &prepared.intent,
+        approval_key,
+        petal::SignSelector::Exact,
+        &ClaimEffects::builder_code_order_fee(fee_micro),
+        Some(advisory),
     )?
     .into_iter()
     .next()
@@ -312,6 +379,8 @@ pub fn sign_prepared_reusable(
         &prepared.intent,
         approval_key,
         petal::SignSelector::Reusable,
+        &ClaimEffects::none(),
+        None,
     )?
     .into_iter()
     .next()
@@ -378,6 +447,7 @@ fn batch_claim(
     ctx: &petal::Ctx,
     operation_class: &str,
     payloads: &[petal::PayloadSignItem],
+    effects: &ClaimEffects,
 ) -> Result<Vec<u8>, DispatchResponse> {
     let route = ctx
         .params
@@ -407,7 +477,7 @@ fn batch_claim(
         "ordered_hashes": ordered_hashes,
         "declared_debits": [],
         "declared_destinations": [],
-        "declared_fee": {"kind": "none"},
+        "declared_fee": effects.declared_fee,
         "nonce": hex::encode(&nonce[..16]),
         "claim_assurance": {"kind": "machine_asserted"}
     }))
@@ -439,6 +509,33 @@ mod tests {
             serde_json::json!({"amount": "2"}),
         );
         assert_ne!(first.digest().unwrap(), second.digest().unwrap());
+    }
+
+    /// Bloom catalogues `polymarket.builder_code_order.poly1271` with the
+    /// polygon/pusd fee asset. Broker compares the catalogued chain and asset
+    /// against this JSON and answers `FEE_ASSET_MISMATCH` when either differs,
+    /// so the shape is pinned here rather than left to a reviewer to notice.
+    #[test]
+    fn a_builder_code_order_declares_its_fee_in_polygon_pusd_micros() {
+        assert_eq!(
+            ClaimEffects::builder_code_order_fee(175_000).declared_fee,
+            serde_json::json!({
+                "kind": "fee",
+                "chain": "polygon",
+                "asset": "pusd",
+                "amount": "175000",
+            })
+        );
+        // A zero fee is still a declared fee: the class is fee-bearing, so
+        // `{"kind":"none"}` would be refused with FEE_REQUIRED.
+        assert_eq!(
+            ClaimEffects::builder_code_order_fee(0).declared_fee["amount"],
+            serde_json::json!("0")
+        );
+        assert_eq!(
+            ClaimEffects::none().declared_fee,
+            serde_json::json!({"kind": "none"})
+        );
     }
 
     #[test]

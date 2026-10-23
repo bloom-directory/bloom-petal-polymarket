@@ -119,6 +119,17 @@ pub struct LocalPolymarketOrderCtx {
     pub neg_risk: bool,
     pub receipt_store_readable: bool,
     pub daily_posted_microusd: Option<u64>,
+    /// Fees the owner would pay on top of `amount_microusd`. The caps compare
+    /// the sum, so a spend limit bounds what actually leaves the wallet rather
+    /// than the order's notional alone.
+    pub fee_microusd: u64,
+}
+
+impl LocalPolymarketOrderCtx {
+    /// What a spend cap must measure: notional plus the fees charged on it.
+    pub fn total_spend_microusd(&self) -> u64 {
+        self.amount_microusd.saturating_add(self.fee_microusd)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -183,6 +194,20 @@ pub struct StoreTradeDraft {
     pub best_bid_micro: Option<u64>,
     pub book_snapshot_secs: u64,
     pub status: String,
+    /// The fee ceiling this draft was quoted and sized against, in basis
+    /// points and micro-pUSD. Recorded so revalidation and the owner's review
+    /// compare the same numbers the quote used: for a sell or a limit buy a
+    /// ceiling change does not move `maker` or `taker`, so without these a
+    /// changed fee would pass unnoticed between review and signature.
+    #[serde(default)]
+    pub builder_fee_rate_bps: Option<u16>,
+    #[serde(default)]
+    pub builder_fee_micro: Option<u64>,
+    /// The builder code this draft's fee was priced for, as `0x…`. Carried for
+    /// the same reason: the ceremony names the beneficiary, but a review that
+    /// never named it cannot disagree with a code repointed since.
+    #[serde(default)]
+    pub builder_code: Option<String>,
     #[serde(default)]
     pub salt: Option<u64>,
     #[serde(default)]
@@ -199,6 +224,10 @@ pub struct StoreTradeReceiptPolicy {
     #[serde(default)]
     pub order_type: Option<OrderType>,
     pub amount_microusd: u64,
+    /// Fees charged on this order. `#[serde(default)]` so receipts written
+    /// before fees were accounted read zero rather than failing to parse.
+    #[serde(default)]
+    pub fee_microusd: u64,
     pub clob_status: String,
     pub posted_ms: u128,
 }
@@ -214,6 +243,11 @@ pub struct StoreTradeReceipt {
     pub funder: Option<String>,
     pub signature_type: u8,
     pub amount_microusd: u64,
+    /// Fees charged on this order, so the daily cap measures what actually
+    /// left the wallet. `#[serde(default)]` for receipts written before fees
+    /// were accounted; the policy view reads the same field.
+    #[serde(default)]
+    pub fee_microusd: u64,
     pub limit_price_micro: u64,
     pub size_micro: u64,
     pub salt: u64,

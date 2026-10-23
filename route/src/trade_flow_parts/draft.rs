@@ -86,10 +86,25 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
             Ok(limit) => limit,
             Err(resp) => return resp,
         };
-    let quote = match build_trade_quote(side, amount_micro, limit_micro, &snapshot, order_type) {
+    // Resolved here and at every later stage through the same helper, so the
+    // draft, its revalidation and the post all size against one set of fees.
+    let spend_fees = match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(order_type) {
+        Ok(fees) => fees,
+        Err(resp) => return resp,
+    };
+    let quote = match crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
+        side,
+        amount_micro,
+        limit_micro,
+        &snapshot,
+        order_type,
+        spend_fees.as_ref().map(|fees| fees.inputs),
+    ) {
         Ok(quote) => quote,
         Err(resp) => return resp,
     };
+    let (builder_fee_rate_bps, builder_fee_micro, builder_code) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees.as_ref(), &quote);
     let id = next_id(&format!("trade/{wallet}/drafts/"), "/order.json");
     let draft = StoreTradeDraft {
         id: id.clone(),
@@ -116,6 +131,9 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
         closed: snapshot.closed,
         order_book_enabled: snapshot.order_book_enabled,
         binary_outcomes: true,
+        builder_fee_rate_bps,
+        builder_fee_micro,
+        builder_code,
         best_ask_micro: snapshot.best_ask_micro,
         best_bid_micro: snapshot.best_bid_micro,
         book_snapshot_secs: now_secs(),

@@ -13,7 +13,7 @@ petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
     };
     petal::DispatchResponse::Read(
         format!(
-            "# Polymarket order draft {}\n\nWallet: {}\nMarket: {}\nQuestion: {}\nOutcome: {}\nToken: {}\nSide: {:?}\nOrder type: {}\nAmount: {}\nPrice bound: {}\nLimit price: {}\nSize: {}\nStatus: {}\n\nThe draft is live-quoted from Gamma/CLOB and ready for review. Signing and posting are still pending.\n",
+            "# Polymarket order draft {}\n\nWallet: {}\nMarket: {}\nQuestion: {}\nOutcome: {}\nToken: {}\nSide: {:?}\nOrder type: {}\nAmount: {}\nPrice bound: {}\nLimit price: {}\nSize: {}\nFees: {}\nStatus: {}\n\nThe draft is live-quoted from Gamma/CLOB and ready for review. Signing and posting are still pending.\n",
             draft.id,
             draft.wallet,
             draft.slug,
@@ -26,6 +26,7 @@ petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
             crate::polymarket::order::format_micro(draft.price_bound_micro),
             crate::polymarket::order::format_micro(draft.limit_price_micro),
             crate::polymarket::order::format_micro(draft.size_micro),
+            crate::trade_flow_parts::pricing::fee_summary_line(&draft),
             draft.status
         )
         .into_bytes(),

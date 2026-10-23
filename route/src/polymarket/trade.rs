@@ -182,18 +182,32 @@ pub fn choose_limit(
 /// Build the integer quote. `amount_micro` is the USD spend for buys and the
 /// share size for sells. Market-class buys (FAK/FOK) use the CLOB's market-order
 /// precision rules (maker ≤ 2 dp, taker ≤ 4 dp), which differ from limit orders.
+/// Build a quote, optionally sizing a market buy so its fees fit the spend.
+///
+/// `fee_micro` prices a candidate notional's fees. It applies only to the
+/// market-buy arm, because Polymarket documents the reduction for market
+/// orders: for a resting limit buy `makerAmount` is the exact spend the caller
+/// named and the fee is additive on top, which is what the displayed cost and
+/// the policy cap reflect. Do not "fix" that by reducing a limit buy.
 pub fn build_quote(
     side: Side,
     amount_micro: u64,
     limit_micro: u64,
     snap: &Snapshot,
     order_type: OrderType,
+    fee_micro: Option<&dyn Fn(u64) -> Result<u64>>,
 ) -> Result<LimitQuote> {
     let market_class = matches!(order_type, OrderType::FAK | OrderType::FOK);
     let quote = match (side, market_class) {
-        (Side::Buy, true) => {
-            LimitQuote::market_buy_from_spend(amount_micro, limit_micro, snap.tick_micro)
-        }
+        (Side::Buy, true) => match fee_micro {
+            Some(fee_micro) => LimitQuote::market_buy_from_spend_with_fees(
+                amount_micro,
+                limit_micro,
+                snap.tick_micro,
+                fee_micro,
+            ),
+            None => LimitQuote::market_buy_from_spend(amount_micro, limit_micro, snap.tick_micro),
+        },
         (Side::Buy, false) => {
             LimitQuote::buy_from_spend(amount_micro, limit_micro, snap.tick_micro)
         }
@@ -275,6 +289,49 @@ pub fn draft_from_quote(
 
 #[cfg(test)]
 mod tests {
+
+    /// `market_buy_from_spend_with_fees` is tested directly and `build_quote`
+    /// was tested only with no pricer, so nothing asserted the two were wired
+    /// together. Without the wiring a market buy stops being sized for fees.
+    #[test]
+    fn build_quote_applies_the_fee_pricer_to_a_market_buy() {
+        let s = snap(Some(500_000), Some(490_000));
+        let fee = |notional: u64| -> Result<u64> {
+            Ok(u64::try_from((u128::from(notional) * 100).div_ceil(10_000)).expect("fits"))
+        };
+        let unpriced =
+            build_quote(Side::Buy, 10_000_000, 500_000, &s, OrderType::FAK, None).unwrap();
+        let priced = build_quote(
+            Side::Buy,
+            10_000_000,
+            500_000,
+            &s,
+            OrderType::FAK,
+            Some(&fee),
+        )
+        .unwrap();
+        assert!(
+            priced.maker_micro < unpriced.maker_micro,
+            "a priced market buy must be smaller: {} vs {}",
+            priced.maker_micro,
+            unpriced.maker_micro
+        );
+        assert!(priced.maker_micro + fee(priced.maker_micro).unwrap() <= 10_000_000);
+
+        // A resting buy is not reduced: its makerAmount is the exact spend.
+        let resting = build_quote(
+            Side::Buy,
+            10_000_000,
+            500_000,
+            &s,
+            OrderType::GTC,
+            Some(&fee),
+        )
+        .unwrap();
+        let resting_unpriced =
+            build_quote(Side::Buy, 10_000_000, 500_000, &s, OrderType::GTC, None).unwrap();
+        assert_eq!(resting.maker_micro, resting_unpriced.maker_micro);
+    }
     use super::*;
 
     fn snap(best_ask: Option<u64>, best_bid: Option<u64>) -> Snapshot {
@@ -321,8 +378,8 @@ mod tests {
     #[test]
     fn build_quote_enforces_min_size() {
         let s = snap(Some(500_000), Some(490_000));
-        assert!(build_quote(Side::Buy, 2_000_000, 500_000, &s, OrderType::FAK).is_err());
-        let q = build_quote(Side::Buy, 5_000_000, 500_000, &s, OrderType::FAK).unwrap();
+        assert!(build_quote(Side::Buy, 2_000_000, 500_000, &s, OrderType::FAK, None).is_err());
+        let q = build_quote(Side::Buy, 5_000_000, 500_000, &s, OrderType::FAK, None).unwrap();
         assert!(q.size_micro >= s.min_size_micro);
         assert_eq!(usd_leg(&q), q.maker_micro);
     }

@@ -49,6 +49,7 @@ mod tests {
             condition_id: "0xabc".into(),
             side: LocalPolicySide::Buy,
             amount_microusd: 10_000_000,
+            fee_microusd: 0,
             limit_price_micro: 695_000,
             active: true,
             closed: false,
@@ -89,6 +90,9 @@ mod tests {
             best_ask_micro: Some(90_000),
             best_bid_micro: Some(80_000),
             book_snapshot_secs: 1,
+            builder_fee_rate_bps: None,
+            builder_fee_micro: None,
+            builder_code: None,
             status: "signed".into(),
             salt: Some(42),
             clob_order_id: None,
@@ -122,6 +126,297 @@ mod tests {
                             paths.iter().any(|allowed| allowed.as_str() == Some(path))
                         })
             })
+    }
+
+    /// The fee-bearing class a builder-coded order signs under. Broker needs
+    /// an operation class to be uniformly fee-bearing or uniformly fee-free,
+    /// so this cannot share `polymarket.order.poly1271` with plain orders.
+    /// Bloom catalogues this exact string with the polygon/pusd fee asset in
+    /// `FEE_BEARING_OPERATION_CLASSES`; if either side renames it, enrollment
+    /// leaves the class fee-free and signing answers `FEE_NOT_ALLOWED`.
+    #[test]
+    fn builder_code_order_class_is_declared_separately_from_the_plain_order_class() {
+        let manifest: toml::Value = toml::from_str(include_str!("../../petal.toml")).unwrap();
+        let intents = manifest
+            .get("sign")
+            .and_then(|sign| sign.get("allowed_intents"))
+            .and_then(toml::Value::as_array)
+            .expect("petal.toml declares [sign].allowed_intents")
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(
+            intents.contains(&"polymarket.order.poly1271"),
+            "plain orders keep their fee-free class"
+        );
+        assert!(
+            intents.contains(&"polymarket.builder_code_order.poly1271"),
+            "builder-code orders need their own fee-bearing class"
+        );
+        assert_ne!(
+            "polymarket.order.poly1271",
+            "polymarket.builder_code_order.poly1271"
+        );
+    }
+
+    /// A spend cap should bound what leaves the wallet. Testing only the
+    /// helper left every call site free to go back to the bare notional, so
+    /// this drives the evaluator and asserts the cap actually denies.
+    #[test]
+    fn a_spend_cap_denies_when_the_fee_pushes_the_order_over_it() {
+        use crate::trade_flow_parts::policy::evaluate_local_polymarket_order;
+        let policy = crate::app_types::PolymarketVenueConfig {
+            enabled: true,
+            max_order_usd: Some(10_000_000),
+            ..Default::default()
+        };
+
+        // Notional alone is exactly at the cap: allowed.
+        let ctx = policy_ctx();
+        assert_eq!(ctx.total_spend_microusd(), 10_000_000);
+        let denied = |checks: Vec<crate::app_types::LocalPolicyCheck>| {
+            checks.iter().any(|check| {
+                check.rule == "polymarket.max_order_usd"
+                    && matches!(check.outcome, crate::app_types::LocalPolicyOutcome::Deny)
+            })
+        };
+        assert!(
+            !denied(evaluate_local_polymarket_order(&policy, &ctx)),
+            "notional at the cap must be allowed"
+        );
+
+        // The same notional with a fee is over it, and must be denied.
+        let mut with_fee = policy_ctx();
+        with_fee.fee_microusd = 1;
+        assert_eq!(with_fee.total_spend_microusd(), 10_000_001);
+        assert!(
+            denied(evaluate_local_polymarket_order(&policy, &with_fee)),
+            "the cap must measure the fee, not just the notional"
+        );
+    }
+
+    /// For a sell or a limit buy a ceiling change does not move `maker` or
+    /// `taker`, so the review intent has to compare the fee itself or a change
+    /// between the review and the signature would pass unnoticed.
+    #[test]
+    fn the_review_intent_notices_a_fee_only_change() {
+        use crate::trade_flow_parts::revalidate::review_intent_matches_draft;
+        let mut draft = draft();
+        draft.side = Side::Buy;
+        draft.builder_fee_rate_bps = Some(100);
+        draft.builder_fee_micro = Some(100_000);
+        draft.builder_code = Some("0x000000000000000000000000000000000000000a".to_owned());
+        let owner: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let funder: Address = "0x0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let policy_check = serde_json::json!({"policy_status": "ok"});
+        let review = crate::trade_flow_parts::revalidate::with_review_fee_fields(
+            serde_json::json!({
+            "wallet": draft.wallet,
+            "draft_id": draft.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": draft.slug,
+            "condition_id": draft.condition_id,
+            "outcome": draft.outcome,
+            "token_id": draft.token_id,
+            "side": "BUY",
+            "order_type": draft.order_type.as_str(),
+            "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+            "size": crate::polymarket::order::format_micro(draft.size_micro),
+            "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+            "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+                "policy_status": "ok",
+                "neg_risk": draft.neg_risk,
+            }),
+            // Merged by the same helper the writer uses, so this fixture
+            // cannot drift from production the way the first one did, and a
+            // fee field added later lands here without being hand-typed.
+            &draft,
+        );
+
+        // The draft the review was taken from still matches it.
+        review_intent_matches_draft(&review, &draft, owner, funder, &policy_check, None)
+            .expect("the draft its review was built from must match");
+
+        // Only the fee moves, and it is caught. Nothing else differs, so a
+        // comparison that ignored the fee would pass this.
+        for mutate in [
+            |d: &mut StoreTradeDraft| d.builder_fee_micro = Some(50_000),
+            |d: &mut StoreTradeDraft| d.builder_fee_rate_bps = Some(50),
+            // The beneficiary moves without the amount moving at all, which
+            // the fee comparison alone cannot see.
+            |d: &mut StoreTradeDraft| {
+                d.builder_code = Some("0x00000000000000000000000000000000000000ff".to_owned());
+            },
+        ] {
+            let mut changed = draft.clone();
+            mutate(&mut changed);
+            assert!(
+                review_intent_matches_draft(&review, &changed, owner, funder, &policy_check, None)
+                    .is_err(),
+                "a fee-only change must not pass the review comparison"
+            );
+        }
+    }
+
+    /// With no builder code the three fee fields are absent, and the writer
+    /// used to emit JSON `null` while the comparison read a string, so no post
+    /// could match at all — including a plain order, which worked before fees
+    /// existed. The fields are strings on both sides now; this holds it.
+    #[test]
+    fn a_draft_with_no_builder_code_still_matches_its_own_review() {
+        use crate::trade_flow_parts::revalidate::{
+            review_fee_fields, review_intent_matches_draft, with_review_fee_fields,
+        };
+        let mut draft = draft();
+        draft.side = Side::Buy;
+        assert_eq!(draft.builder_fee_micro, None);
+        assert!(
+            review_fee_fields(&draft)
+                .iter()
+                .all(|(_, rendered)| rendered == "none"),
+            "every fee field must render as the string `none`, not JSON null"
+        );
+
+        let owner: Address = "0x0000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let funder: Address = "0x0000000000000000000000000000000000000002"
+            .parse()
+            .unwrap();
+        let review = with_review_fee_fields(
+            serde_json::json!({
+                "wallet": draft.wallet,
+                "draft_id": draft.id,
+                "owner": owner.to_checksum(None),
+                "funder": funder.to_checksum(None),
+                "slug": draft.slug,
+                "condition_id": draft.condition_id,
+                "outcome": draft.outcome,
+                "token_id": draft.token_id,
+                "side": "BUY",
+                "order_type": draft.order_type.as_str(),
+                "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+                "size": crate::polymarket::order::format_micro(draft.size_micro),
+                "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+                "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+                "policy_status": "ok",
+                "neg_risk": draft.neg_risk,
+            }),
+            &draft,
+        );
+        review_intent_matches_draft(
+            &review,
+            &draft,
+            owner,
+            funder,
+            &serde_json::json!({"policy_status": "ok"}),
+            None,
+        )
+        .expect("a plain order must be postable");
+    }
+
+    /// The daily cap's fee term was dead: `StoreTradeReceipt` had no fee
+    /// field, so the sum always added zero. A receipt must carry it, and the
+    /// policy view must read the same field off the serialized form.
+    #[test]
+    fn a_receipt_records_its_fee_and_the_policy_view_reads_it() {
+        let receipt = serde_json::json!({
+            "draft_id": "0001",
+            "wallet": "alice",
+            "slug": "example",
+            "token_id": "111",
+            "side": "BUY",
+            "order_type": "FAK",
+            "funder": null,
+            "signature_type": 3,
+            "amount_microusd": 10_000_000,
+            "fee_microusd": 175_000,
+            "limit_price_micro": 500_000,
+            "size_micro": 20_000_000,
+            "clob_status": "matched",
+            "posted_ms": 1_u64,
+        });
+        let view: crate::app_types::StoreTradeReceiptPolicy =
+            serde_json::from_value(receipt.clone()).expect("the policy view reads a receipt");
+        assert_eq!(view.amount_microusd, 10_000_000);
+        assert_eq!(view.fee_microusd, 175_000, "the fee term must not be dead");
+
+        // A receipt written before fees were accounted still parses as zero.
+        let mut old = receipt;
+        old.as_object_mut().unwrap().remove("fee_microusd");
+        let view: crate::app_types::StoreTradeReceiptPolicy =
+            serde_json::from_value(old).expect("an older receipt must still parse");
+        assert_eq!(view.fee_microusd, 0);
+    }
+
+    /// `quoted_fee_fields` feeds the plan, the review intent and the policy
+    /// cap. Returning nothing unconditionally left all three blank with the
+    /// whole suite green.
+    #[test]
+    fn quoted_fee_fields_reports_the_fee_it_was_configured_with() {
+        use crate::trade_flow_parts::pricing::{
+            SpendFeeAttribution, SpendFeeInputs, quoted_fee_fields,
+        };
+        const CODE: &str = "0x00000000000000000000000000000000000000000000000000000000000000ab";
+        let configured = SpendFeeAttribution {
+            inputs: SpendFeeInputs { builder_bps: 100 },
+            code_hex: CODE.to_owned(),
+        };
+        let quote = crate::polymarket::order::LimitQuote {
+            side: Side::Buy,
+            price_micro: 500_000,
+            size_micro: 20_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 20_000_000,
+        };
+        assert_eq!(
+            quoted_fee_fields(Some(&configured), &quote),
+            (Some(100), Some(100_000), Some(CODE.to_owned()))
+        );
+        assert_eq!(quoted_fee_fields(None, &quote), (None, None, None));
+
+        // A sell is where par and the USD leg diverge, so this is the case
+        // that pins the par binding. A buy cannot: its maker leg IS its USD
+        // leg, so substituting one for the other is invisible there.
+        let sell = crate::polymarket::order::LimitQuote {
+            side: Side::Sell,
+            price_micro: 100_000,
+            size_micro: 10_000_000,
+            maker_micro: 10_000_000,
+            taker_micro: 1_000_000,
+        };
+        assert_eq!(
+            quoted_fee_fields(Some(&configured), &sell),
+            (Some(100), Some(100_000), Some(CODE.to_owned())),
+            "a sell's fee must be priced on par, not on its USD leg"
+        );
+    }
+
+    /// A market buy's sizing already folded the fee into the requested amount,
+    /// so counting it again denied roughly 1% early on every market buy.
+    #[test]
+    fn a_market_buy_does_not_count_its_fee_twice_against_the_cap() {
+        use crate::trade_flow_parts::pricing::fee_on_top_of_amount_micro;
+        let mut draft = draft();
+        draft.builder_fee_micro = Some(99_000);
+
+        draft.side = Side::Buy;
+        for order_type in [OrderType::FAK, OrderType::FOK] {
+            draft.order_type = order_type;
+            assert_eq!(
+                fee_on_top_of_amount_micro(&draft),
+                0,
+                "{order_type:?} already fits its fee inside the requested amount"
+            );
+        }
+        // A resting buy pays the fee on top, so it must still be counted.
+        draft.order_type = OrderType::GTC;
+        assert_eq!(fee_on_top_of_amount_micro(&draft), 99_000);
     }
 
     #[test]
@@ -158,8 +453,15 @@ mod tests {
             }
         }
 
-        assert_eq!(routes.len(), 109);
+        assert_eq!(routes.len(), 113);
         assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
+        assert!(
+            routes
+                .iter()
+                .any(|path| path
+                    .ends_with("trade/[wallet]/[index]/drafts/[id]/post_builder_code.rs")),
+            "builder-coded posting keeps its own route so its class can be fee-bearing"
+        );
         assert!(
             routes
                 .iter()
