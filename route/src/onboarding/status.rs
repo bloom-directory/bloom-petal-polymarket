@@ -236,6 +236,8 @@ pub fn project_next_action(
     let credentials = status["creds_present"].as_bool().unwrap_or(false);
     let action = if matches!(stage, "complete" | "legacy_eoa") {
         None
+    } else if credentials && stage == "fund" {
+        Some(format!("fund/{wallet}/{account}/new"))
     } else if approval_pending {
         status["message"] = serde_json::json!(
             "Complete or cancel the existing owner approval, then retry the same action."
@@ -245,17 +247,8 @@ pub fn project_next_action(
             if credentials { "continue" } else { "begin" }
         ))
     } else if !credentials {
-        status["message"] = serde_json::json!("Write begin to mint or derive CLOB credentials.");
         Some(format!("onboard/{wallet}/{account}/begin"))
-    } else if stage == "fund" {
-        status["message"] = serde_json::json!(
-            "Fund the resolved deposit wallet with pUSD using fund, then retry continue."
-        );
-        Some(format!("fund/{wallet}/{account}/new"))
     } else {
-        status["message"] = serde_json::json!(
-            "Write continue to resolve/deploy the deposit wallet and finish approvals and CLOB sync."
-        );
         Some(format!("onboard/{wallet}/{account}/continue"))
     };
     status["next_action"] = serde_json::json!(action);
@@ -361,26 +354,27 @@ mod next_action_tests {
             ("approve", true, true, Some("onboard/w/1/continue")),
             ("creds", false, true, Some("onboard/w/1/begin")),
             ("fund", true, false, Some("fund/w/1/new")),
+            ("fund", true, true, Some("fund/w/1/new")),
+            ("fund", false, true, Some("onboard/w/1/begin")),
             ("complete", true, false, None),
             ("legacy_eoa", true, false, None),
         ] {
-            let mut status = serde_json::json!({"stage": stage, "creds_present": credentials, "next_action": "stale"});
+            let mut status = serde_json::json!({"stage": stage, "creds_present": credentials, "next_action": "stale", "message": "producer-specific status"});
             project_next_action(&mut status, "w", 1, pending);
             assert_eq!(
                 status["next_action"],
                 serde_json::json!(expected),
                 "{stage}"
             );
-            if pending {
+            if pending && !(credentials && stage == "fund") {
                 assert!(
                     status["message"]
                         .as_str()
                         .unwrap()
                         .contains("existing owner approval")
                 );
-            }
-            if stage == "fund" {
-                assert!(status["message"].as_str().unwrap().contains("pUSD"));
+            } else {
+                assert_eq!(status["message"], "producer-specific status");
             }
         }
     }

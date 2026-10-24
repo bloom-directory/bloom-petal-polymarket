@@ -134,6 +134,21 @@ pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Disp
             }
             Err(error) => return sdk_error(error),
         };
+    // Retire only a stale CLOB approval. An exact deposit-wallet approval must
+    // survive retries of this continuation.
+    let key = approval_key(wallet);
+    let stale = match pending_approval_selector(&key) {
+        Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
+        Err(response) => return response,
+    };
+    if stale {
+        for key in [key, format!("onboard/{wallet}/review_intent.json")] {
+            match petal::sdk::store_del(&key) {
+                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
+                Err(error) => return sdk_error(error),
+            }
+        }
+    }
     let config = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config,
         Err(response) => return response,
@@ -152,21 +167,6 @@ pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Disp
         Ok(deposit) => deposit,
         Err(response) => return response,
     };
-    // Retire only a stale CLOB approval. An exact deposit-wallet approval must
-    // survive retries of this continuation.
-    let key = approval_key(wallet);
-    let stale = match pending_approval_selector(&key) {
-        Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
-        Err(response) => return response,
-    };
-    if stale {
-        for key in [key, format!("onboard/{wallet}/review_intent.json")] {
-            match petal::sdk::store_del(&key) {
-                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                Err(error) => return sdk_error(error),
-            }
-        }
-    }
     match run_onboard_stages(ctx, wallet, owner, deposit, &creds) {
         Ok(status) => store_put_json(&format!("onboard/{wallet}/status.json"), &status, false),
         Err(response) => {
