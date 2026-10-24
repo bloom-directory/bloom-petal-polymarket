@@ -1,5 +1,13 @@
 # Polymarket Petal
 
+Onboarding has two authority routes: write `onboard/<wallet>/<index>/begin`
+to obtain CLOB credentials, then write `onboard/<wallet>/<index>/continue`
+to deploy the deposit wallet. `continue` does not fund it: while the wallet
+holds no pUSD it stops at stage `fund`. Fund it with
+`fund/<wallet>/<index>/new`, then write `continue` again to approve.
+`status.json` names the next action at every stage. With existing
+credentials, `begin` acknowledges without another authentication signature.
+
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
@@ -15,7 +23,7 @@ This package implements the Polymarket Petal at `petals/polymarket/...` using th
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 109 route components. Directory endpoints use
+Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
@@ -33,6 +41,16 @@ Per-account venue preferences are read at `settings/venue.toml` below the
 selected account directory and stored in the Petal's own state. They are advisory application configuration only. The Petal
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
+
+CLOB login uses `polymarket.clob_auth.v1`, a one-signature permission distinct
+from exact wallet approvals. The matching Broker verifies the actual EIP-712
+domain, selected owner, fixed wallet attestation, nonce zero and fresh timestamp
+at signing. Polymarket's server timestamp can refresh after the owner approves.
+An old pending login approval is replaced because the permission profile changed.
+Install this package with the matching clear-signing Broker/Machine release;
+older services cannot enforce this profile. API credentials can authorize
+account API actions and are kept in the Petal's secret store. Orders and
+deposit-wallet batches still need their own exact approvals.
 
 The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
