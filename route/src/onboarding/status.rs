@@ -159,7 +159,12 @@ pub fn local_status_for_wallet(
     wallet: &str,
     owner: Address,
 ) -> Result<serde_json::Value, DispatchResponse> {
-    let status = stored_status_for_wallet(wallet, owner)?;
+    let mut status = stored_status_for_wallet(wallet, owner)?;
+    let creds_present = store_get(&format!("creds/{wallet}/clob.json")).is_some();
+    status["creds_present"] = serde_json::json!(creds_present);
+    if creds_present && crate::relayer_config::load_relayer_config()?.legacy_eoa_mode {
+        return Ok(crate::relayer_config::legacy_eoa_status(wallet, owner));
+    }
     let deposit_value = status.get("deposit_wallet");
     let source = deposit_value
         .and_then(|value| value.get("source"))
@@ -174,7 +179,6 @@ pub fn local_status_for_wallet(
         .ok_or_else(|| error(-4, "stored onboarding status is missing deposit wallet"))?
         .parse::<Address>()
         .map_err(|e| error(-4, format!("stored deposit wallet parse: {e}")))?;
-    let creds_present = store_get(&format!("creds/{wallet}/clob.json")).is_some();
     let mut refreshed = refreshed_live_onboard_status(wallet, owner, deposit, creds_present)?;
     preserve_onboard_metadata(&status, &mut refreshed);
     if refreshed != status
@@ -221,6 +225,35 @@ pub fn preserve_onboard_metadata(previous: &serde_json::Value, refreshed: &mut s
     }
 }
 
+/// Project guidance from the current account state; never read a second hint store.
+pub fn project_next_action(
+    status: &mut serde_json::Value,
+    wallet: &str,
+    account: u32,
+    approval_pending: bool,
+) {
+    let stage = status["stage"].as_str().unwrap_or("not_started");
+    let credentials = status["creds_present"].as_bool().unwrap_or(false);
+    let action = if matches!(stage, "complete" | "legacy_eoa") {
+        None
+    } else if credentials && stage == "fund" {
+        Some(format!("fund/{wallet}/{account}/new"))
+    } else if approval_pending {
+        status["message"] = serde_json::json!(
+            "Complete or cancel the existing owner approval, then retry the same action."
+        );
+        Some(format!(
+            "onboard/{wallet}/{account}/{}",
+            if credentials { "continue" } else { "begin" }
+        ))
+    } else if !credentials {
+        Some(format!("onboard/{wallet}/{account}/begin"))
+    } else {
+        Some(format!("onboard/{wallet}/{account}/continue"))
+    };
+    status["next_action"] = serde_json::json!(action);
+}
+
 pub fn stored_status_for_wallet(
     wallet: &str,
     owner: Address,
@@ -261,7 +294,7 @@ pub fn fundable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, 
     fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before funding",
+            "deposit wallet is not factory-resolved; obtain credentials with begin, then write onboard/<wallet>/<index>/continue before funding",
         )
     })
 }
@@ -271,7 +304,7 @@ pub fn tradeable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address,
     let deposit = fundable_deposit_wallet_from_status(&status).ok_or_else(|| {
         error(
             -3,
-            "deposit wallet is not factory-resolved; write onboard/<wallet>/<index>/begin before posting",
+            "deposit wallet is not factory-resolved; obtain credentials with begin, then write onboard/<wallet>/<index>/continue before posting",
         )
     })?;
     if status.get("stage").and_then(serde_json::Value::as_str) != Some("complete")
@@ -307,4 +340,42 @@ pub fn fundable_deposit_wallet_from_status(status: &serde_json::Value) -> Option
         return None;
     }
     deposit.parse::<Address>().ok()
+}
+
+#[cfg(test)]
+mod next_action_tests {
+    use super::*;
+
+    #[test]
+    fn guidance_tracks_credentials_funding_approval_and_completion() {
+        for (stage, credentials, pending, expected) in [
+            ("not_started", false, false, Some("onboard/w/1/begin")),
+            ("not_started", true, false, Some("onboard/w/1/continue")),
+            ("approve", true, true, Some("onboard/w/1/continue")),
+            ("creds", false, true, Some("onboard/w/1/begin")),
+            ("fund", true, false, Some("fund/w/1/new")),
+            ("fund", true, true, Some("fund/w/1/new")),
+            ("fund", false, true, Some("onboard/w/1/begin")),
+            ("complete", true, false, None),
+            ("legacy_eoa", true, false, None),
+        ] {
+            let mut status = serde_json::json!({"stage": stage, "creds_present": credentials, "next_action": "stale", "message": "producer-specific status"});
+            project_next_action(&mut status, "w", 1, pending);
+            assert_eq!(
+                status["next_action"],
+                serde_json::json!(expected),
+                "{stage}"
+            );
+            if pending && !(credentials && stage == "fund") {
+                assert!(
+                    status["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("existing owner approval")
+                );
+            } else {
+                assert_eq!(status["message"], "producer-specific status");
+            }
+        }
+    }
 }

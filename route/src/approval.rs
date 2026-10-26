@@ -653,7 +653,7 @@ mod tests {
         let signing_preimage = timestamp.to_be_bytes().to_vec();
         PreparedSigning::new(
             "clob_auth",
-            "polymarket.onboard",
+            "polymarket.clob_auth.v1",
             Address::ZERO,
             signing_preimage.clone(),
             alloy::primitives::keccak256(&signing_preimage),
@@ -688,7 +688,7 @@ mod tests {
     /// The Petal-local hint distinguishes operation and owner so a pending
     /// CLOB-auth artifact is never presented as the hint for another prepared
     /// operation. This is advisory only: the Broker's reusable approval scope
-    /// is keyed on the operation class, which both onboarding payloads share.
+    /// is keyed on a versioned class distinct from exact wallet permissions.
     #[test]
     fn reusable_approval_hint_distinguishes_operation_and_owner() {
         let clob = clob_auth_at(1_000);
@@ -696,8 +696,10 @@ mod tests {
         other_owner.owner = "0x0000000000000000000000000000000000000001".into();
         let mut other_operation = clob.clone();
         other_operation.operation = "onboard_approvals".into();
+        let mut old_profile = clob.clone();
+        old_profile.intent = "polymarket.onboard".into();
         let base = approval_binding_digest(&[&clob], &petal::SignSelector::Reusable).unwrap();
-        for changed in [other_owner, other_operation] {
+        for changed in [other_owner, other_operation, old_profile] {
             assert_ne!(
                 base,
                 approval_binding_digest(&[&changed], &petal::SignSelector::Reusable).unwrap()

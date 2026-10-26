@@ -1,5 +1,13 @@
 # Polymarket Petal
 
+Onboarding has two authority routes: write `onboard/<wallet>/<index>/begin`
+to obtain CLOB credentials, then write `onboard/<wallet>/<index>/continue`
+to deploy the deposit wallet. `continue` does not fund it: while the wallet
+holds no pUSD it stops at stage `fund`. Fund it with
+`fund/<wallet>/<index>/new`, then write `continue` again to approve.
+`status.json` names the next action at every stage. With existing
+credentials, `begin` acknowledges without another authentication signature.
+
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
@@ -21,7 +29,7 @@ Bloom may execute covered BUY orders under an owner-activated Trader or Degen gr
 - `scripts/build.sh` resolves the exact canonical builder revision and installs
   the complete generated route tree only after every component succeeds.
 
-The route tree currently builds 109 route components. Directory endpoints use
+Directory endpoints use
 `$index.rs`; `$list.rs` is intentionally unsupported because the Bloom Guest
 world already has a separate `list` export.
 
@@ -39,6 +47,16 @@ Per-account venue preferences are read at `settings/venue.toml` below the
 selected account directory and stored in the Petal's own state. They are advisory application configuration only. The Petal
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
+
+CLOB login uses `polymarket.clob_auth.v1`, a one-signature permission distinct
+from exact wallet approvals. The matching Broker verifies the actual EIP-712
+domain, selected owner, fixed wallet attestation, nonce zero and fresh timestamp
+at signing. Polymarket's server timestamp can refresh after the owner approves.
+An old pending login approval is replaced because the permission profile changed.
+Install this package with the matching clear-signing Broker/Machine release;
+older services cannot enforce this profile. API credentials can authorize
+account API actions and are kept in the Petal's secret store. Orders and
+deposit-wallet batches still need their own exact approvals.
 
 The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
@@ -112,3 +130,15 @@ Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
 Retain deposit-wallet onboarding identity, credentials, funding and relayer receipts, and trade records from the installed build until pending funds and positions have been reconciled. Externally funded deposit wallets and venue orders survive local route upgrades; use the old build to inspect their identity and recovery state.
+
+### Broker-owned persona accounting
+
+This source combines order-debit accounting with the versioned clear-signing
+login/review contract. With a matching persona-enabled Machine/Broker, an
+owner-reviewed reusable Petal approval can cover fee-free BUY orders. Broker
+reconstructs each signing preimage and verifies its gross pUSD maker debit;
+Signer retains its existing signature counters and custody checks. SELL shares,
+login, wallet setup, fees, funding and withdrawals do not inherit the BUY scope.
+Without a matching session, orders retain exact owner review. A published,
+installer-certified package identity is required before default onboarding can
+use this candidate; a local build is not a released default package.
