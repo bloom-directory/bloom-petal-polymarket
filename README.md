@@ -1,7 +1,8 @@
 # Polymarket Petal
 
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
-`bloom:route@0.1.0` component ABI.
+`bloom:route@0.1.0` component ABI. Polymarket settles on Polygon, so its
+routes never need a chain choice.
 
 ## Layout
 
