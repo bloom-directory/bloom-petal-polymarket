@@ -93,12 +93,18 @@ pub fn revalidate_trade_draft(
         Ok(limit) => limit,
         Err(resp) => return resp,
     };
-    let quote = match build_trade_quote(
+    let spend_fees =
+        match crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(draft.order_type) {
+            Ok(fees) => fees,
+            Err(resp) => return resp,
+        };
+    let quote = match crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
         limit_micro,
         &snapshot,
         draft.order_type,
+        spend_fees.as_ref().map(|fees| fees.inputs),
     ) {
         Ok(quote) => quote,
         Err(resp) => return resp,
@@ -117,6 +123,11 @@ pub fn revalidate_trade_draft(
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
+    let (rate_bps, builder_fee, builder_code) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees.as_ref(), &quote);
+    draft.builder_fee_rate_bps = rate_bps;
+    draft.builder_fee_micro = builder_fee;
+    draft.builder_code = builder_code;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -146,30 +157,34 @@ pub fn revalidate_trade_draft(
         .to_string();
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/quote.json"),
-        &serde_json::json!({
-            "side": draft.side,
-            "order_type": draft.order_type.as_str(),
-            "marketable": draft.marketable,
-            "amount_micro": draft.amount_micro,
-            "amount": format_micro(draft.amount_micro),
-            "price_bound_micro": draft.price_bound_micro,
-            "price_bound": format_micro(draft.price_bound_micro),
-            "limit_price_micro": draft.limit_price_micro,
-            "limit_price": format_micro(draft.limit_price_micro),
-            "size_micro": draft.size_micro,
-            "size": format_micro(draft.size_micro),
-            "maker_micro": draft.maker_micro,
-            "maker": format_micro(draft.maker_micro),
-            "taker_micro": draft.taker_micro,
-            "taker": format_micro(draft.taker_micro),
-            "tick_micro": draft.tick_micro,
-            "tick": format_micro(draft.tick_micro),
-            "min_order_size_micro": draft.min_order_size_micro,
-            "min_order_size": format_micro(draft.min_order_size_micro),
-            "best_ask_micro": draft.best_ask_micro,
-            "best_bid_micro": draft.best_bid_micro,
-            "status": "revalidated"
-        }),
+        &with_review_fee_fields(
+            serde_json::json!({
+                "side": draft.side,
+                "order_type": draft.order_type.as_str(),
+                "marketable": draft.marketable,
+                "amount_micro": draft.amount_micro,
+                "amount": format_micro(draft.amount_micro),
+                "price_bound_micro": draft.price_bound_micro,
+                "price_bound": format_micro(draft.price_bound_micro),
+                "limit_price_micro": draft.limit_price_micro,
+                "limit_price": format_micro(draft.limit_price_micro),
+                "size_micro": draft.size_micro,
+                "size": format_micro(draft.size_micro),
+                "maker_micro": draft.maker_micro,
+                "maker": format_micro(draft.maker_micro),
+                "taker_micro": draft.taker_micro,
+                "taker": format_micro(draft.taker_micro),
+                // Display only; the compared copy is in review_intent.json.
+                "tick_micro": draft.tick_micro,
+                "tick": format_micro(draft.tick_micro),
+                "min_order_size_micro": draft.min_order_size_micro,
+                "min_order_size": format_micro(draft.min_order_size_micro),
+                "best_ask_micro": draft.best_ask_micro,
+                "best_bid_micro": draft.best_bid_micro,
+                "status": "revalidated"
+            }),
+            &draft,
+        ),
         false,
     ) {
         return error(-4, "failed to store quote");
@@ -236,28 +251,32 @@ pub fn revalidate_trade_draft(
         .unwrap_or(false);
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/review_intent.json"),
-        &serde_json::json!({
-            "wallet": wallet,
-            "draft_id": id,
-            "owner": owner.to_checksum(None),
-            "funder": funder.to_checksum(None),
-            "slug": draft.slug,
-            "condition_id": draft.condition_id,
-            "outcome": draft.outcome,
-            "token_id": draft.token_id,
-            "side": draft.side,
-            "order_type": draft.order_type.as_str(),
-            "limit_price": format_micro(draft.limit_price_micro),
-            "size": format_micro(draft.size_micro),
-            "maker": format_micro(draft.maker_micro),
-            "taker": format_micro(draft.taker_micro),
-            "neg_risk": draft.neg_risk,
-            "policy_status": policy_status,
-            "sell_preflight": sell_preflight,
-            "status": "final_review_staged",
-            "signing_enabled": posting_enabled,
-            "posting_enabled": posting_enabled
-        }),
+        &with_review_fee_fields(
+            serde_json::json!({
+                "wallet": wallet,
+                "draft_id": id,
+                "owner": owner.to_checksum(None),
+                "funder": funder.to_checksum(None),
+                "slug": draft.slug,
+                "condition_id": draft.condition_id,
+                "outcome": draft.outcome,
+                "token_id": draft.token_id,
+                "side": draft.side,
+                "order_type": draft.order_type.as_str(),
+                "limit_price": format_micro(draft.limit_price_micro),
+                "size": format_micro(draft.size_micro),
+                "maker": format_micro(draft.maker_micro),
+                "taker": format_micro(draft.taker_micro),
+                // Emitted through the same helper the comparison uses.
+                "neg_risk": draft.neg_risk,
+                "policy_status": policy_status,
+                "sell_preflight": sell_preflight,
+                "status": "final_review_staged",
+                "signing_enabled": posting_enabled,
+                "posting_enabled": posting_enabled
+            }),
+            &draft,
+        ),
         false,
     ) {
         return error(-4, "failed to store review intent");
@@ -301,17 +320,24 @@ pub fn refresh_trade_post_inputs(
         draft.limit_price_micro,
         &snapshot,
     )?;
-    let quote = build_trade_quote(
+    let spend_fees = crate::trade_flow_parts::pricing::resolve_spend_fee_inputs(draft.order_type)?;
+    let quote = crate::trade_flow_parts::pricing::build_trade_quote_with_fees(
         draft.side,
         amount_input,
         limit_micro,
         &snapshot,
         draft.order_type,
+        spend_fees.as_ref().map(|fees| fees.inputs),
     )?;
     draft.limit_price_micro = quote.price_micro;
     draft.size_micro = quote.size_micro;
     draft.maker_micro = quote.maker_micro;
     draft.taker_micro = quote.taker_micro;
+    let (rate_bps, builder_fee, builder_code) =
+        crate::trade_flow_parts::pricing::quoted_fee_fields(spend_fees.as_ref(), &quote);
+    draft.builder_fee_rate_bps = rate_bps;
+    draft.builder_fee_micro = builder_fee;
+    draft.builder_code = builder_code;
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
@@ -332,30 +358,34 @@ pub fn refresh_trade_post_inputs(
         .unwrap_or(true);
     if let DispatchResponse::Error { .. } = store_put_json(
         &format!("{base}/quote.json"),
-        &serde_json::json!({
-            "side": draft.side,
-            "order_type": draft.order_type.as_str(),
-            "marketable": draft.marketable,
-            "amount_micro": draft.amount_micro,
-            "amount": format_micro(draft.amount_micro),
-            "price_bound_micro": draft.price_bound_micro,
-            "price_bound": format_micro(draft.price_bound_micro),
-            "limit_price_micro": draft.limit_price_micro,
-            "limit_price": format_micro(draft.limit_price_micro),
-            "size_micro": draft.size_micro,
-            "size": format_micro(draft.size_micro),
-            "maker_micro": draft.maker_micro,
-            "maker": format_micro(draft.maker_micro),
-            "taker_micro": draft.taker_micro,
-            "taker": format_micro(draft.taker_micro),
-            "tick_micro": draft.tick_micro,
-            "tick": format_micro(draft.tick_micro),
-            "min_order_size_micro": draft.min_order_size_micro,
-            "min_order_size": format_micro(draft.min_order_size_micro),
-            "best_ask_micro": draft.best_ask_micro,
-            "best_bid_micro": draft.best_bid_micro,
-            "status": "post_revalidated"
-        }),
+        &with_review_fee_fields(
+            serde_json::json!({
+                "side": draft.side,
+                "order_type": draft.order_type.as_str(),
+                "marketable": draft.marketable,
+                "amount_micro": draft.amount_micro,
+                "amount": format_micro(draft.amount_micro),
+                "price_bound_micro": draft.price_bound_micro,
+                "price_bound": format_micro(draft.price_bound_micro),
+                "limit_price_micro": draft.limit_price_micro,
+                "limit_price": format_micro(draft.limit_price_micro),
+                "size_micro": draft.size_micro,
+                "size": format_micro(draft.size_micro),
+                "maker_micro": draft.maker_micro,
+                "maker": format_micro(draft.maker_micro),
+                "taker_micro": draft.taker_micro,
+                "taker": format_micro(draft.taker_micro),
+                // Display only; the compared copy is in review_intent.json.
+                "tick_micro": draft.tick_micro,
+                "tick": format_micro(draft.tick_micro),
+                "min_order_size_micro": draft.min_order_size_micro,
+                "min_order_size": format_micro(draft.min_order_size_micro),
+                "best_ask_micro": draft.best_ask_micro,
+                "best_bid_micro": draft.best_bid_micro,
+                "status": "post_revalidated"
+            }),
+            draft,
+        ),
         false,
     ) {
         return Err(error(-4, "failed to store quote"));
@@ -404,6 +434,61 @@ pub fn refresh_trade_post_inputs(
     Ok((policy_check, sell_preflight))
 }
 
+/// The fee fields the review intent carries and the comparison checks.
+///
+/// One source for both, because they drifted: the writer emitted a JSON number
+/// and `null`, the comparison read `as_str()`, and no post could ever match.
+/// Values are strings so a missing fee is distinguishable from an unread one
+/// and from a real zero.
+/// Merge the fee pairs into a review artifact, so the JSON key names and
+/// their order come from `review_fee_fields` rather than being hand-typed
+/// beside it.
+///
+/// Hand-typing them left the earlier "could never match" bug re-openable:
+/// renaming a key, or swapping the two indices, made every builder-coded post
+/// fail forever with the whole suite green.
+pub fn with_review_fee_fields(
+    mut value: serde_json::Value,
+    draft: &StoreTradeDraft,
+) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        for (key, rendered) in review_fee_fields(draft) {
+            object.insert(key.to_owned(), serde_json::Value::String(rendered));
+        }
+    }
+    value
+}
+
+pub fn review_fee_fields(draft: &StoreTradeDraft) -> [(&'static str, String); 3] {
+    [
+        // Who is paid, not just how much. Disclosed in the ceremony either
+        // way, but a review that never named the beneficiary could not
+        // disagree with one repointed between the agent's revalidation and
+        // the signature.
+        (
+            "builder_code",
+            draft
+                .builder_code
+                .clone()
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+        (
+            "builder_fee",
+            draft
+                .builder_fee_micro
+                .map(format_micro)
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+        (
+            "builder_fee_rate_bps",
+            draft
+                .builder_fee_rate_bps
+                .map(|bps| bps.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+    ]
+}
+
 pub fn review_intent_matches_draft(
     review: &serde_json::Value,
     draft: &StoreTradeDraft,
@@ -436,7 +521,13 @@ pub fn review_intent_matches_draft(
         ("maker", format_micro(draft.maker_micro)),
         ("taker", format_micro(draft.taker_micro)),
         ("policy_status", policy_status.to_string()),
-    ] {
+    ]
+    .into_iter()
+    // Load-bearing: for a sell or a limit buy a ceiling change does not move
+    // `maker` or `taker`, so without the fee a change between the review the
+    // agent showed and the signature would pass unnoticed.
+    .chain(review_fee_fields(draft))
+    {
         if review.get(field).and_then(serde_json::Value::as_str) != Some(expected.as_str()) {
             return Err(format!(
                 "final review field '{field}' no longer matches live post inputs"

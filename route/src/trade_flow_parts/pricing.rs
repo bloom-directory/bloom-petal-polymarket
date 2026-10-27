@@ -144,14 +144,131 @@ pub fn build_trade_quote(
     snapshot: &TradeSnapshot,
     order_type: OrderType,
 ) -> Result<LimitQuote, DispatchResponse> {
+    build_trade_quote_with_fees(side, amount_micro, limit_micro, snapshot, order_type, None)
+}
+
+/// As [`build_trade_quote`], sizing a market buy so its fees fit the spend.
+///
+/// Every stage that quotes a draft must pass the same fee inputs. Draft,
+/// revalidate and post all resolve them through
+/// [`resolve_spend_fee_inputs`], so their numbers agree and
+/// `review_intent_matches_draft` does not fail on a quote that moved.
+pub fn build_trade_quote_with_fees(
+    side: Side,
+    amount_micro: u64,
+    limit_micro: u64,
+    snapshot: &TradeSnapshot,
+    order_type: OrderType,
+    fees: Option<SpendFeeInputs>,
+) -> Result<LimitQuote, DispatchResponse> {
+    let pricer = fees.map(|fees| {
+        move |notional: u64| -> crate::polymarket::Result<u64> {
+            fees.total_micro(notional)
+                .map_err(crate::polymarket::PolymarketError::invalid)
+        }
+    });
     shared_trade::build_quote(
         side,
         amount_micro,
         limit_micro,
         &snapshot.as_shared(),
         order_type,
+        pricer
+            .as_ref()
+            .map(|pricer| pricer as &dyn Fn(u64) -> crate::polymarket::Result<u64>),
     )
     .map_err(polymarket_error)
+}
+
+/// The fee inputs a market buy is sized against.
+#[derive(Clone, Copy, Debug)]
+pub struct SpendFeeInputs {
+    pub builder_bps: u16,
+}
+
+/// A builder code and the fee inputs its orders are sized against, resolved in
+/// one pass so the code a draft records is the one its fee was priced for.
+#[derive(Clone, Debug)]
+pub struct SpendFeeAttribution {
+    pub inputs: SpendFeeInputs,
+    /// `0x…`, rendered the way the signed order's `builder` field is, so the
+    /// draft, the review intent and the prepared artifact all compare.
+    pub code_hex: String,
+}
+
+impl SpendFeeInputs {
+    fn total_micro(self, notional_micro: u64) -> Result<u64, String> {
+        crate::builder_code::builder_fee_ceiling_micro(notional_micro, self.builder_bps)
+    }
+}
+
+/// The fee a quote was sized against, as stored on the draft and compared at
+/// every later stage. `None` throughout when no builder code is configured.
+pub fn quoted_fee_fields(
+    fees: Option<&SpendFeeAttribution>,
+    quote: &LimitQuote,
+) -> (Option<u16>, Option<u64>, Option<String>) {
+    let Some(fees) = fees else {
+        return (None, None, None);
+    };
+    // The SAME notional the claim declares, so the plan, the review intent
+    // and the policy cap cannot disagree with what gets signed.
+    let notional = crate::builder_fee::fee_notional_micro(quote);
+    let builder =
+        crate::builder_code::builder_fee_ceiling_micro(notional, fees.inputs.builder_bps).ok();
+    (
+        Some(fees.inputs.builder_bps),
+        builder,
+        Some(fees.code_hex.clone()),
+    )
+}
+
+/// The fee that sits *on top of* a draft's `amount_micro`.
+///
+/// Zero for a market buy: `market_buy_from_spend_with_fees` already reduced
+/// `makerAmount` so the order plus its fee fits the requested amount, so the
+/// fee is inside that figure and counting it twice overstates the outflow.
+/// For every other order the fee is additive.
+pub fn fee_on_top_of_amount_micro(draft: &StoreTradeDraft) -> u64 {
+    let market_buy =
+        matches!(draft.order_type, OrderType::FAK | OrderType::FOK) && draft.side == Side::Buy;
+    if market_buy {
+        0
+    } else {
+        draft.builder_fee_micro.unwrap_or(0)
+    }
+}
+
+/// A one-line fee summary for the owner-facing plan. Covers the builder fee
+/// only; Polymarket's own fee is named as separate, not folded in.
+pub fn fee_summary_line(draft: &StoreTradeDraft) -> String {
+    let Some(builder) = draft.builder_fee_micro else {
+        return "none (no builder code configured)".to_owned();
+    };
+    let rate = draft
+        .builder_fee_rate_bps
+        .map(crate::builder_code::bps_percent_string)
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!(
+        "up to {} pUSD builder ({rate}); Polymarket's own taker fee is charged separately and is not in this figure",
+        crate::polymarket::order::format_micro(builder),
+    )
+}
+
+/// Resolves the fee inputs for a draft, or `None` when no builder code is
+/// configured. One place, so every stage that quotes agrees.
+pub fn resolve_spend_fee_inputs(
+    order_type: OrderType,
+) -> Result<Option<SpendFeeAttribution>, DispatchResponse> {
+    let Some(attribution) = crate::account_views::resolve_builder_attribution()? else {
+        return Ok(None);
+    };
+    let builder_bps =
+        crate::builder_fee::FeeRateBasis::for_order_type(order_type).bps(attribution.ceiling);
+    Ok(Some(SpendFeeAttribution {
+        inputs: SpendFeeInputs { builder_bps },
+        code_hex: format!("{:#x}", attribution.code),
+    }))
 }
 
 pub fn trade_policy_check(
@@ -168,6 +285,12 @@ pub fn trade_policy_check(
             Side::Sell => LocalPolicySide::Sell,
         },
         amount_microusd: draft.amount_micro,
+        // A spend cap should bound what leaves the wallet, not the order's
+        // notional alone — except for a market buy, where the sizing already
+        // reduced `makerAmount` so the order plus its fee fits the requested
+        // amount. Adding the fee again there would deny roughly 1% early on
+        // every market buy.
+        fee_microusd: fee_on_top_of_amount_micro(draft),
         limit_price_micro: draft.limit_price_micro,
         active: draft.active,
         closed: draft.closed,

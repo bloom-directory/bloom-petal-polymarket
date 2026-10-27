@@ -1,4 +1,4 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use serde::Deserialize;
 
 use crate::polymarket::builder_creds::BuilderApiKeyInfo;
@@ -258,6 +258,196 @@ pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
         other => sdk_error(other),
     })?;
     String::from_utf8(bytes).map_err(|_| error(-4, "stored Enso API key is not valid UTF-8"))
+}
+
+fn load_builder_code_override() -> Result<Option<String>, DispatchResponse> {
+    match petal::sdk::store_get("settings/builder-code", 128) {
+        Ok(bytes) => {
+            let raw = core::str::from_utf8(&bytes)
+                .map_err(|_| error(-4, "stored builder code is not valid UTF-8"))?;
+            Ok(Some(raw.to_string()))
+        }
+        Err(SdkError::Host(HostStatus::NotFound)) => Ok(None),
+        Err(err) => Err(sdk_error(err)),
+    }
+}
+
+pub fn read_builder_code_status() -> DispatchResponse {
+    let override_code = match load_builder_code_override() {
+        Ok(code) => code,
+        Err(resp) => return resp,
+    };
+    let ceiling_override = match load_fee_ceiling_override() {
+        Ok(ceiling) => ceiling,
+        Err(resp) => return resp,
+    };
+    let changes = builder_settings_audit_tail(20);
+    let status = crate::builder_code::builder_code_status(override_code.as_deref());
+    let ceiling = crate::builder_code::resolve_fee_ceiling(
+        crate::builder_code::RELEASE_DEFAULT_FEE_CEILING,
+        ceiling_override,
+    );
+    petal::read_json_value(&serde_json::json!({
+        "configured": status.configured,
+        "source": status.source,
+        "code": status.code,
+        "fee_ceiling": ceiling.map(|(ceiling, source)| serde_json::json!({
+            "maker_bps": ceiling.maker_bps,
+            "taker_bps": ceiling.taker_bps,
+            "source": source,
+        })),
+        // Both settings above are agent-writable, so the owner gets the
+        // history beside the current value rather than having to ask for it.
+        // Null rather than empty when the record cannot be read, so a lost
+        // history does not render as a quiet one. `seq` numbers the changes,
+        // so a tail that does not begin at 1 says how many preceded it.
+        "recent_changes": changes,
+        "recent_changes_readable": changes.is_some(),
+    }))
+}
+
+/// Records a builder attribution change, after the setting it describes.
+///
+/// Its failure is reported rather than swallowed: a repointed beneficiary with
+/// no record is precisely the state worth knowing about. Writing the record
+/// first would trade that for a record of a change that never applied.
+fn record_builder_settings_change(event: &str, details: serde_json::Value) -> DispatchResponse {
+    match append_builder_settings_audit(event, details) {
+        DispatchResponse::Error { .. } => error(
+            -4,
+            "the setting was written but its audit record was not; read settings/builder-code-status.json to confirm what is now in effect",
+        ),
+        other => other,
+    }
+}
+
+pub fn write_builder_code_override(body: &[u8]) -> DispatchResponse {
+    let text = match core::str::from_utf8(body) {
+        Ok(value) => value.trim(),
+        Err(_) => return error(-3, "builder code must be UTF-8"),
+    };
+    if text.is_empty() {
+        return match petal::sdk::store_del("settings/builder-code") {
+            Ok(()) => record_builder_settings_change(
+                "builder_code_cleared",
+                serde_json::json!({ "source": "override removed" }),
+            ),
+            Err(err) => sdk_error(err),
+        };
+    }
+    let parsed = match crate::builder_code::parse_builder_code(text) {
+        Ok(parsed) => parsed,
+        Err(err) => return error(-3, format!("builder code: {err}")),
+    };
+    let encoded = format!("0x{}", hex::encode(parsed.0));
+    match petal::sdk::store_put("settings/builder-code", encoded.as_bytes(), false) {
+        Ok(()) => record_builder_settings_change(
+            "builder_code_set",
+            serde_json::json!({ "builder_code": encoded }),
+        ),
+        Err(err) => sdk_error(err),
+    }
+}
+
+fn load_fee_ceiling_override()
+-> Result<Option<crate::builder_code::BuilderFeeCeilingBps>, DispatchResponse> {
+    match petal::sdk::store_get("settings/builder-fee-ceiling", 256) {
+        Ok(bytes) => {
+            let parsed: crate::builder_code::BuilderFeeCeilingBps = serde_json::from_slice(&bytes)
+                .map_err(|err| error(-4, format!("stored fee ceiling: {err}")))?;
+            parsed
+                .validate()
+                .map(Some)
+                .map_err(|err| error(-4, format!("stored fee ceiling: {err}")))
+        }
+        Err(SdkError::Host(HostStatus::NotFound)) => Ok(None),
+        Err(err) => Err(sdk_error(err)),
+    }
+}
+
+pub fn write_fee_ceiling_override(body: &[u8]) -> DispatchResponse {
+    let text = match core::str::from_utf8(body) {
+        Ok(value) => value.trim(),
+        Err(_) => return error(-3, "fee ceiling must be UTF-8"),
+    };
+    if text.is_empty() {
+        return match petal::sdk::store_del("settings/builder-fee-ceiling") {
+            Ok(()) => record_builder_settings_change(
+                "builder_fee_ceiling_cleared",
+                serde_json::json!({ "source": "override removed" }),
+            ),
+            Err(err) => sdk_error(err),
+        };
+    }
+    let parsed = match serde_json::from_str::<crate::builder_code::BuilderFeeCeilingBps>(text) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return error(
+                -3,
+                format!("fee ceiling must be {{\"maker_bps\":N,\"taker_bps\":M}}: {err}"),
+            );
+        }
+    };
+    let parsed = match parsed.validate() {
+        Ok(parsed) => parsed,
+        Err(err) => return error(-3, format!("fee ceiling: {err}")),
+    };
+    let encoded = match serde_json::to_vec(&parsed) {
+        Ok(encoded) => encoded,
+        Err(err) => return error(-4, format!("encode fee ceiling: {err}")),
+    };
+    match petal::sdk::store_put("settings/builder-fee-ceiling", &encoded, false) {
+        Ok(()) => record_builder_settings_change(
+            "builder_fee_ceiling_set",
+            serde_json::json!({
+                "maker_bps": parsed.maker_bps,
+                "taker_bps": parsed.taker_bps,
+            }),
+        ),
+        Err(err) => sdk_error(err),
+    }
+}
+
+/// A builder code and the ceiling its orders are bounded by. Both are needed
+/// to post a builder-coded order: without the ceiling the Petal cannot bound
+/// what the owner is approving, and the venue serves no API for the real rate.
+#[derive(Clone, Copy, Debug)]
+pub struct BuilderAttribution {
+    pub code: B256,
+    pub ceiling: crate::builder_code::BuilderFeeCeilingBps,
+}
+
+/// The attribution a builder-coded order should carry, or `None` when no code
+/// is configured. Errors when a code resolves without a ceiling: that state
+/// is recoverable by writing one, and guessing a rate would put a number in
+/// front of the owner that nothing supports.
+pub fn resolve_builder_attribution() -> Result<Option<BuilderAttribution>, DispatchResponse> {
+    let Some(code) = resolve_builder_code()? else {
+        return Ok(None);
+    };
+    let ceiling_override = load_fee_ceiling_override()?;
+    let Some(ceiling) = crate::builder_code::resolve_default_fee_ceiling(ceiling_override) else {
+        return Err(error(
+            -3,
+            "a builder code is configured but no fee ceiling is; write settings/builder-fee-ceiling as {\"maker_bps\":N,\"taker_bps\":M} before posting a builder-coded order",
+        ));
+    };
+    Ok(Some(BuilderAttribution { code, ceiling }))
+}
+
+/// The builder attribution code every order should carry: the resolved
+/// default (operator store override, else this release's declared default),
+/// or `None` if nothing is configured — orders then carry a zero builder
+/// field, same as before this was wired up.
+pub fn resolve_builder_code() -> Result<Option<B256>, DispatchResponse> {
+    let override_code = load_builder_code_override()?;
+    let Some(code) = crate::builder_code::resolve_default_builder_code(override_code.as_deref())
+    else {
+        return Ok(None);
+    };
+    crate::builder_code::parse_builder_code(&code)
+        .map(Some)
+        .map_err(|err| error(-4, format!("configured builder code: {err}")))
 }
 
 pub fn wallet_status(

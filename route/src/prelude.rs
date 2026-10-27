@@ -41,8 +41,9 @@ pub use crate::infra_parts::relayer::{
     relayer_transaction, relayer_tx_id_matches, relayer_wallet_nonce,
 };
 pub use crate::infra_parts::store::{
-    StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,
-    store_trade_receipt, trade_lock_body, trade_lock_stale_bytes,
+    StoreTradeLock, acquire_trade_lock, append_builder_settings_audit, append_trade_audit,
+    builder_settings_audit_tail, read_store, store_get, store_put_json, store_trade_receipt,
+    trade_lock_body, trade_lock_stale_bytes,
 };
 pub use crate::infra_parts::util::{
     now_millis, now_secs, polymarket_error, sdk_error, sdk_error_with_context, url_with_query,
