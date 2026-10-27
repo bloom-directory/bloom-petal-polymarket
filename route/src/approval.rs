@@ -1,9 +1,11 @@
 use alloy::primitives::{Address, B256, Signature};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError, SignBatchOutcome};
+
+/// Every Polymarket payload is an EIP-712 digest the owner's EVM key signs.
+const SUITE: petal::CryptoSuite = petal::CryptoSuite::Secp256k1Keccak256Recoverable;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedSigning {
@@ -65,14 +67,49 @@ impl PreparedSigning {
     }
 }
 
+/// Operation classes Broker reviews by rebuilding the signed payload itself.
+///
+/// `validate_petal_profile` in bloom-broker (landed in #103) refuses a claim
+/// carrying any declared debit, destination or fee on these classes:
+/// "Polymarket exact review derives its facts from signed fields, not
+/// financial claim overrides". There, Broker's own rebuild is what the owner
+/// is shown, so a claim that also declared value would be a second and
+/// unverified source that could disagree with it.
+///
+/// Every class this Petal signs under is currently on that list, so declaring
+/// effects would make every signature refused rather than merely unreviewed.
+/// The cost is that the trading fee stays undeclared — it is the one thing the
+/// signed order does not carry, so Broker's rebuild cannot see it either, and
+/// nothing bounds it. Declaring it needs either a class off that list or a
+/// Broker that cross-checks a claim against its rebuild instead of refusing
+/// it outright.
+const BROKER_REVIEWED_CLASSES: [&str; 3] = [
+    "polymarket.order.poly1271",
+    "polymarket.relayer_batch",
+    "polymarket.onboard",
+];
+
+/// The effects a claim may declare for `operation_class`.
+fn declarable_effects<'a>(
+    operation_class: &str,
+    effects: &'a petal::ClaimEffects,
+    fallback: &'a petal::ClaimEffects,
+) -> &'a petal::ClaimEffects {
+    if BROKER_REVIEWED_CLASSES.contains(&operation_class) {
+        return fallback;
+    }
+    effects
+}
+
 fn sign_prepared_items(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &[&PreparedSigning],
     operation_class: &str,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
     selector: petal::SignSelector,
-) -> Result<Vec<Vec<u8>>, DispatchResponse> {
+) -> Result<Vec<Signature>, DispatchResponse> {
     if prepared.is_empty() {
         return Err(error(-3, "prepared signing batch is empty"));
     }
@@ -92,38 +129,44 @@ fn sign_prepared_items(
     let approval_hint =
         existing_approval_hint(approval_key, &prepared_artifact_digest, selector_label)?;
     let sent_hint = approval_hint.is_some();
-    let claim = batch_claim(ctx, operation_class, &payloads)?;
-    match petal::sdk::sign_payload_batch(&petal::PayloadBatchSignRequest {
-        wallet: wallet.into(),
-        payloads,
-        signature_algorithm: "secp256k1-keccak256-recoverable".into(),
-        operation_class: operation_class.into(),
-        petal_use_claim_jcs: claim,
-        claim_assurance_evidence: None,
-        approval_hint,
-        action: Some(prepared_bytes),
-        advisory: None,
-        selector: selector.clone(),
-        key_ref_jcs: None,
-    }) {
+    // The derived nonce depends only on the route, class and payloads, and the
+    // action is the persisted prepared record, so a retry presents the same
+    // claim and the owner's approval still matches it.
+    let nothing = petal::ClaimEffects::moves_nothing();
+    let claim = petal::petal_use_claim(
+        ctx,
+        operation_class,
+        SUITE,
+        &payloads,
+        declarable_effects(operation_class, effects, &nothing),
+        petal::ClaimNonce::Derived,
+    )?;
+    let mut request = claim.batch_request(wallet, selector.clone());
+    request.approval_hint = approval_hint;
+    request.action = Some(prepared_bytes);
+    match petal::sdk::sign_payload_batch(&request) {
         Ok(SignBatchOutcome::Signatures(signatures)) if signatures.len() == prepared.len() => {
-            for (signature, item) in signatures.iter().zip(prepared) {
-                if signature.len() != 65 {
-                    return Err(error(-4, "payload batch returned a non-65-byte signature"));
-                }
-                let signature = Signature::from_raw(signature)
-                    .map_err(|err| error(-4, format!("host signature: {err}")))?;
-                if signature
-                    .recover_address_from_prehash(&item.hash()?)
-                    .map_err(|err| error(-4, format!("recover host signature: {err}")))?
-                    != item.owner()?
-                {
-                    return Err(error(
-                        -4,
-                        "host batch signature does not match prepared owner",
-                    ));
-                }
-            }
+            // alloy checks the length and recovery byte; only signatures that
+            // recover to the prepared owner are returned.
+            let signatures = signatures
+                .iter()
+                .zip(prepared)
+                .map(|(signature, item)| {
+                    let signature = Signature::from_raw(signature)
+                        .map_err(|err| error(-4, format!("host signature: {err}")))?;
+                    if signature
+                        .recover_address_from_prehash(&item.hash()?)
+                        .map_err(|err| error(-4, format!("recover host signature: {err}")))?
+                        != item.owner()?
+                    {
+                        return Err(error(
+                            -4,
+                            "host batch signature does not match prepared owner",
+                        ));
+                    }
+                    Ok(signature)
+                })
+                .collect::<Result<Vec<_>, DispatchResponse>>()?;
             let _ = petal::sdk::store_del(approval_key);
             Ok(signatures)
         }
@@ -284,17 +327,22 @@ pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), Dispat
 }
 
 /// Sign one prepared payload under an owner approval bound to its exact bytes.
+/// `effects` is what the payload moves, declared in its Petal use claim; it
+/// must be fixed by what the prepared record pins (its bytes, or the final
+/// review whose hash it carries) so a retry declares the same.
 pub fn sign_prepared(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
-) -> Result<Vec<u8>, DispatchResponse> {
+) -> Result<Signature, DispatchResponse> {
     sign_prepared_items(
         ctx,
         wallet,
         &[prepared],
         &prepared.intent,
+        effects,
         approval_key,
         petal::SignSelector::Exact,
     )?
@@ -307,18 +355,20 @@ pub fn sign_prepared(
 /// bound to its bytes. Use this only for payloads carrying a short-lived venue
 /// field (such as a server timestamp) that must be rebuilt after the owner
 /// approves; the approval stays bound to this Petal, route, wallet, operation
-/// class and signature count.
+/// class and signature count. Every rebuild must declare the same `effects`.
 pub fn sign_prepared_reusable(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
+    effects: &petal::ClaimEffects,
     approval_key: &str,
-) -> Result<Vec<u8>, DispatchResponse> {
+) -> Result<Signature, DispatchResponse> {
     sign_prepared_items(
         ctx,
         wallet,
         &[prepared],
         &prepared.intent,
+        effects,
         approval_key,
         petal::SignSelector::Reusable,
     )?
@@ -383,48 +433,32 @@ fn existing_approval_hint(
     Ok((existing.expires_ms > now_millis() as u64).then_some(existing.action_id))
 }
 
-fn batch_claim(
-    ctx: &petal::Ctx,
-    operation_class: &str,
-    payloads: &[petal::PayloadSignItem],
-) -> Result<Vec<u8>, DispatchResponse> {
-    let route = ctx
-        .params
-        .iter()
-        .find_map(|(name, value)| (name == "bloom.route_id").then_some(value.as_str()))
-        .ok_or_else(|| error(-4, "trusted Petal route id is unavailable"))?;
-    let payload_digest = petal::payload_batch_digest(payloads).map_err(sdk_error)?;
-    let ordered_hashes = payloads
-        .iter()
-        .map(|payload| hex::encode(payload.claimed_hash))
-        .collect::<Vec<_>>();
-    let nonce = Sha256::digest(
-        [
-            ctx.package_hash.as_bytes(),
-            route.as_bytes(),
-            operation_class.as_bytes(),
-            payload_digest.as_slice(),
-        ]
-        .concat(),
-    );
-    serde_jcs::to_vec(&serde_json::json!({
-        "package_hash": ctx.package_hash,
-        "route": route,
-        "operation_class": operation_class,
-        "crypto_suite": "secp256k1-keccak256-recoverable",
-        "payload_digest": hex::encode(payload_digest),
-        "ordered_hashes": ordered_hashes,
-        "declared_debits": [],
-        "declared_destinations": [],
-        "declared_fee": {"kind": "none"},
-        "nonce": hex::encode(&nonce[..16]),
-        "claim_assurance": {"kind": "machine_asserted"}
-    }))
-    .map_err(|err| error(-4, format!("encode Petal use claim: {err}")))
-}
-
 #[cfg(test)]
 mod tests {
+    /// Every class this Petal signs under is one Broker rebuilds, so a claim
+    /// that declared value would be refused outright rather than merely
+    /// unreviewed. If a class is ever added off that list, its effects must
+    /// still reach the host — that is where the fee declaration goes back.
+    #[test]
+    fn effects_are_withheld_only_from_classes_broker_rebuilds() {
+        let effects = petal::ClaimEffects::moves_value()
+            .debit(&crate::polymarket::claim::pusd_asset("polygon"), "1");
+        let nothing = petal::ClaimEffects::moves_nothing();
+
+        for class in super::BROKER_REVIEWED_CLASSES {
+            assert_eq!(
+                super::declarable_effects(class, &effects, &nothing),
+                &nothing,
+                "{class} refuses a declaring claim"
+            );
+        }
+        // Anything off that list keeps its effects.
+        assert_eq!(
+            super::declarable_effects("polymarket.clob_auth.v1", &effects, &nothing),
+            &effects
+        );
+    }
+
     use super::*;
 
     #[test]

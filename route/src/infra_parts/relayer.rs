@@ -1,8 +1,9 @@
+use crate::polymarket::claim::{BatchCall, PreparedBatch};
 use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash, batch_signing_preimage};
 use crate::polymarket::wallet::approval_calls;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, Signature, U256};
 use petal::sdk::{DispatchResponse, HttpRequest};
 use serde::{Deserialize, Serialize};
 
@@ -250,11 +251,6 @@ pub fn relayer_batch_body(
     approval_key: &str,
 ) -> Result<serde_json::Value, DispatchResponse> {
     let prepared = prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)?;
-    let prepared_deadline = prepared
-        .preimage
-        .get("deadline")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
     if prepared_relayer_batch_expired(&prepared, now_secs())? {
         let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
         let _ = petal::sdk::store_del(&format!(
@@ -265,56 +261,20 @@ pub fn relayer_batch_body(
             "prepared onboarding approval signature expired; retry onboarding to prepare and approve a fresh bounded batch",
         ));
     }
-    let calls_json = prepared
-        .preimage
-        .get("calls")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing calls"))?;
-    let prepared_nonce = prepared
-        .preimage
-        .get("nonce")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing nonce"))?;
+    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
     let signature = relayer_batch_signature(ctx, wallet, &prepared, approval_key)?;
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
         "to": FACTORY.to_checksum(None),
-        "nonce": prepared_nonce.to_string(),
+        "nonce": batch.nonce.to_string(),
         "signature": signature,
         "depositWalletParams": {
             "depositWallet": deposit.to_checksum(None),
-            "deadline": prepared_deadline.to_string(),
-            "calls": calls_json,
+            "deadline": batch.deadline.to_string(),
+            "calls": batch.calls,
         },
     }))
-}
-
-pub fn relayer_signature_hex(signature: &[u8]) -> Result<String, DispatchResponse> {
-    if signature.len() != 65 {
-        return Err(error(-4, "relayer signature is not 65 bytes"));
-    }
-    let mut normalized = signature.to_vec();
-    normalized[64] = match normalized[64] {
-        recovery @ 0..=1 => recovery + 27,
-        recovery @ 27..=28 => recovery,
-        recovery => {
-            return Err(error(
-                -4,
-                format!("relayer signature has invalid recovery byte {recovery}"),
-            ));
-        }
-    };
-    Ok(format!("0x{}", hex::encode(normalized)))
-}
-
-fn normalize_relayer_signature_hex(signature: &str) -> Result<String, DispatchResponse> {
-    let encoded = signature
-        .strip_prefix("0x")
-        .ok_or_else(|| error(-4, "stored relayer signature is not 0x-prefixed"))?;
-    let decoded = hex::decode(encoded)
-        .map_err(|err| error(-4, format!("stored relayer signature hex: {err}")))?;
-    relayer_signature_hex(&decoded)
 }
 
 pub fn prepare_relayer_batch(
@@ -349,16 +309,7 @@ pub fn prepare_relayer_batch(
                 calls: calls.clone(),
             };
             let hash = batch_signing_hash(&batch, chain_id, deposit);
-            let calls_json: Vec<serde_json::Value> = calls
-                .iter()
-                .map(|call| {
-                    serde_json::json!({
-                        "target": call.target.to_checksum(None),
-                        "value": call.value.to_string(),
-                        "data": format!("0x{}", hex::encode(call.data.as_ref())),
-                    })
-                })
-                .collect();
+            let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
             let review = serde_json::json!({
                 "operation": "onboard_approvals",
                 "owner": owner.to_checksum(None),
@@ -366,24 +317,27 @@ pub fn prepare_relayer_batch(
                 "chain_id": chain_id,
                 "nonce": nonce,
                 "deadline": deadline,
-                "calls": calls_json,
+                "calls": batch_calls,
                 "signing_hash": format!("{hash:#x}"),
             });
             let review_hash = store_review_intent(&review_key, &review)?;
+            let preimage = PreparedBatch {
+                deposit_wallet: deposit,
+                chain_id,
+                nonce,
+                deadline,
+                calls: batch_calls,
+                review_intent_hash: review_hash,
+            }
+            .to_preimage()
+            .map_err(polymarket_error)?;
             let prepared = PreparedSigning::new(
                 "onboard_approvals",
                 "polymarket.onboard",
                 owner,
                 batch_signing_preimage(&batch, chain_id, deposit),
                 hash,
-                serde_json::json!({
-                    "deposit_wallet": deposit.to_checksum(None),
-                    "chain_id": chain_id,
-                    "nonce": nonce,
-                    "deadline": deadline,
-                    "calls": calls_json,
-                    "review_intent_hash": review_hash,
-                }),
+                preimage,
             );
             store_prepared_signing(&prepared_key, &prepared)?;
             prepared
@@ -392,23 +346,14 @@ pub fn prepare_relayer_batch(
     if prepared.operation != "onboard_approvals" || prepared.owner != owner.to_checksum(None) {
         return Err(error(-4, "prepared onboarding batch identity mismatch"));
     }
-    if prepared
-        .preimage
-        .get("chain_id")
-        .and_then(serde_json::Value::as_u64)
-        != Some(chain_id)
-    {
+    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
+    if batch.chain_id != chain_id {
         return Err(error(
             -4,
             "prepared onboarding batch does not match configured chain",
         ));
     }
-    let review_hash = prepared
-        .preimage
-        .get("review_intent_hash")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing review hash"))?;
-    verify_review_intent(&review_key, review_hash)?;
+    verify_review_intent(&review_key, &batch.review_intent_hash)?;
     Ok(prepared)
 }
 
@@ -430,7 +375,8 @@ pub fn relayer_batch_signature(
             let usable = serde_json::from_slice::<PreparedRelayerSignature>(&bytes)
                 .ok()
                 .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref())
-                .and_then(|stored| normalize_relayer_signature_hex(&stored.signature_hex).ok());
+                .and_then(|stored| stored.signature_hex.parse::<Signature>().ok())
+                .map(|signature| signature.to_string());
             match usable {
                 Some(signature) => return Ok(signature),
                 None => match petal::sdk::store_del(&signature_key) {
@@ -442,7 +388,13 @@ pub fn relayer_batch_signature(
         Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
         Err(err) => return Err(sdk_error(err)),
     }
-    let signature = relayer_signature_hex(&sign_prepared(ctx, wallet, prepared, approval_key)?)?;
+    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
+    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
+    let effects =
+        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, prepared.hash()?)
+            .map_err(polymarket_error)?;
+    // alloy's `Signature` renders v as 27/28, the form the relayer expects.
+    let signature = sign_prepared(ctx, wallet, prepared, &effects, approval_key)?.to_string();
     let value = PreparedRelayerSignature {
         prepared_digest: prepared.digest()?,
         signature_hex: signature.clone(),
@@ -613,25 +565,17 @@ mod tests {
         );
     }
 
+    /// The relayer needs v as 27/28. Bloom's signer returns 0/1, and alloy's
+    /// `Signature` renders either form as 27/28, including a stored signature
+    /// read back from its hex.
     #[test]
-    fn relayer_signature_normalizes_recovery_byte() {
+    fn relayer_signature_renders_recovery_byte_as_27_or_28() {
         let mut signature = [0x11; 65];
-        signature[64] = 0;
-        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
-        signature[64] = 1;
-        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
-        signature[64] = 27;
-        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1b"));
-        signature[64] = 28;
-        assert!(relayer_signature_hex(&signature).unwrap().ends_with("1c"));
-    }
-
-    #[test]
-    fn relayer_signature_rejects_invalid_shape() {
-        assert!(relayer_signature_hex(&[0; 64]).is_err());
-        let mut signature = [0; 65];
-        signature[64] = 2;
-        assert!(relayer_signature_hex(&signature).is_err());
-        assert!(normalize_relayer_signature_hex("0xnot-hex").is_err());
+        for (raw, rendered) in [(0, "1b"), (1, "1c"), (27, "1b"), (28, "1c")] {
+            signature[64] = raw;
+            let hex = Signature::from_raw(&signature).unwrap().to_string();
+            assert!(hex.starts_with("0x") && hex.ends_with(rendered), "{hex}");
+            assert_eq!(hex.parse::<Signature>().unwrap().to_string(), hex);
+        }
     }
 }

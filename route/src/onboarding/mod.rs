@@ -51,7 +51,11 @@ pub use status::{
     stored_status_for_wallet, tradeable_deposit_wallet,
 };
 
-pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
+pub fn begin_onboarding(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -59,7 +63,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -113,8 +117,17 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
             "review_intent_hash": review_hash,
         }),
     );
-    let signature = match sign_prepared_reusable(ctx, wallet, &prepared, &approval_key) {
-        Ok(signature) => format!("0x{}", hex::encode(signature)),
+    // CLOB L1 auth proves control of the owner address to mint API
+    // credentials. It moves no value and authorizes no spender.
+    let signature = match sign_prepared_reusable(
+        ctx,
+        wallet,
+        &prepared,
+        &petal::ClaimEffects::moves_nothing(),
+        &approval_key,
+    ) {
+        // v is rendered as 27/28, the form Polymarket's own clients send.
+        Ok(signature) => signature.to_string(),
         Err(resp) => return resp,
     };
     let headers = [
@@ -144,11 +157,15 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
     DispatchResponse::Write
 }
 
-pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
+pub fn continue_onboarding(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> DispatchResponse {
     if let Err(error) = validate_wallet_name(wallet) {
         return crate::prelude::error(-3, error.to_string());
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(response) => return response,
     };

@@ -2,6 +2,7 @@ use crate::prelude::*;
 use std::collections::BTreeSet;
 
 use crate::polymarket::eip712::{CTF, CTF_EXCHANGE, NEG_RISK_EXCHANGE};
+use crate::polymarket::fees::max_buy_fee_cap;
 use crate::polymarket::order::{format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
@@ -107,15 +108,27 @@ pub fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
             Ok(receipt) => receipt,
             Err(_) => return (false, None),
         };
-        if receipt.posted_ms < cutoff || receipt.side != Side::Buy {
-            continue;
-        }
-        if clob_status_excluded_from_daily_cap(receipt.clob_status.as_str(), receipt.order_type) {
-            continue;
-        }
-        total = total.saturating_add(receipt.amount_microusd);
+        total = total.saturating_add(receipt_daily_exposure_microusd(&receipt, cutoff));
     }
     (true, Some(total))
+}
+
+/// What one receipt counts against `max_daily_usd` when the day began at
+/// `cutoff_ms`: a BUY posted since then, unless its CLOB status excludes it,
+/// counts its amount plus its fee bound. A BUY receipt written before fee
+/// bounds were recorded counts the bound at the highest rate this Petal
+/// accepts, since its market's rate is unknown.
+pub fn receipt_daily_exposure_microusd(receipt: &StoreTradeReceiptPolicy, cutoff_ms: u128) -> u64 {
+    if receipt.posted_ms < cutoff_ms || receipt.side != Side::Buy {
+        return 0;
+    }
+    if clob_status_excluded_from_daily_cap(receipt.clob_status.as_str(), receipt.order_type) {
+        return 0;
+    }
+    let fee_cap = receipt
+        .fee_cap_microusd
+        .unwrap_or_else(|| max_buy_fee_cap(receipt.amount_microusd));
+    receipt.amount_microusd.saturating_add(fee_cap)
 }
 
 pub fn audited_receipt_ids_since(wallet: &str, cutoff_ms: u128) -> Result<Vec<String>, SdkError> {
@@ -368,14 +381,23 @@ pub fn evaluate_local_polymarket_order(
         return out;
     }
 
+    // A BUY can cost its amount plus the most Polymarket can charge in fees,
+    // and every USD threshold below applies to that whole cost.
+    let order_usd = ctx.amount_microusd.saturating_add(ctx.fee_cap_microusd);
+    let order_text = format!(
+        "{} (amount {} + fee bound {})",
+        format_micro(order_usd),
+        format_micro(ctx.amount_microusd),
+        format_micro(ctx.fee_cap_microusd)
+    );
+
     if let Some(cap) = policy.max_order_usd {
-        if ctx.amount_microusd > cap {
+        if order_usd > cap {
             out.push(local_policy_check(
                 "max_order_usd",
                 LocalPolicyOutcome::Deny,
                 format!(
-                    "order {} USD exceeds max_order_usd {}",
-                    format_micro(ctx.amount_microusd),
+                    "order {order_text} USD exceeds max_order_usd {}",
                     format_micro(cap)
                 ),
             ));
@@ -383,11 +405,7 @@ pub fn evaluate_local_polymarket_order(
             out.push(local_policy_check(
                 "max_order_usd",
                 LocalPolicyOutcome::Pass,
-                format!(
-                    "{} <= {}",
-                    format_micro(ctx.amount_microusd),
-                    format_micro(cap)
-                ),
+                format!("{order_text} <= {}", format_micro(cap)),
             ));
         }
     }
@@ -400,15 +418,14 @@ pub fn evaluate_local_polymarket_order(
                 "daily cap configured but posted exposure is unknown (receipt store unreadable) - refusing rather than trading uncapped",
             )),
             (true, Some(daily)) => {
-                let total = daily.saturating_add(ctx.amount_microusd);
+                let total = daily.saturating_add(order_usd);
                 if total > cap {
                     out.push(local_policy_check(
                         "max_daily_usd",
                         LocalPolicyOutcome::Deny,
                         format!(
-                            "posted {} USD + order {} USD exceeds max_daily_usd {}",
+                            "posted {} USD + order {order_text} USD exceeds max_daily_usd {}",
                             format_micro(daily),
-                            format_micro(ctx.amount_microusd),
                             format_micro(cap)
                         ),
                     ));
@@ -417,9 +434,8 @@ pub fn evaluate_local_polymarket_order(
                         "max_daily_usd",
                         LocalPolicyOutcome::Pass,
                         format!(
-                            "{} + {} <= {}",
+                            "{} + {order_text} <= {}",
                             format_micro(daily),
-                            format_micro(ctx.amount_microusd),
                             format_micro(cap)
                         ),
                     ));
@@ -453,14 +469,13 @@ pub fn evaluate_local_polymarket_order(
     }
 
     if let Some(threshold) = policy.require_flag_above_usd
-        && ctx.amount_microusd > threshold
+        && order_usd > threshold
     {
         out.push(local_policy_check(
             "require_flag_above_usd",
             LocalPolicyOutcome::Warn,
             format!(
-                "order {} USD is above {} - acknowledge before value-moving post",
-                format_micro(ctx.amount_microusd),
+                "order {order_text} USD is above {} - acknowledge before value-moving post",
                 format_micro(threshold)
             ),
         ));

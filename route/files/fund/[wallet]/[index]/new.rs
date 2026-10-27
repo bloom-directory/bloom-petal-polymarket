@@ -3,11 +3,11 @@ petal::route_file!(spec: petal::write_spec().caps(&["bloom:store", "bloom:vfs.re
 {"target_pusd":"10","max_spend":"100","from_token":"native","slippage_bps":50}
 "#.to_vec()),
     write: |ctx: &petal::Ctx, body: &[u8]| {
-    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+    let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
         let wallet = match petal::wallet_param(ctx) {
             Ok(value) => value,
             Err(resp) => return resp,
         };
-        crate::fund_flow::create_fund_request(wallet, account, body)
+        crate::fund_flow::create_fund_request(wallet, &account, body)
     }
 );

@@ -8,7 +8,6 @@
 //! private store import. It intentionally does not call the legacy native
 //! `polymarket/` VFS handler.
 
-pub mod account;
 pub mod account_views;
 pub mod app_types;
 pub mod approval;
@@ -40,6 +39,19 @@ pub mod trade_flow_parts {
     pub mod pricing;
     pub mod revalidate;
     pub mod storage;
+}
+
+/// The route identity `petal::route_file!` binds. The Petal build tool
+/// generates the real one per route; tests that compile a route source into
+/// this crate use this stand-in.
+#[cfg(test)]
+pub struct __PetalRouteIdentity;
+
+#[cfg(test)]
+impl petal::RouteIdentity for __PetalRouteIdentity {
+    const PATH: &'static str = "";
+    const CANONICAL_PATH: &'static str = "";
+    const PARAMS: &'static [(&'static str, usize)] = &[];
 }
 
 #[cfg(test)]

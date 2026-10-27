@@ -6,7 +6,7 @@ use crate::polymarket::{Position, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn status(wallet: &str, account: u32) -> DispatchResponse {
+pub fn status(wallet: &str, account: &petal::WalletAccount) -> DispatchResponse {
     let legacy_eoa = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config.legacy_eoa_mode,
         Err(resp) => return resp,
@@ -32,7 +32,7 @@ pub fn status(wallet: &str, account: u32) -> DispatchResponse {
     }))
 }
 
-pub fn obligations(wallet: &str, account: u32) -> DispatchResponse {
+pub fn obligations(wallet: &str, account: &petal::WalletAccount) -> DispatchResponse {
     let legacy_eoa = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config.legacy_eoa_mode,
         Err(resp) => return resp,
@@ -84,11 +84,11 @@ pub fn obligations(wallet: &str, account: u32) -> DispatchResponse {
     }))
 }
 
-pub fn builder_keys(wallet: &str, account: u32) -> DispatchResponse {
+pub fn builder_keys(wallet: &str, account: &petal::WalletAccount) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -136,7 +136,11 @@ struct RevokeBuilderKey {
     key: Option<String>,
 }
 
-pub fn revoke_builder_key(wallet: &str, account: u32, body: &[u8]) -> DispatchResponse {
+pub fn revoke_builder_key(
+    wallet: &str,
+    account: &petal::WalletAccount,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(err) = validate_wallet_name(wallet) {
         return error(-3, err.to_string());
     }
@@ -163,7 +167,7 @@ pub fn revoke_builder_key(wallet: &str, account: u32, body: &[u8]) -> DispatchRe
         }
         request.key
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };
@@ -262,9 +266,9 @@ pub fn load_enso_api_key() -> Result<String, DispatchResponse> {
 
 pub fn wallet_status(
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
 ) -> Result<(Address, serde_json::Value), DispatchResponse> {
     validate_wallet_name(wallet).map_err(polymarket_error)?;
-    let owner = wallet_address(wallet, account)?;
+    let owner = wallet_address(account)?;
     Ok((owner, local_status_for_wallet(wallet, owner)?))
 }

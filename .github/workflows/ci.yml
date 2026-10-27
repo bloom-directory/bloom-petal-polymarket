@@ -33,14 +33,14 @@ jobs:
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Install canonical Petal toolchain
-        run: cargo install --git https://github.com/bloom-directory/petal --rev 2beed2ff344ce2b0c112e07096027e1ae0404007 --locked bloom-petal-cli
+        run: cargo install --git https://github.com/bloom-directory/petal --rev 4fefa736df67fa1ee51aeaa0c749d2f11414257d --locked bloom-petal-cli
       - name: Build source package
         run: scripts/build.sh
       - name: Checkout Bloom CLI
         uses: actions/checkout@v6
         with:
           repository: bloom-directory/bloom
-          ref: b751087b4d7bb65a0f2796a00cf49237e20d9cda
+          ref: 409a7a41d16e7ab2a6d1ac4828910513faa87c6b
           path: bloom
           persist-credentials: false
       - name: Build key-free debug Bloom CLI for install smoke tests
