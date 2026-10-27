@@ -25,6 +25,6 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         Ok(selector) => selector.is_some(),
         Err(response) => return response,
     };
-    crate::onboarding::project_next_action(&mut status, wallet, account, approval_pending);
+    crate::onboarding::project_next_action(&mut status, wallet, account, approval_pending, crate::onboarding::login_retry_after_ms(wallet));
     petal::read_json_value(&status)
 });

@@ -231,6 +231,7 @@ pub fn project_next_action(
     wallet: &str,
     account: u32,
     approval_pending: bool,
+    login_retry_after_ms: Option<u64>,
 ) {
     let stage = status["stage"].as_str().unwrap_or("not_started");
     let credentials = status["creds_present"].as_bool().unwrap_or(false);
@@ -238,6 +239,12 @@ pub fn project_next_action(
         None
     } else if credentials && stage == "fund" {
         Some(format!("fund/{wallet}/{account}/new"))
+    } else if let Some(after) = login_retry_after_ms.filter(|_| !credentials) {
+        status["retry_after_ms"] = serde_json::json!(after);
+        status["message"] = serde_json::json!(
+            "The last CLOB login failed after the owner approved it, so that approval is spent. Wait until retry_after_ms, then write begin."
+        );
+        Some(format!("onboard/{wallet}/{account}/begin"))
     } else if approval_pending {
         status["message"] = serde_json::json!(
             "Complete or cancel the existing owner approval, then retry the same action."
@@ -360,7 +367,7 @@ mod next_action_tests {
             ("legacy_eoa", true, false, None),
         ] {
             let mut status = serde_json::json!({"stage": stage, "creds_present": credentials, "next_action": "stale", "message": "producer-specific status"});
-            project_next_action(&mut status, "w", 1, pending);
+            project_next_action(&mut status, "w", 1, pending, None);
             assert_eq!(
                 status["next_action"],
                 serde_json::json!(expected),
@@ -377,5 +384,24 @@ mod next_action_tests {
                 assert_eq!(status["message"], "producer-specific status");
             }
         }
+    }
+
+    #[test]
+    fn failed_login_waits_until_its_approval_expires() {
+        let mut status = serde_json::json!({"stage": "not_started", "creds_present": false});
+        project_next_action(&mut status, "w", 1, false, Some(42));
+        assert_eq!(status["next_action"], "onboard/w/1/begin");
+        assert_eq!(status["retry_after_ms"], 42);
+        assert!(
+            status["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("The last CLOB login failed")
+        );
+
+        let mut status = serde_json::json!({"stage": "not_started", "creds_present": true});
+        project_next_action(&mut status, "w", 1, false, Some(42));
+        assert_eq!(status["next_action"], "onboard/w/1/continue");
+        assert!(status.get("retry_after_ms").is_none());
     }
 }

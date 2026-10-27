@@ -16,6 +16,33 @@ pub use flow::run_onboard_stages;
 pub fn approval_key(wallet: &str) -> String {
     format!("onboard/{wallet}/approval.json")
 }
+/// Store key holding when a CLOB login whose post-signing step failed may be
+/// retried. Machine keeps the spent single-use grant for APPROVAL_TTL_MS.
+fn login_retry_key(wallet: &str) -> String {
+    format!("onboard/{wallet}/login_retry_after.json")
+}
+const LOGIN_RETRY_WAIT_MS: u64 = 5 * 60 * 1000;
+
+/// When a CLOB login may be retried, if a failed attempt is still waiting.
+pub fn login_retry_after_ms(wallet: &str) -> Option<u64> {
+    store_get(&login_retry_key(wallet))
+        .and_then(|bytes| serde_json::from_slice::<u64>(&bytes).ok())
+        .filter(|after| *after > now_millis() as u64)
+}
+
+fn login_failed_after_signing(response: DispatchResponse, retry_after_ms: u64) -> DispatchResponse {
+    let detail = match response {
+        DispatchResponse::Error { message, .. } => message,
+        other => format!("{other:?}"),
+    };
+    error(
+        -4,
+        format!(
+            "CLOB login failed after the owner approved it ({detail}); that single-use approval is spent, so wait until {retry_after_ms} ms (status.json retry_after_ms), then write begin again"
+        ),
+    )
+}
+
 pub use persistence::{OnboardStatusExtra, persist_onboard_failure, persist_onboard_status};
 pub use status::{
     LiveOnboardStatus, fundable_deposit_wallet, fundable_deposit_wallet_from_status,
@@ -96,20 +123,22 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         (POLY_SIGNATURE, signature),
         (POLY_TIMESTAMP, timestamp.to_string()),
     ];
-    let creds = match clob_auth_request("POST", "/auth/api-key", &headers) {
-        Ok(creds) => creds,
+    let stored = match clob_auth_request("POST", "/auth/api-key", &headers) {
         Err(DispatchResponse::Error { code: -4, .. }) => {
-            match clob_auth_request("GET", "/auth/derive-api-key", &headers) {
-                Ok(creds) => creds,
-                Err(resp) => return resp,
-            }
+            clob_auth_request("GET", "/auth/derive-api-key", &headers)
         }
-        Err(resp) => return resp,
-    };
-    if let DispatchResponse::Error { .. } =
-        store_put_json(&format!("creds/{wallet}/clob.json"), &creds, true)
-    {
-        return error(-4, "failed to store CLOB credentials");
+        result => result,
+    }
+    .and_then(|creds| {
+        match store_put_json(&format!("creds/{wallet}/clob.json"), &creds, true) {
+            DispatchResponse::Error { .. } => Err(error(-4, "failed to store CLOB credentials")),
+            _ => Ok(()),
+        }
+    });
+    if let Err(response) = stored {
+        let retry_after_ms = now_millis() as u64 + LOGIN_RETRY_WAIT_MS;
+        let _ = store_put_json(&login_retry_key(wallet), &retry_after_ms, false);
+        return login_failed_after_signing(response, retry_after_ms);
     }
     let _ = petal::sdk::store_del(&approval_key);
     DispatchResponse::Write
@@ -173,5 +202,22 @@ pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Disp
             let _ = persist_onboard_failure(wallet, owner, deposit, &response);
             response
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_failure_after_signing_explains_the_wait() {
+        let DispatchResponse::Error { code, message } =
+            login_failed_after_signing(error(-2, "clob refused"), 42)
+        else {
+            panic!("must be an error");
+        };
+        assert_eq!(code, -4, "Bloom keeps the message of -4, not -2");
+        assert!(message.contains("clob refused"));
+        assert!(message.contains("wait until 42 ms"));
     }
 }
