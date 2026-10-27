@@ -1274,4 +1274,326 @@ require_flag_above_usd = "2.05"
             .unwrap();
         }
     }
+
+    /// SELL 5 YES @ 0.40 from the deposit wallet, the order in #20.
+    fn sell_draft() -> StoreTradeDraft {
+        StoreTradeDraft {
+            side: Side::Sell,
+            order_type: OrderType::GTC,
+            amount_micro: 2_000_000,
+            maker_micro: 5_000_000,
+            taker_micro: 2_000_000,
+            ..fee_enabled_buy()
+        }
+    }
+
+    /// The preflight for `draft` read from `deposit` with these balances and
+    /// approval.
+    fn preflight_with(
+        draft: &StoreTradeDraft,
+        deposit: Address,
+        clob_balance: serde_json::Value,
+        chain_balance: u64,
+        approved: bool,
+    ) -> Result<serde_json::Value, DispatchResponse> {
+        sell_preflight(
+            deposit,
+            &draft.token_id,
+            draft.size_micro,
+            draft.neg_risk,
+            clob_balance,
+            chain_balance,
+            approved,
+            Some(5_000_000),
+        )
+    }
+
+    /// The policy check `trade_policy_check` writes for a SELL it did not deny.
+    fn unposted_sell_check() -> serde_json::Value {
+        serde_json::json!({
+            "status": "blocked",
+            "reason": "sell posting requires passing authoritative chain CTF balance and approval checks",
+            "policy_status": "passed",
+            "policy_deny": false,
+            "signing_enabled": false,
+            "posting_enabled": false
+        })
+    }
+
+    fn sell_review(
+        draft: &StoreTradeDraft,
+        owner: Address,
+        funder: Address,
+        preflight: &serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "wallet": draft.wallet,
+            "draft_id": draft.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": draft.slug,
+            "condition_id": draft.condition_id,
+            "outcome": draft.outcome,
+            "token_id": draft.token_id,
+            "side": "SELL",
+            "order_type": draft.order_type.as_str(),
+            "limit_price": crate::polymarket::order::format_micro(draft.limit_price_micro),
+            "size": crate::polymarket::order::format_micro(draft.size_micro),
+            "maker": crate::polymarket::order::format_micro(draft.maker_micro),
+            "taker": crate::polymarket::order::format_micro(draft.taker_micro),
+            "neg_risk": draft.neg_risk,
+            "policy_status": "passed",
+            "sell_preflight": preflight,
+        })
+    }
+
+    fn refusal(result: Result<serde_json::Value, DispatchResponse>) -> String {
+        match result {
+            Err(DispatchResponse::Error { code: -3, message }) => message,
+            other => panic!("expected a -3 refusal, got {other:?}"),
+        }
+    }
+
+    /// #20: a SELL whose live balances and approval cover it can be posted,
+    /// and the review it was posted from matches the live checks.
+    #[test]
+    fn a_covered_sell_enables_posting() {
+        let sell = sell_draft();
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let preflight = preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(preflight["status"], "pass");
+        assert_eq!(preflight["deposit_wallet"], funder.to_checksum(None));
+        assert_eq!(preflight["token_id"], sell.token_id);
+        assert_eq!(preflight["requested_size_micro"], sell.size_micro);
+        assert_eq!(
+            preflight["ctf_operator"],
+            crate::polymarket::eip712::CTF_EXCHANGE.to_checksum(None)
+        );
+
+        let mut policy_check = unposted_sell_check();
+        enable_sell_posting(&mut policy_check, &sell, &preflight);
+        assert_eq!(policy_check["posting_enabled"], true);
+        assert_eq!(policy_check["signing_enabled"], true);
+        let review = sell_review(&sell, owner, funder, &preflight);
+        review_intent_matches_draft(
+            &review,
+            &sell,
+            owner,
+            funder,
+            &policy_check,
+            Some(&preflight),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_sell_the_balances_do_not_cover_is_refused() {
+        let sell = sell_draft();
+        let funder = Address::repeat_byte(0x22);
+        let message = refusal(preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "4999999"}),
+            5_000_000,
+            true,
+        ));
+        assert!(message.contains("CLOB conditional balance"), "{message}");
+        let message = refusal(preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "5000000"}),
+            4_999_999,
+            true,
+        ));
+        assert!(message.contains("on-chain CTF balance"), "{message}");
+        // A CLOB answer without a balance is not evidence of one.
+        assert!(matches!(
+            preflight_with(&sell, funder, serde_json::json!({}), 5_000_000, true),
+            Err(DispatchResponse::Error { code: -4, .. })
+        ));
+    }
+
+    #[test]
+    fn a_sell_without_the_exchange_approval_is_refused() {
+        let sell = sell_draft();
+        let message = refusal(preflight_with(
+            &sell,
+            Address::repeat_byte(0x22),
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            false,
+        ));
+        assert!(message.contains("has not approved"), "{message}");
+        let neg_risk = StoreTradeDraft {
+            neg_risk: true,
+            ..sell
+        };
+        let message = refusal(preflight_with(
+            &neg_risk,
+            Address::repeat_byte(0x22),
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            false,
+        ));
+        assert!(
+            message.contains(&crate::polymarket::eip712::NEG_RISK_EXCHANGE.to_checksum(None)),
+            "{message}"
+        );
+    }
+
+    /// Only a passing preflight on a SELL the policy did not deny enables a
+    /// post. A GTD SELL, a denied one, and a BUY are left as they were.
+    #[test]
+    fn only_a_passing_preflight_enables_a_sell() {
+        let sell = sell_draft();
+        let preflight = preflight_with(
+            &sell,
+            Address::repeat_byte(0x22),
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            true,
+        )
+        .unwrap();
+        let unposted = unposted_sell_check();
+
+        let gtd = StoreTradeDraft {
+            order_type: OrderType::GTD,
+            ..sell.clone()
+        };
+        let mut check = unposted.clone();
+        enable_sell_posting(&mut check, &gtd, &preflight);
+        assert_eq!(check, unposted);
+
+        let mut denied = serde_json::json!({"policy_deny": true, "posting_enabled": false});
+        let before = denied.clone();
+        enable_sell_posting(&mut denied, &sell, &preflight);
+        assert_eq!(denied, before);
+
+        for incomplete in [
+            serde_json::json!({}),
+            serde_json::json!({"status": "fail", "preflight_complete_for_posting": true}),
+            serde_json::json!({"status": "pass"}),
+        ] {
+            let mut check = unposted.clone();
+            enable_sell_posting(&mut check, &sell, &incomplete);
+            assert_eq!(check, unposted);
+        }
+
+        let buy = fee_enabled_buy();
+        let mut buy_check = serde_json::json!({"policy_deny": false, "posting_enabled": true});
+        let before = buy_check.clone();
+        enable_sell_posting(&mut buy_check, &buy, &preflight);
+        assert_eq!(buy_check, before);
+    }
+
+    /// The post re-reads the balances and approval. A review taken before
+    /// they changed, or one without the preflight, no longer matches.
+    #[test]
+    fn a_sell_reviewed_before_its_balances_changed_is_refused() {
+        let sell = sell_draft();
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let reviewed = preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            true,
+        )
+        .unwrap();
+        let review = sell_review(&sell, owner, funder, &reviewed);
+        let policy_check = serde_json::json!({"policy_status": "passed"});
+
+        // The position moved between the review and the post.
+        let live = preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "6000000"}),
+            6_000_000,
+            true,
+        )
+        .unwrap();
+        let err =
+            review_intent_matches_draft(&review, &sell, owner, funder, &policy_check, Some(&live))
+                .unwrap_err();
+        assert!(err.contains("'sell_preflight'"), "{err}");
+
+        // The position was sold or the approval revoked after the review.
+        refusal(preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "0"}),
+            0,
+            true,
+        ));
+        refusal(preflight_with(
+            &sell,
+            funder,
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            false,
+        ));
+
+        // The review predates the preflight, or the post has none.
+        let mut stale = review.clone();
+        stale.as_object_mut().unwrap().remove("sell_preflight");
+        let err = review_intent_matches_draft(
+            &stale,
+            &sell,
+            owner,
+            funder,
+            &policy_check,
+            Some(&reviewed),
+        )
+        .unwrap_err();
+        assert!(err.contains("'sell_preflight'"), "{err}");
+        let err = review_intent_matches_draft(&review, &sell, owner, funder, &policy_check, None)
+            .unwrap_err();
+        assert!(err.contains("missing live post evidence"), "{err}");
+
+        // A preflight read for another deposit wallet does not match.
+        let elsewhere = preflight_with(
+            &sell,
+            Address::repeat_byte(0x33),
+            serde_json::json!({"balance": "5000000"}),
+            5_000_000,
+            true,
+        )
+        .unwrap();
+        assert!(
+            review_intent_matches_draft(
+                &review,
+                &sell,
+                owner,
+                funder,
+                &policy_check,
+                Some(&elsewhere)
+            )
+            .is_err()
+        );
+        // Nor does a review whose size differs from the live draft.
+        let smaller = StoreTradeDraft {
+            size_micro: 4_000_000,
+            ..sell.clone()
+        };
+        assert!(
+            review_intent_matches_draft(
+                &review,
+                &smaller,
+                owner,
+                funder,
+                &policy_check,
+                Some(&reviewed)
+            )
+            .is_err()
+        );
+    }
 }

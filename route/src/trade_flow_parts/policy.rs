@@ -3,16 +3,39 @@ use std::collections::BTreeSet;
 
 use crate::polymarket::eip712::{CTF, CTF_EXCHANGE, NEG_RISK_EXCHANGE};
 use crate::polymarket::fees::max_buy_fee_cap;
-use crate::polymarket::order::{format_micro, parse_micro};
+use crate::polymarket::order::{OrderType, format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
+/// Enables posting a SELL whose fresh `preflight` passed. `trade_policy_check`
+/// never enables a SELL, so a quote alone cannot; a BUY, a GTD order, a
+/// denied draft and a preflight that did not pass are left as they are.
+pub fn enable_sell_posting(
+    policy_check: &mut serde_json::Value,
+    draft: &StoreTradeDraft,
+    preflight: &serde_json::Value,
+) {
+    let passed = preflight.get("status").and_then(serde_json::Value::as_str) == Some("pass")
+        && preflight
+            .get("preflight_complete_for_posting")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+    let denied = policy_check
+        .get("policy_deny")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false);
+    if draft.side != Side::Sell || draft.order_type == OrderType::GTD || denied || !passed {
+        return;
+    }
     if let Some(map) = policy_check.as_object_mut() {
+        let reason = "sell can be posted after final review because chain CTF balance, CLOB conditional balance and CTF operator approval checks passed";
         map.insert("status".into(), serde_json::json!("approved"));
         map.insert("can_post".into(), serde_json::json!(true));
+        map.insert("reason".into(), serde_json::json!(reason));
         map.insert("approval_reason".into(), serde_json::json!(reason));
+        map.insert("signing_enabled".into(), serde_json::json!(true));
+        map.insert("posting_enabled".into(), serde_json::json!(true));
     }
 }
 
@@ -165,6 +188,9 @@ pub fn audited_receipt_ids_since(wallet: &str, cutoff_ms: u128) -> Result<Vec<St
     Ok(ids)
 }
 
+/// Reads, at this moment, what a SELL of `size_micro` of `token_id` from
+/// `deposit` needs: the CLOB conditional balance, the on-chain CTF balance and
+/// the exchange's CTF operator approval. A read that fails refuses.
 pub fn verify_sell_preflight(
     wallet: &str,
     owner: Address,
@@ -198,6 +224,42 @@ pub fn verify_sell_preflight(
             ("signature_type", "3"),
         ],
     )?;
+    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
+    let ctf_approved = read_chain_ctf_approval(deposit, sell_operator(neg_risk))?;
+    sell_preflight(
+        deposit,
+        token_id,
+        size_micro,
+        neg_risk,
+        clob_balance_allowance,
+        chain_ctf_balance,
+        ctf_approved,
+        data_api_holding_micro,
+    )
+}
+
+/// The exchange that moves a SELL's CTF tokens.
+pub fn sell_operator(neg_risk: bool) -> Address {
+    if neg_risk {
+        NEG_RISK_EXCHANGE
+    } else {
+        CTF_EXCHANGE
+    }
+}
+
+/// The preflight evidence for a SELL of `size_micro` of `token_id` from
+/// `deposit`, or the refusal when the reads do not cover it.
+#[allow(clippy::too_many_arguments)]
+pub fn sell_preflight(
+    deposit: Address,
+    token_id: &str,
+    size_micro: u64,
+    neg_risk: bool,
+    clob_balance_allowance: serde_json::Value,
+    chain_ctf_balance: u64,
+    ctf_approved: bool,
+    data_api_holding_micro: Option<u64>,
+) -> Result<serde_json::Value, DispatchResponse> {
     let clob_balance_micro = clob_balance_allowance
         .get("balance")
         .and_then(parse_clob_raw_micro)
@@ -212,12 +274,7 @@ pub fn verify_sell_preflight(
             ),
         ));
     }
-    let operator = if neg_risk {
-        NEG_RISK_EXCHANGE
-    } else {
-        CTF_EXCHANGE
-    };
-    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
+    let operator = sell_operator(neg_risk);
     if chain_ctf_balance < size_micro {
         return Err(error(
             -3,
@@ -229,7 +286,6 @@ pub fn verify_sell_preflight(
             ),
         ));
     }
-    let ctf_approved = read_chain_ctf_approval(deposit, operator)?;
     if !ctf_approved {
         return Err(error(
             -3,

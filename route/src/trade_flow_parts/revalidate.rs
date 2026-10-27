@@ -3,7 +3,6 @@ use crate::prelude::*;
 use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
-use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
@@ -198,10 +197,7 @@ pub fn revalidate_trade_draft(
             draft.neg_risk,
         ) {
             Ok(preflight) => {
-                enable_trade_posting(
-                    &mut policy_check,
-                    "sell can be posted after final review because chain CTF balance and approval checks passed",
-                );
+                enable_sell_posting(&mut policy_check, &draft, &preflight);
                 Some(preflight)
             }
             Err(resp) => {
@@ -379,10 +375,7 @@ pub fn refresh_trade_post_inputs(
             draft.size_micro,
             draft.neg_risk,
         )?;
-        enable_trade_posting(
-            &mut policy_check,
-            "sell can be posted after final review because chain CTF balance and approval checks passed",
-        );
+        enable_sell_posting(&mut policy_check, draft, &preflight);
         Some(preflight)
     } else {
         None
