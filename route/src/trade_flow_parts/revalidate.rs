@@ -195,11 +195,12 @@ pub fn revalidate_trade_draft(
             &draft.token_id,
             draft.size_micro,
             draft.neg_risk,
-        ) {
-            Ok(preflight) => {
-                enable_sell_posting(&mut policy_check, &draft, &preflight);
-                Some(preflight)
-            }
+        )
+        .and_then(|preflight| {
+            enable_sell_posting(&mut policy_check, &draft, funder, &preflight)?;
+            Ok(preflight)
+        }) {
+            Ok(preflight) => Some(preflight),
             Err(resp) => {
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
@@ -375,7 +376,7 @@ pub fn refresh_trade_post_inputs(
             draft.size_micro,
             draft.neg_risk,
         )?;
-        enable_sell_posting(&mut policy_check, draft, &preflight);
+        enable_sell_posting(&mut policy_check, draft, funder, &preflight)?;
         Some(preflight)
     } else {
         None
