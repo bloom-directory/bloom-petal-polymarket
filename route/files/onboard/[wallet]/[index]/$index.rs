@@ -7,5 +7,6 @@ petal::route_file!(spec: petal::static_dir_spec(), list: {
         "approval.json",
     ]);
     out.push(petal::writable("begin"));
+    out.push(petal::writable("continue"));
     out
 });
