@@ -246,6 +246,9 @@ pub fn builder_code_order_advisory(
         }
         .to_owned(),
         match subject.side {
+            // Unreachable today: `post_builder_code` refuses a buy, because
+            // nothing bounds a buy's total debit. Kept for the point at which
+            // the venue or an allowance provides that bound.
             Side::Buy => format!(
                 "Total authorized: {} pUSD, covering the order and the builder fee.",
                 format_micro(bound.spend_including_fees_micro())

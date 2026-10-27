@@ -128,6 +128,29 @@ placed: a configured code owes a fee, the fee-free route refuses it, and the
 fee-bearing route refuses a code with no ceiling. Both routes fail closed with
 the setting to write named in the error. One write recovers.
 
+**A buy cannot be posted on the fee-bearing class.** That class exists to
+declare a maximum fee, and on a buy there is no maximum to declare. The signed
+CLOB V2 order carries no fee field — V2 removed `feeRateBps` — so the signature
+commits to `makerAmount` and `takerAmount` and says nothing about a fee, while
+Polymarket's operator supplies the fee when it fills the order. Neither
+remaining bound helps: the exchange's on-chain maximum-fee check is disabled on
+both deployments, and onboarding grants the exchange `U256::MAX` pUSD, so what
+it may pull is capped by the wallet balance and nothing else. A review
+reproduced a signed 50 pUSD buy settling for 550 — 50 principal and 500 fee.
+
+Declaring a finite fee there would hand Broker a value limit the same signature
+permits exceeding, and state a total to the owner that is not one, so
+`post_builder_code` refuses a buy outright. A sell is unaffected: what leaves
+the wallet is the shares in `makerAmount`, which the signature does bound, and
+a fee can only reduce the proceeds the sale returns.
+
+The consequence is worth stating plainly: while a builder code that charges on
+the paying side is configured, **buys cannot be placed at all** — the
+fee-bearing route refuses them for the reason above and the fee-free route
+refuses an order whose code would charge it. Restoring them needs a bound
+something enforces: the exchange's maximum-fee check enabled, or an allowance
+set to the order's intended maximum instead of `U256::MAX`.
+
 A ceiling may be zero on one side. When it is zero on the side an order pays —
 a maker-only builder taking a FAK or FOK order — that order owes nothing, so it
 posts through `post`, unattributed and carrying no code. The fee-bearing route

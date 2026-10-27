@@ -183,6 +183,11 @@ fn post_trade_draft_in_class(
         Ok(token_id) => token_id,
         Err(e) => return error(-4, format!("token id parse: {e}")),
     };
+    // Both signing paths pass here, and neither may sign a buy on the
+    // fee-bearing class.
+    if let Err(resp) = fee_bearing_class_can_bound(class, draft.side) {
+        return resp;
+    }
     let prepared_key = format!("{base}/prepared_signing.json");
     let approval_key = format!("{base}/approval.json");
     let (order, prepared, fee_bound) = match load_prepared_signing(&prepared_key) {
@@ -752,6 +757,42 @@ fn code_charges_this_order(
     matches!(fees, Some(fees) if fees.inputs.builder_bps > 0)
 }
 
+/// Refuses a buy on the fee-bearing class, whose total debit nothing bounds.
+///
+/// That class exists to declare a maximum fee, and on a buy there is no
+/// maximum to declare. The signed CLOB V2 order carries no fee field — V2
+/// removed `feeRateBps` — so the signature commits to `makerAmount` and
+/// `takerAmount` and says nothing about a fee, while Polymarket's operator
+/// supplies the fee when it fills the order. Neither remaining bound helps:
+/// the exchange's on-chain maximum-fee check is disabled on both deployments,
+/// and onboarding grants the exchange `U256::MAX` pUSD (`wallet.rs`), so what
+/// it may pull is capped by the wallet balance and nothing else. A review
+/// reproduced a signed 50 pUSD buy settling for 550.
+///
+/// Declaring a finite fee here would hand Broker a value limit the same
+/// signature permits exceeding, and tell the owner a total that is not one.
+/// Refusing is the honest answer.
+///
+/// A sell is unaffected: what leaves the wallet is the shares in
+/// `makerAmount`, which the signature does bound, and a fee can only reduce
+/// the proceeds it returns.
+///
+/// Lifting this needs a bound something actually enforces — the exchange's
+/// maximum-fee check enabled, or an allowance set to the order's intended
+/// maximum instead of `U256::MAX`.
+fn fee_bearing_class_can_bound(
+    class: PostClass,
+    side: crate::polymarket::Side,
+) -> Result<(), DispatchResponse> {
+    if matches!(class, PostClass::BuilderCodeOrder) && side == crate::polymarket::Side::Buy {
+        return Err(error(
+            -3,
+            "a buy cannot declare a bounded fee on this class: the signed order carries no fee field, the exchange's maximum-fee check is disabled, and its pUSD allowance is unlimited, so nothing caps what the operator may charge on top of the order amount. Posting it would declare a maximum this signature permits exceeding. Sells are unaffected",
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses a fee-free order that carries a builder code.
 ///
 /// Extracted so it can be tested at all: the call site sits in the
@@ -1211,6 +1252,28 @@ mod builder_fee_retry_tests {
             "builder_fee_notional_micro": notional,
             "builder_fee_ceiling_micro": ceiling,
         })
+    }
+
+    /// Nothing bounds a buy's total debit: the signed order has no fee field,
+    /// the exchange's maximum-fee check is disabled and its pUSD allowance is
+    /// unlimited. A review reproduced a signed 50 pUSD buy settling for 550,
+    /// so the fee-bearing class must not claim a maximum on a buy.
+    #[test]
+    fn the_fee_bearing_class_refuses_a_buy_and_allows_a_sell() {
+        use crate::polymarket::Side;
+        assert!(
+            fee_bearing_class_can_bound(PostClass::BuilderCodeOrder, Side::Buy).is_err(),
+            "a buy cannot declare a bound the signature does not enforce"
+        );
+        // A sell's outflow is the shares in makerAmount, which IS signed.
+        assert!(
+            fee_bearing_class_can_bound(PostClass::BuilderCodeOrder, Side::Sell).is_ok(),
+            "a sell's outflow is bounded by the signed order"
+        );
+        // The fee-free class declares no fee either way, so it is unaffected.
+        for side in [Side::Buy, Side::Sell] {
+            assert!(fee_bearing_class_can_bound(PostClass::PlainOrder, side).is_ok());
+        }
     }
 
     /// The fee checks all reason about amounts, so none of them can see the
