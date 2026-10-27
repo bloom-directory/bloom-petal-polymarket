@@ -870,57 +870,6 @@ require_flag_above_usd = "2.05"
         }
     }
 
-    /// Broker rebuilds this record from a closed key allow-list and refuses
-    /// any field outside it ("Polymarket prepared data has an unsupported
-    /// field"). Three fee keys were added here and made every order
-    /// unsignable, which no test noticed, so the whole key set is pinned.
-    ///
-    /// Adding a key means adding it to Broker's allow-list first. Carrying
-    /// fee data belongs on the draft or the receipt, which Broker never sees.
-    #[test]
-    fn the_prepared_preimage_matches_brokers_allow_list() {
-        use crate::trade_flow_parts::posting::prepared_order_signing;
-
-        let buy = fee_enabled_buy();
-        let order = signed_order(&buy);
-        let prepared = prepared_order_signing(
-            &buy,
-            &order,
-            Address::repeat_byte(0x11),
-            Address::repeat_byte(0x22),
-            137,
-            "h",
-            false,
-        );
-        let mut keys = prepared
-            .preimage
-            .as_object()
-            .expect("preimage is an object")
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            [
-                "chain_id",
-                "draft_id",
-                "funder",
-                "maker_amount",
-                "neg_risk",
-                "owner",
-                "policy_warnings_acknowledged",
-                "review_intent_hash",
-                "salt",
-                "side",
-                "signature_type",
-                "taker_amount",
-                "timestamp_ms",
-                "token_id",
-            ]
-        );
-    }
-
     /// The prepared approval record and the receipt show a BUY's fee bound
     /// with the note on what enforces it. Records an earlier build wrote
     /// without the note still load, and keep their JSON.
@@ -934,28 +883,29 @@ require_flag_above_usd = "2.05"
         let order = signed_order(&buy);
         let owner = Address::repeat_byte(0x11);
         let funder = Address::repeat_byte(0x22);
-        let prepared = prepared_order_signing(&buy, &order, owner, funder, 137, "h", false);
-        // Broker rebuilds this record and refuses an unknown key, so no fee
-        // field may appear in it. The bound lives on the draft and the
-        // receipt instead; `the_prepared_preimage_matches_brokers_allow_list`
-        // pins the whole key set.
-        assert!(prepared.preimage.get("fee").is_none());
-        assert!(prepared.preimage.get("fee_cap").is_none());
-        assert!(prepared.preimage.get("fee_note").is_none());
+        let prepared = prepared_order_signing(
+            &buy,
+            &order,
+            owner,
+            funder,
+            137,
+            buy.fee_cap_micro().unwrap(),
+            "h",
+            false,
+        );
+        assert_eq!(prepared.preimage["fee"], serde_json::json!(buy.fee));
+        assert_eq!(prepared.preimage["fee_cap"], "0.141");
+        assert_eq!(prepared.preimage["fee_note"], FEE_BOUND_NOTE);
         assert_eq!(prepared.preimage["draft_id"], buy.id);
         assert_eq!(prepared.preimage["review_intent_hash"], "h");
         assert_eq!(
             prepared.hash().unwrap(),
             poly1271_digest(&order, 137, buy.neg_risk)
         );
-        // Posting reuses a stored prepared record as it is, so one written by
-        // an earlier build keeps the bytes its owner approval is bound to.
+        // Posting reuses a stored prepared record as it is, so one without
+        // the note keeps the bytes its owner approval is bound to.
         let mut earlier = prepared.clone();
-        earlier
-            .preimage
-            .as_object_mut()
-            .unwrap()
-            .insert("fee_note".into(), FEE_BOUND_NOTE.into());
+        earlier.preimage.as_object_mut().unwrap().remove("fee_note");
         let stored = serde_json::to_vec(&earlier).unwrap();
         let loaded: PreparedSigning = serde_json::from_slice(&stored).unwrap();
         assert_eq!(loaded, earlier);

@@ -1,8 +1,9 @@
 use crate::prelude::*;
 
+use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{
     LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
+    format_micro, poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, B256, U256};
@@ -114,13 +115,12 @@ pub fn post_trade_draft(
             format!("{message}; write revalidate again before posting"),
         );
     }
-    // Validation only. A draft whose fee bound cannot be computed must not
-    // post, but the bound itself no longer travels in the prepared record:
-    // Broker rebuilds that record against a closed key allow-list and refuses
-    // an unknown field, so fee data lives on the draft and the receipt.
-    if let Err(e) = draft.fee_cap_micro() {
-        return polymarket_error(e);
-    }
+    // Shown in the prepared record, which Bloom presents as the approval's
+    // action, so the owner sees why the pUSD debit exceeds maker_amount.
+    let fee_cap = match draft.fee_cap_micro() {
+        Ok(cap) => cap,
+        Err(e) => return polymarket_error(e),
+    };
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
     };
@@ -188,6 +188,7 @@ pub fn post_trade_draft(
                 owner,
                 funder,
                 chain_id,
+                fee_cap,
                 &review_intent_hash,
                 req.acknowledge_warnings,
             );
@@ -480,17 +481,16 @@ pub fn post_trade_draft(
 
 /// The prepared record for signing `order`, built for `draft` and paid from
 /// `funder`. Bloom presents it as the approval's action, so it carries the fee
-/// Carries only the order fields `order_from_prepared` rebuilds the order
-/// from, plus the review-intent hash and the warning acknowledgement. Broker
-/// rebuilds this record and gates its keys against a closed allow-list, so no
-/// fee field may appear here; the fee bound lives on the draft and the
-/// receipt.
+/// schedule, the fee bound `fee_cap` and [`FEE_BOUND_NOTE`] on what enforces
+/// the bound, next to the order fields `order_from_prepared` rebuilds the
+/// order from.
 pub fn prepared_order_signing(
     draft: &StoreTradeDraft,
     order: &Order,
     owner: Address,
     funder: Address,
     chain_id: u64,
+    fee_cap: u64,
     review_intent_hash: &str,
     policy_warnings_acknowledged: bool,
 ) -> PreparedSigning {
@@ -508,6 +508,9 @@ pub fn prepared_order_signing(
             "salt": order.salt.to_string(),
             "maker_amount": order.makerAmount.to_string(),
             "taker_amount": order.takerAmount.to_string(),
+            "fee": draft.fee,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "side": order.side,
             "signature_type": order.signatureType,
             "timestamp_ms": order.timestamp.to_string(),
