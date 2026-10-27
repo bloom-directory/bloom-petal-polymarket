@@ -411,10 +411,31 @@ fn batch_claim(
         "declared_debits": order_debits(operation_class, prepared)?,
         "declared_destinations": [],
         "declared_fee": {"kind": "none"},
+        "economic_effects": economic_effects(operation_class, payloads.len()),
         "nonce": hex::encode(&nonce[..16]),
         "claim_assurance": {"kind": "machine_asserted"}
     }))
     .map_err(|err| error(-4, format!("encode Petal use claim: {err}")))
+}
+
+/// Versioned economic declaration consumed by the shared Broker budget path.
+/// Machine binds each context to the actual selected account before submission;
+/// the Petal cannot invent a KeyRef from its wallet display path. Credential and
+/// other non-order requests must keep their existing separate approval profile.
+fn economic_effects(operation_class: &str, payload_count: usize) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "payload_contexts": (0..payload_count).map(|payload_index| serde_json::json!({
+            "payload_index": payload_index,
+            "network": "evm-137",
+            "spending_accounts": [],
+        })).collect::<Vec<_>>(),
+        "permission_effect": if operation_class == "polymarket.order.poly1271" {
+            "none"
+        } else {
+            "requires_separate_approval"
+        },
+    })
 }
 
 /// Derive what leaves the maker's account from the exact prepared order.
@@ -459,7 +480,7 @@ fn order_debits(
             return Err(error(-4, "order debit facts do not match signed payload"));
         }
         let asset = match order.side {
-            0 => "pusd".to_owned(),
+            0 => format!("{:#x}", crate::polymarket::eip712::PUSD),
             // A sale spends shares, not collateral. An ordinary pUSD session
             // must not silently authorize disposal of arbitrary positions.
             1 => format!(
@@ -478,7 +499,7 @@ fn order_debits(
         .into_iter()
         .map(|(asset, amount)| {
             serde_json::json!({
-                "asset": {"chain": "polygon", "asset": asset},
+                "asset": {"chain": "evm-137", "asset": asset},
                 "amount": amount.to_string()
             })
         })
@@ -568,18 +589,44 @@ mod tests {
         let debits = order_debits("polymarket.order.poly1271", &[&buy, &other_buy, &sell]).unwrap();
         let collateral = debits
             .iter()
-            .find(|debit| debit["asset"]["asset"] == "pusd")
+            .find(|debit| {
+                debit["asset"]["asset"] == format!("{:#x}", crate::polymarket::eip712::PUSD)
+            })
             .unwrap();
         assert_eq!(collateral["amount"], "15000000");
+        assert_eq!(collateral["asset"]["chain"], "evm-137");
         let shares = debits
             .iter()
-            .find(|debit| debit["asset"]["asset"] != "pusd")
+            .find(|debit| {
+                debit["asset"]["asset"] != format!("{:#x}", crate::polymarket::eip712::PUSD)
+            })
             .unwrap();
         assert_eq!(shares["amount"], "2000000");
         assert_eq!(
             shares["asset"]["asset"],
             format!("erc1155:{:#x}:42", crate::polymarket::eip712::CTF)
         );
+    }
+
+    #[test]
+    fn generic_effects_bind_each_payload_and_keep_credentials_out_of_budget_sessions() {
+        let effects = economic_effects("polymarket.order.poly1271", 2);
+        assert_eq!(effects["schema_version"], 1);
+        assert_eq!(effects["permission_effect"], "none");
+        assert_eq!(
+            effects["payload_contexts"],
+            serde_json::json!([
+                {"payload_index": 0, "network": "evm-137", "spending_accounts": []},
+                {"payload_index": 1, "network": "evm-137", "spending_accounts": []},
+            ])
+        );
+        for class in ["polymarket.auth", "unknown.operation"] {
+            assert_eq!(
+                economic_effects(class, 1)["permission_effect"],
+                "requires_separate_approval"
+            );
+            assert!(order_debits(class, &[]).unwrap().is_empty());
+        }
     }
 
     #[test]
