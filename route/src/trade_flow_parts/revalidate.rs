@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
-use crate::trade_flow_parts::policy::enable_trade_posting;
+use crate::trade_flow_parts::policy::enable_sell_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
@@ -200,14 +200,12 @@ pub fn revalidate_trade_draft(
             &draft.token_id,
             draft.size_micro,
             draft.neg_risk,
-        ) {
-            Ok(preflight) => {
-                enable_trade_posting(
-                    &mut policy_check,
-                    "sell can be posted after final review because chain CTF balance and approval checks passed",
-                );
-                Some(preflight)
-            }
+        )
+        .and_then(|preflight| {
+            enable_sell_posting(&mut policy_check, &draft, funder, &preflight)?;
+            Ok(preflight)
+        }) {
+            Ok(preflight) => Some(preflight),
             Err(resp) => {
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
@@ -388,10 +386,7 @@ pub fn refresh_trade_post_inputs(
             draft.size_micro,
             draft.neg_risk,
         )?;
-        enable_trade_posting(
-            &mut policy_check,
-            "sell can be posted after final review because chain CTF balance and approval checks passed",
-        );
+        enable_sell_posting(&mut policy_check, draft, funder, &preflight)?;
         Some(preflight)
     } else {
         None
@@ -416,6 +411,19 @@ pub fn review_intent_matches_draft(
         Side::Buy => "BUY",
         Side::Sell => "SELL",
     };
+    // The live checks just run must enable this post on their own; the final
+    // review alone cannot.
+    if policy_check
+        .get("posting_enabled")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        let reason = policy_check
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("posting is not enabled");
+        return Err(format!("live post checks refuse this post: {reason}"));
+    }
     let policy_status = policy_check
         .get("policy_status")
         .and_then(serde_json::Value::as_str)

@@ -7,12 +7,59 @@ use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
-    if let Some(map) = policy_check.as_object_mut() {
-        map.insert("status".into(), serde_json::json!("approved"));
-        map.insert("can_post".into(), serde_json::json!(true));
-        map.insert("approval_reason".into(), serde_json::json!(reason));
+/// Enable posting for a sell only from a passing preflight taken for this
+/// draft's deposit wallet, token and size. A quote alone never enables a sell.
+pub fn enable_sell_posting(
+    policy_check: &mut serde_json::Value,
+    draft: &StoreTradeDraft,
+    deposit: Address,
+    preflight: &serde_json::Value,
+) -> Result<(), DispatchResponse> {
+    if draft.side != Side::Sell {
+        return Err(error(-4, "sell posting check applied to a buy draft"));
     }
+    if draft.order_type == crate::polymarket::order::OrderType::GTD {
+        return Err(error(-3, "posting GTD orders is pending expiry parity"));
+    }
+    if policy_check
+        .get("policy_deny")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(error(-3, "Polymarket policy denied; see policy_check.json"));
+    }
+    let deposit = deposit.to_checksum(None);
+    let size = serde_json::json!(draft.size_micro);
+    for (field, expected) in [
+        ("status", &serde_json::json!("pass")),
+        ("preflight_complete_for_posting", &serde_json::json!(true)),
+        ("ctf_approved_for_all", &serde_json::json!(true)),
+        ("deposit_wallet", &serde_json::json!(deposit)),
+        ("token_id", &serde_json::json!(draft.token_id)),
+        ("requested_size_micro", &size),
+    ] {
+        if preflight.get(field) != Some(expected) {
+            return Err(error(
+                -3,
+                format!("sell preflight field '{field}' does not cover this draft; refusing"),
+            ));
+        }
+    }
+    let Some(map) = policy_check.as_object_mut() else {
+        return Err(error(-4, "policy check is not an object"));
+    };
+    let reason = "sell can be posted after final review because chain CTF balance, CLOB conditional balance and CTF operator approval checks passed";
+    for (key, value) in [
+        ("status", serde_json::json!("approved")),
+        ("can_post", serde_json::json!(true)),
+        ("reason", serde_json::json!(reason)),
+        ("approval_reason", serde_json::json!(reason)),
+        ("signing_enabled", serde_json::json!(true)),
+        ("posting_enabled", serde_json::json!(true)),
+    ] {
+        map.insert(key.into(), value);
+    }
+    Ok(())
 }
 
 fn venue_config_key(wallet: &str) -> String {
@@ -185,6 +232,51 @@ pub fn verify_sell_preflight(
             ("signature_type", "3"),
         ],
     )?;
+    let operator = if neg_risk {
+        NEG_RISK_EXCHANGE
+    } else {
+        CTF_EXCHANGE
+    };
+    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
+    let ctf_approved = read_chain_ctf_approval(deposit, operator)?;
+    evaluate_sell_preflight(SellPreflightReads {
+        deposit,
+        token_id,
+        size_micro,
+        neg_risk,
+        data_api_holding_micro,
+        clob_balance_allowance,
+        chain_ctf_balance,
+        ctf_approved,
+    })
+}
+
+/// Live reads a sell preflight judges. Every field except the Data API
+/// holding is authoritative; a failed read never reaches this struct.
+pub struct SellPreflightReads<'a> {
+    pub deposit: Address,
+    pub token_id: &'a str,
+    pub size_micro: u64,
+    pub neg_risk: bool,
+    pub data_api_holding_micro: Option<u64>,
+    pub clob_balance_allowance: serde_json::Value,
+    pub chain_ctf_balance: u64,
+    pub ctf_approved: bool,
+}
+
+pub fn evaluate_sell_preflight(
+    reads: SellPreflightReads,
+) -> Result<serde_json::Value, DispatchResponse> {
+    let SellPreflightReads {
+        deposit,
+        token_id,
+        size_micro,
+        neg_risk,
+        data_api_holding_micro,
+        clob_balance_allowance,
+        chain_ctf_balance,
+        ctf_approved,
+    } = reads;
     let clob_balance_micro = clob_balance_allowance
         .get("balance")
         .and_then(parse_clob_raw_micro)
@@ -204,7 +296,6 @@ pub fn verify_sell_preflight(
     } else {
         CTF_EXCHANGE
     };
-    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
     if chain_ctf_balance < size_micro {
         return Err(error(
             -3,
@@ -216,7 +307,6 @@ pub fn verify_sell_preflight(
             ),
         ));
     }
-    let ctf_approved = read_chain_ctf_approval(deposit, operator)?;
     if !ctf_approved {
         return Err(error(
             -3,

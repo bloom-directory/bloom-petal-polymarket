@@ -503,3 +503,318 @@ max_daily_usd = "100"
         );
     }
 }
+
+#[cfg(test)]
+mod sell_posting_tests {
+    use crate::app_types::StoreTradeDraft;
+    use crate::polymarket::Side;
+    use crate::polymarket::order::{OrderType, format_micro};
+    use crate::trade_flow_parts::policy::{
+        SellPreflightReads, enable_sell_posting, evaluate_sell_preflight,
+    };
+    use crate::trade_flow_parts::revalidate::review_intent_matches_draft;
+    use alloy::primitives::Address;
+    use petal::DispatchResponse;
+
+    const SIZE: u64 = 5_000_000;
+
+    fn owner() -> Address {
+        Address::repeat_byte(0x11)
+    }
+
+    fn deposit() -> Address {
+        Address::repeat_byte(0x22)
+    }
+
+    fn sell_draft() -> StoreTradeDraft {
+        StoreTradeDraft {
+            id: "0002".into(),
+            wallet: "alice".into(),
+            slug: "example".into(),
+            question: "Example?".into(),
+            condition_id: "0xabc".into(),
+            outcome: "YES".into(),
+            token_id: "111".into(),
+            side: Side::Sell,
+            order_type: OrderType::FAK,
+            amount_micro: 1_750_000,
+            price_bound_micro: 350_000,
+            limit_price: None,
+            marketable: true,
+            limit_price_micro: 350_000,
+            size_micro: SIZE,
+            maker_micro: SIZE,
+            taker_micro: 1_750_000,
+            tick_micro: 10_000,
+            min_order_size_micro: 5_000_000,
+            neg_risk: false,
+            active: true,
+            closed: false,
+            order_book_enabled: true,
+            binary_outcomes: true,
+            best_ask_micro: Some(360_000),
+            best_bid_micro: Some(350_000),
+            book_snapshot_secs: 1,
+            status: "revalidated".into(),
+            salt: None,
+            clob_order_id: None,
+            clob_status: None,
+            last_error: None,
+        }
+    }
+
+    fn reads(clob: u64, chain: u64, approved: bool) -> SellPreflightReads<'static> {
+        SellPreflightReads {
+            deposit: deposit(),
+            token_id: "111",
+            size_micro: SIZE,
+            neg_risk: false,
+            data_api_holding_micro: Some(SIZE),
+            clob_balance_allowance: serde_json::json!({ "balance": clob.to_string() }),
+            chain_ctf_balance: chain,
+            ctf_approved: approved,
+        }
+    }
+
+    /// The policy check `trade_policy_check` produces: sells stay blocked.
+    fn quote_policy(side: Side, deny: bool) -> serde_json::Value {
+        let enabled = !deny && side == Side::Buy;
+        serde_json::json!({
+            "status": "blocked",
+            "policy_status": if deny { "denied" } else { "passed" },
+            "policy_deny": deny,
+            "policy_warn": false,
+            "signing_enabled": enabled,
+            "posting_enabled": enabled
+        })
+    }
+
+    fn review(
+        draft: &StoreTradeDraft,
+        policy: &serde_json::Value,
+        preflight: Option<&serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "wallet": draft.wallet,
+            "draft_id": draft.id,
+            "owner": owner().to_checksum(None),
+            "funder": deposit().to_checksum(None),
+            "slug": draft.slug,
+            "condition_id": draft.condition_id,
+            "outcome": draft.outcome,
+            "token_id": draft.token_id,
+            "side": draft.side,
+            "order_type": draft.order_type.as_str(),
+            "limit_price": format_micro(draft.limit_price_micro),
+            "size": format_micro(draft.size_micro),
+            "maker": format_micro(draft.maker_micro),
+            "taker": format_micro(draft.taker_micro),
+            "neg_risk": draft.neg_risk,
+            "policy_status": policy["policy_status"],
+            "sell_preflight": preflight,
+            "status": "final_review_staged",
+            "posting_enabled": policy["posting_enabled"]
+        })
+    }
+
+    /// Revalidate (preview) then post: both take a fresh preflight.
+    fn sell_checks(
+        draft: &StoreTradeDraft,
+        reads: SellPreflightReads,
+    ) -> Result<(serde_json::Value, serde_json::Value), DispatchResponse> {
+        let preflight = evaluate_sell_preflight(reads)?;
+        let mut policy = quote_policy(Side::Sell, false);
+        enable_sell_posting(&mut policy, draft, deposit(), &preflight)?;
+        Ok((policy, preflight))
+    }
+
+    fn refusal(result: Result<impl Sized, DispatchResponse>) -> (i32, String) {
+        match result {
+            Err(DispatchResponse::Error { code, message }) => (code, message),
+            Err(_) => panic!("unexpected non-error response"),
+            Ok(_) => panic!("expected a refusal"),
+        }
+    }
+
+    #[test]
+    fn passing_sell_preflight_enables_posting() {
+        let draft = sell_draft();
+        let (preview_policy, preview) = sell_checks(&draft, reads(SIZE, SIZE, true)).unwrap();
+        assert_eq!(preview_policy["posting_enabled"], true);
+        assert_eq!(preview_policy["signing_enabled"], true);
+        let stored = review(&draft, &preview_policy, Some(&preview));
+        assert_eq!(stored["posting_enabled"], true);
+
+        let (post_policy, fresh) = sell_checks(&draft, reads(SIZE, SIZE, true)).unwrap();
+        review_intent_matches_draft(
+            &stored,
+            &draft,
+            owner(),
+            deposit(),
+            &post_policy,
+            Some(&fresh),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn quote_alone_never_enables_a_sell() {
+        let draft = sell_draft();
+        let policy = quote_policy(Side::Sell, false);
+        assert_eq!(policy["posting_enabled"], false);
+        let preflight = evaluate_sell_preflight(reads(SIZE, SIZE, true)).unwrap();
+        let mut stored = review(&draft, &policy, Some(&preflight));
+        stored["posting_enabled"] = true.into();
+        let err = review_intent_matches_draft(
+            &stored,
+            &draft,
+            owner(),
+            deposit(),
+            &policy,
+            Some(&preflight),
+        )
+        .unwrap_err();
+        assert!(err.contains("live post checks refuse this post"), "{err}");
+    }
+
+    #[test]
+    fn insufficient_balances_refuse() {
+        let (code, message) = refusal(evaluate_sell_preflight(reads(SIZE - 1, SIZE, true)));
+        assert_eq!(code, -3);
+        assert!(
+            message.contains("CLOB conditional balance reports only 4.999999"),
+            "{message}"
+        );
+        let (code, message) = refusal(evaluate_sell_preflight(reads(SIZE, SIZE - 1, true)));
+        assert_eq!(code, -3);
+        assert!(message.contains("on-chain CTF balance"), "{message}");
+        let mut missing = reads(SIZE, SIZE, true);
+        missing.clob_balance_allowance = serde_json::json!({});
+        let (code, message) = refusal(evaluate_sell_preflight(missing));
+        assert_eq!(code, -4);
+        assert!(message.contains("missing balance"), "{message}");
+    }
+
+    #[test]
+    fn absent_operator_approval_refuses() {
+        let (code, message) = refusal(evaluate_sell_preflight(reads(SIZE, SIZE, false)));
+        assert_eq!(code, -3);
+        assert!(message.contains("has not approved"), "{message}");
+    }
+
+    #[test]
+    fn preflight_for_another_wallet_token_or_size_refuses() {
+        let draft = sell_draft();
+        let preflight = evaluate_sell_preflight(reads(SIZE, SIZE, true)).unwrap();
+        let mut other_size = draft.clone();
+        other_size.size_micro = SIZE + 1;
+        let mut other_token = draft.clone();
+        other_token.token_id = "222".into();
+        for (draft, wallet, field) in [
+            (&other_size, deposit(), "requested_size_micro"),
+            (&other_token, deposit(), "token_id"),
+            (&draft, Address::repeat_byte(0x33), "deposit_wallet"),
+        ] {
+            let mut policy = quote_policy(Side::Sell, false);
+            let (code, message) =
+                refusal(enable_sell_posting(&mut policy, draft, wallet, &preflight));
+            assert_eq!(code, -3);
+            assert!(message.contains(field), "{message}");
+            assert_eq!(policy["posting_enabled"], false);
+        }
+        let mut failed = preflight.clone();
+        failed["status"] = "fail".into();
+        let mut policy = quote_policy(Side::Sell, false);
+        refusal(enable_sell_posting(&mut policy, &draft, deposit(), &failed));
+        let mut denied = quote_policy(Side::Sell, true);
+        refusal(enable_sell_posting(
+            &mut denied,
+            &draft,
+            deposit(),
+            &preflight,
+        ));
+        assert_eq!(denied["posting_enabled"], false);
+    }
+
+    #[test]
+    fn stale_or_missing_post_preflight_refuses() {
+        let draft = sell_draft();
+        let (policy, preview) = sell_checks(&draft, reads(SIZE, SIZE, true)).unwrap();
+        let stored = review(&draft, &policy, Some(&preview));
+        let err = review_intent_matches_draft(&stored, &draft, owner(), deposit(), &policy, None)
+            .unwrap_err();
+        assert!(err.contains("missing live post evidence"), "{err}");
+
+        let mut stale = stored.clone();
+        stale["sell_preflight"]["requested_size_micro"] = (SIZE - 1).into();
+        let err = review_intent_matches_draft(
+            &stale,
+            &draft,
+            owner(),
+            deposit(),
+            &policy,
+            Some(&preview),
+        )
+        .unwrap_err();
+        assert!(err.contains("sell_preflight"), "{err}");
+    }
+
+    #[test]
+    fn change_between_preview_and_post_refuses() {
+        let draft = sell_draft();
+        let (policy, preview) = sell_checks(&draft, reads(SIZE, SIZE, true)).unwrap();
+        let stored = review(&draft, &policy, Some(&preview));
+
+        // Shares moved out after preview: the post-time preflight itself fails.
+        refusal(sell_checks(&draft, reads(SIZE, SIZE - 1, true)));
+        // Approval revoked after preview.
+        refusal(sell_checks(&draft, reads(SIZE, SIZE, false)));
+        // Balances still cover the sell but differ from what was reviewed.
+        let (post_policy, fresh) = sell_checks(&draft, reads(SIZE * 2, SIZE, true)).unwrap();
+        let err = review_intent_matches_draft(
+            &stored,
+            &draft,
+            owner(),
+            deposit(),
+            &post_policy,
+            Some(&fresh),
+        )
+        .unwrap_err();
+        assert!(err.contains("sell_preflight"), "{err}");
+    }
+
+    #[test]
+    fn gtd_sell_refuses() {
+        let mut draft = sell_draft();
+        draft.order_type = OrderType::GTD;
+        let preflight = evaluate_sell_preflight(reads(SIZE, SIZE, true)).unwrap();
+        let mut policy = quote_policy(Side::Sell, false);
+        let (code, message) = refusal(enable_sell_posting(
+            &mut policy,
+            &draft,
+            deposit(),
+            &preflight,
+        ));
+        assert_eq!(code, -3);
+        assert!(message.contains("GTD"), "{message}");
+        assert_eq!(policy["posting_enabled"], false);
+    }
+
+    #[test]
+    fn buy_posting_is_unchanged() {
+        let mut draft = sell_draft();
+        draft.side = Side::Buy;
+        let policy = quote_policy(Side::Buy, false);
+        assert_eq!(policy["posting_enabled"], true);
+        let stored = review(&draft, &policy, None);
+        review_intent_matches_draft(&stored, &draft, owner(), deposit(), &policy, None).unwrap();
+        let preflight = evaluate_sell_preflight(reads(SIZE, SIZE, true)).unwrap();
+        let mut policy = quote_policy(Side::Buy, false);
+        refusal(enable_sell_posting(
+            &mut policy,
+            &draft,
+            deposit(),
+            &preflight,
+        ));
+    }
+}
