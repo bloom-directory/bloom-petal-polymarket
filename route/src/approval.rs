@@ -67,6 +67,40 @@ impl PreparedSigning {
     }
 }
 
+/// Operation classes Broker reviews by rebuilding the signed payload itself.
+///
+/// `validate_petal_profile` in bloom-broker (landed in #103) refuses a claim
+/// carrying any declared debit, destination or fee on these classes:
+/// "Polymarket exact review derives its facts from signed fields, not
+/// financial claim overrides". There, Broker's own rebuild is what the owner
+/// is shown, so a claim that also declared value would be a second and
+/// unverified source that could disagree with it.
+///
+/// Every class this Petal signs under is currently on that list, so declaring
+/// effects would make every signature refused rather than merely unreviewed.
+/// The cost is that the trading fee stays undeclared — it is the one thing the
+/// signed order does not carry, so Broker's rebuild cannot see it either, and
+/// nothing bounds it. Declaring it needs either a class off that list or a
+/// Broker that cross-checks a claim against its rebuild instead of refusing
+/// it outright.
+const BROKER_REVIEWED_CLASSES: [&str; 3] = [
+    "polymarket.order.poly1271",
+    "polymarket.relayer_batch",
+    "polymarket.onboard",
+];
+
+/// The effects a claim may declare for `operation_class`.
+fn declarable_effects<'a>(
+    operation_class: &str,
+    effects: &'a petal::ClaimEffects,
+    fallback: &'a petal::ClaimEffects,
+) -> &'a petal::ClaimEffects {
+    if BROKER_REVIEWED_CLASSES.contains(&operation_class) {
+        return fallback;
+    }
+    effects
+}
+
 fn sign_prepared_items(
     ctx: &petal::Ctx,
     wallet: &str,
@@ -98,12 +132,13 @@ fn sign_prepared_items(
     // The derived nonce depends only on the route, class and payloads, and the
     // action is the persisted prepared record, so a retry presents the same
     // claim and the owner's approval still matches it.
+    let nothing = petal::ClaimEffects::moves_nothing();
     let claim = petal::petal_use_claim(
         ctx,
         operation_class,
         SUITE,
         &payloads,
-        effects,
+        declarable_effects(operation_class, effects, &nothing),
         petal::ClaimNonce::Derived,
     )?;
     let mut request = claim.batch_request(wallet, selector.clone());
@@ -391,6 +426,30 @@ fn existing_approval_hint(
 
 #[cfg(test)]
 mod tests {
+    /// Every class this Petal signs under is one Broker rebuilds, so a claim
+    /// that declared value would be refused outright rather than merely
+    /// unreviewed. If a class is ever added off that list, its effects must
+    /// still reach the host — that is where the fee declaration goes back.
+    #[test]
+    fn effects_are_withheld_only_from_classes_broker_rebuilds() {
+        let effects = petal::ClaimEffects::moves_value()
+            .debit(&crate::polymarket::claim::pusd_asset("polygon"), "1");
+        let nothing = petal::ClaimEffects::moves_nothing();
+
+        for class in super::BROKER_REVIEWED_CLASSES {
+            assert_eq!(
+                super::declarable_effects(class, &effects, &nothing),
+                &nothing,
+                "{class} refuses a declaring claim"
+            );
+        }
+        // Anything off that list keeps its effects.
+        assert_eq!(
+            super::declarable_effects("polymarket.clob_auth.v1", &effects, &nothing),
+            &effects
+        );
+    }
+
     use super::*;
 
     #[test]
