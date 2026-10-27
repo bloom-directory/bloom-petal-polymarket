@@ -11,6 +11,14 @@ credentials, `begin` acknowledges without another authentication signature.
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
+## Persona session accounting
+
+Fee-free `polymarket.order.poly1271` claims include gross maker debits reconstructed from the signed order. BUY orders debit six-decimal `evm-137:0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb` (the canonical pUSD contract, not a ticker alias); SELL orders debit the exact CTF ERC1155 token's share units. The claim validates the owner, chain, negative-risk exchange selection, amounts and side against the saved signing preimage before asking Bloom to sign. Multiple orders in an exact-review batch consume the sum of their debits. Automatic BUY remains single-order/single-payload.
+
+Bloom may execute covered BUY orders under an owner-activated Trader or Degen grant. Selecting a persona alone does not activate a grant. The shared USD budget covers priced pUSD BUY orders; SELL shares, builder fees, onboarding, funding and withdrawals retain their existing separate approval behavior. Session accounting reserves gross signed order exposure, including orders that remain open or whose submission result is unknown. Cancellation, expiry at the venue or revoking future signing does not automatically refund the sealed budget or cancel existing signed orders.
+
+Claims carry the generic versioned economic-effects contract with an explicit Polygon network for every payload. Machine binds the actual selected account; Broker validates that context and retains mandatory signed-order BUY verification. Order claims declare no continuing permissions and no wallet-paid signing fees; credential and non-order signing requests require separate approval. Broker owns pricing (keyless CoinGecko, then DefiLlama; at most 15-minute-old quotes), reservations and limits. Missing acceptable pricing uses the existing owner-approval path; pUSD has no assumed $1 peg. This reference integration does not restrict the generic EVM/SVM Petal system to Polymarket.
+
 ## Layout
 
 - `petal-build.toml` pins the canonical Bloom Petal SDK and configures the
@@ -124,3 +132,15 @@ Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
 Retain deposit-wallet onboarding identity, credentials, funding and relayer receipts, and trade records from the installed build until pending funds and positions have been reconciled. Externally funded deposit wallets and venue orders survive local route upgrades; use the old build to inspect their identity and recovery state.
+
+### Broker-owned persona accounting
+
+This source combines order-debit accounting with the versioned clear-signing
+login/review contract. With a matching persona-enabled Machine/Broker, an
+owner-reviewed reusable Petal approval can cover fee-free BUY orders. Broker
+reconstructs each signing preimage and verifies its gross pUSD maker debit;
+Signer retains its existing signature counters and custody checks. SELL shares,
+login, wallet setup, fees, funding and withdrawals do not inherit the BUY scope.
+Without a matching session, orders retain exact owner review. A published,
+installer-certified package identity is required before default onboarding can
+use this candidate; a local build is not a released default package.

@@ -74,6 +74,7 @@ methods = ["get", "post"]
 paths = ["/nonce", "/submit", "/transaction"]
 
 [sign]
+economic_effects_schema = 1
 allowed_intents = [
   "polymarket.clob_auth.v1",
   "polymarket.onboard",

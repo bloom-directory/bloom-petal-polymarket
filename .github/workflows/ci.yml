@@ -40,7 +40,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bloom-directory/bloom
-          ref: b751087b4d7bb65a0f2796a00cf49237e20d9cda
+          # The versioned effects manifest requires the matching Machine parser.
+          ref: 014340b331ac49bad6988ecc262389b49b7256f7
           path: bloom
           persist-credentials: false
       - name: Build key-free debug Bloom CLI for install smoke tests
