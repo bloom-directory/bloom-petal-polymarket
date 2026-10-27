@@ -159,12 +159,14 @@ pub fn local_status_for_wallet(
     wallet: &str,
     owner: Address,
 ) -> Result<serde_json::Value, DispatchResponse> {
-    let mut status = stored_status_for_wallet(wallet, owner)?;
+    let stored = stored_status_for_wallet(wallet, owner)?;
     let creds_present = store_get(&format!("creds/{wallet}/clob.json")).is_some();
-    status["creds_present"] = serde_json::json!(creds_present);
     if creds_present && crate::relayer_config::load_relayer_config()?.legacy_eoa_mode {
         return Ok(crate::relayer_config::legacy_eoa_status(wallet, owner));
     }
+    let status = current_unstarted_status(stored, creds_present, |creds| {
+        not_started_status(wallet, owner, creds)
+    });
     let deposit_value = status.get("deposit_wallet");
     let source = deposit_value
         .and_then(|value| value.get("source"))
@@ -285,15 +287,41 @@ pub fn stored_status_for_wallet(
             }
             Ok(status)
         }
-        None => Ok(local_onboard_status(
-            wallet,
-            owner,
-            "not_started",
-            false,
-            false,
-            "write begin to mint or derive CLOB credentials",
-        )),
+        None => Ok(not_started_status(wallet, owner, false)),
     }
+}
+
+/// Neither the default prompt nor a status saved under legacy mode describes
+/// the account once credentials exist or legacy mode is off.
+fn current_unstarted_status(
+    mut status: serde_json::Value,
+    creds_present: bool,
+    unstarted: impl FnOnce(bool) -> serde_json::Value,
+) -> serde_json::Value {
+    if matches!(status["stage"].as_str(), Some("not_started" | "legacy_eoa")) {
+        return unstarted(creds_present);
+    }
+    status["creds_present"] = serde_json::json!(creds_present);
+    status
+}
+
+fn unstarted_message(creds_present: bool) -> &'static str {
+    if creds_present {
+        "CLOB credentials are saved; write continue to deploy and fund the deposit wallet"
+    } else {
+        "write begin to mint or derive CLOB credentials"
+    }
+}
+
+fn not_started_status(wallet: &str, owner: Address, creds_present: bool) -> serde_json::Value {
+    local_onboard_status(
+        wallet,
+        owner,
+        "not_started",
+        false,
+        creds_present,
+        unstarted_message(creds_present),
+    )
 }
 
 pub fn fundable_deposit_wallet(wallet: &str, owner: Address) -> Result<Address, DispatchResponse> {
@@ -384,6 +412,38 @@ mod next_action_tests {
                 assert_eq!(status["message"], "producer-specific status");
             }
         }
+    }
+
+    #[test]
+    fn saved_credentials_and_disabled_legacy_mode_direct_to_continue() {
+        let owner = "0xE51282BdEeeb988406B3f969a6277b02bAdc2e19"
+            .parse()
+            .unwrap();
+        let unstarted = |creds| serde_json::json!({"stage": "not_started", "creds_present": creds, "message": unstarted_message(creds)});
+        for (stored, creds, expected, words) in [
+            (
+                crate::relayer_config::legacy_eoa_status("w", owner),
+                true,
+                "onboard/w/1/continue",
+                "write continue",
+            ),
+            (
+                unstarted(false),
+                true,
+                "onboard/w/1/continue",
+                "write continue",
+            ),
+            (unstarted(false), false, "onboard/w/1/begin", "write begin"),
+        ] {
+            let mut status = current_unstarted_status(stored, creds, unstarted);
+            project_next_action(&mut status, "w", 1, false, None);
+            assert_eq!(status["next_action"], expected);
+            assert!(status["message"].as_str().unwrap().contains(words));
+        }
+        let fund = serde_json::json!({"stage": "fund", "message": "producer"});
+        let status = current_unstarted_status(fund, true, unstarted);
+        assert_eq!(status["message"], "producer");
+        assert_eq!(status["creds_present"], true);
     }
 
     #[test]
