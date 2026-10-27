@@ -10,7 +10,7 @@ pub fn wallet_address(wallet: &str, account: u32) -> Result<Address, DispatchRes
     let path = wallet_address_path(wallet, account);
     let bytes = petal::sdk::vfs_read(&path, 128).map_err(|e| match e {
         SdkError::Host(HostStatus::Denied) => {
-            error(-2, format!("wallet {wallet}: read of {path} was denied"))
+            error(-3, format!("wallet {wallet}: read of {path} was denied"))
         }
         // Bloom's wallet VFS answers a missing account leaf with `NotAFile`,
         // which reaches the Petal as `Invalid`.

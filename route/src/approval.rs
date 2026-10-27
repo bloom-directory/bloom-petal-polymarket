@@ -148,7 +148,7 @@ fn sign_prepared_items(
             });
             match store_put_json(approval_key, &artifact, false) {
                 DispatchResponse::Write => Err(error(
-                    -2,
+                    -3,
                     format!(
                         "Sealed Approval required for action {}; open the owner-visible Bloom status, approve it, then retry the exact write",
                         artifact["action_id"].as_str().unwrap_or_default(),
@@ -168,26 +168,31 @@ fn sign_prepared_items(
                 Err(err) => return Err(sdk_error(err)),
             }
             Err(error(
-                -2,
+                -3,
                 "host rejected the stored approval hint; it was retired, retry the exact write",
             ))
         }
-        Err(SdkError::Host(HostStatus::Denied)) => Err(error(
-            -2,
-            match selector {
-                petal::SignSelector::Exact => {
-                    "signing denied: the owner may have rejected the ceremony, the wallet policy may not allow this Petal, or the Broker may be unavailable"
-                }
-                // A single-use approval is consumed when it signs. If the step
-                // after signing failed, the retry reaches the host with the
-                // same consumed approval until it expires.
-                petal::SignSelector::Reusable => {
-                    "signing denied: the owner may have rejected the ceremony, the Broker may be unavailable, or an earlier attempt signed but failed afterwards and its single-use approval is spent (wait up to 5 minutes, then retry the exact write)"
-                }
-            },
-        )),
+        Err(SdkError::Host(HostStatus::Denied)) => Err(signing_denied(&selector)),
         Err(err) => Err(sdk_error_with_context("sign prepared batch", err)),
     }
+}
+
+/// Refusals the agent must read go out as -3: Bloom drops the message of -2.
+fn signing_denied(selector: &petal::SignSelector) -> DispatchResponse {
+    error(
+        -3,
+        match selector {
+            petal::SignSelector::Exact => {
+                "signing denied: the owner may have rejected the ceremony, the wallet policy may not allow this Petal, or the Broker may be unavailable"
+            }
+            // A single-use approval is consumed when it signs. If the step
+            // after signing failed, the retry reaches the host with the
+            // same consumed approval until it expires.
+            petal::SignSelector::Reusable => {
+                "signing denied: the owner may have rejected the ceremony, the Broker may be unavailable, or an earlier attempt signed but failed afterwards and its single-use approval is spent (wait up to 5 minutes, then retry the exact write)"
+            }
+        },
+    )
 }
 
 fn selector_label(selector: &petal::SignSelector) -> &'static str {
@@ -225,11 +230,15 @@ pub fn pending_approval_selector(key: &str) -> Result<Option<String>, DispatchRe
         Err(SdkError::Host(HostStatus::NotFound)) => return Ok(None),
         Err(error) => return Err(sdk_error(error)),
     };
-    Ok(Some(
-        serde_json::from_slice::<ApprovalArtifact>(&bytes)
-            .map(|existing| existing.selector_label().to_string())
-            .unwrap_or_else(|_| "unreadable".to_string()),
-    ))
+    Ok(pending_selector(&bytes, now_millis() as u64))
+}
+
+fn pending_selector(bytes: &[u8], now_ms: u64) -> Option<String> {
+    match serde_json::from_slice::<ApprovalArtifact>(bytes) {
+        Ok(existing) if existing.expires_ms <= now_ms => None,
+        Ok(existing) => Some(existing.selector_label().to_string()),
+        Err(_) => Some("unreadable".to_string()),
+    }
 }
 
 pub fn store_prepared_signing(
@@ -694,6 +703,44 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(reusable.selector_label(), "reusable");
+    }
+
+    #[test]
+    fn pending_selector_ignores_expired_artifacts() {
+        let artifact = |expires_ms: u64| {
+            serde_json::to_vec(&serde_json::json!({
+                "action_id": "a",
+                "expires_ms": expires_ms,
+                "prepared_artifact_digest": "d",
+                "retry_state": "approval_required",
+                "operation": "signing_batch",
+                "selector": "reusable",
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            pending_selector(&artifact(2_000), 1_000).as_deref(),
+            Some("reusable")
+        );
+        assert_eq!(pending_selector(&artifact(1_000), 1_000), None);
+        assert_eq!(pending_selector(b"{", 1_000).as_deref(), Some("unreadable"));
+    }
+
+    #[test]
+    fn signing_denials_reach_the_agent() {
+        for selector in [petal::SignSelector::Exact, petal::SignSelector::Reusable] {
+            let DispatchResponse::Error { code, message } = signing_denied(&selector) else {
+                panic!("denial must be an error");
+            };
+            assert_eq!(code, -3, "-2 messages are dropped by Bloom");
+            assert!(message.starts_with("signing denied"));
+        }
+        let DispatchResponse::Error { message, .. } =
+            signing_denied(&petal::SignSelector::Reusable)
+        else {
+            unreachable!()
+        };
+        assert!(message.contains("wait up to 5 minutes"));
     }
 
     fn clob_auth_at(timestamp: u64) -> PreparedSigning {
