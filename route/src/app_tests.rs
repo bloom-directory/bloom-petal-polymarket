@@ -140,10 +140,12 @@ mod tests {
         assert!(validate_relative_path("markets\\evil").is_err());
     }
 
+    /// Bloom assigns route authority ids by position, so adding or removing a
+    /// route renumbers the ones after it. Keep that change a visible diff.
     #[test]
-    fn route_sources_are_individual_and_index_only_for_directories() {
+    fn route_sources_match_the_committed_route_list() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("files");
-        let mut stack = vec![root];
+        let mut stack = vec![root.clone()];
         let mut routes = Vec::new();
 
         while let Some(dir) = stack.pop() {
@@ -161,31 +163,16 @@ mod tests {
                     Some("$list.rs"),
                     "$list.rs route sources are no longer supported"
                 );
-                routes.push(path);
+                let relative = path.strip_prefix(&root).expect("route under files/");
+                routes.push(relative.to_str().expect("utf-8 route path").to_string());
             }
         }
-
-        assert_eq!(routes.len(), 109);
-        assert!(routes.iter().any(|path| path.ends_with("$index.rs")));
-        assert!(
-            routes
-                .iter()
-                .any(|path| path.ends_with("trade/[wallet]/[index]/receipts/[id]/cancel.rs"))
-        );
-        assert!(
-            routes
-                .iter()
-                .any(|path| path.ends_with("meta/route-contract.json.rs"))
-        );
-        assert!(
-            routes.iter().any(
-                |path| path.ends_with("onboard/[wallet]/[index]/review_relayer_intent.json.rs")
-            )
-        );
-        assert!(
-            !routes
-                .iter()
-                .any(|path| path.ends_with("meta/parity.json.rs"))
+        routes.sort();
+        let actual = routes.join("\n") + "\n";
+        assert_eq!(
+            actual,
+            include_str!("../routes.txt"),
+            "route set changed; update route/routes.txt to:\n{actual}"
         );
     }
 

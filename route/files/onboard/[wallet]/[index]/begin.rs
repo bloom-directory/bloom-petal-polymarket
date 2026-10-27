@@ -1,6 +1,6 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.onboard").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.clob_auth.v1").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| {
-        petal::DispatchResponse::Read(b"write anything here to begin Broker-authorized CLOB credential signing\n".to_vec())
+        petal::DispatchResponse::Read(b"write here for CLOB credentials; then write continue for deposit-wallet onboarding. Read status.json for the next action.\n".to_vec())
     },
     write: |ctx: &petal::Ctx, _body: &[u8]| {
         let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
