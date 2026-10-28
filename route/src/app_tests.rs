@@ -1237,7 +1237,15 @@ require_flag_above_usd = "2.05"
         // has since changed, still matches its final review.
         let owner = Address::repeat_byte(0x11);
         let funder = Address::repeat_byte(0x22);
-        let preflight = serde_json::json!({"balance": "5"});
+        let preflight = serde_json::json!({
+            "deposit_wallet": funder.to_checksum(None),
+            "token_id": sell.token_id,
+            "requested_size_micro": sell.size_micro,
+            "clob_balance_micro": 5_000_000,
+            "chain_ctf_balance_micro": 5_000_000,
+            "ctf_operator": crate::polymarket::eip712::CTF_EXCHANGE.to_checksum(None),
+            "ctf_approved_for_all": true
+        });
         let review = serde_json::json!({
             "wallet": sell.wallet,
             "draft_id": sell.id,
@@ -1409,6 +1417,52 @@ require_flag_above_usd = "2.05"
             Some(&preflight),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn advisory_sell_reads_do_not_invalidate_owner_review() {
+        let sell = sell_draft();
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let read = |holding| {
+            sell_preflight(
+                funder,
+                &sell.token_id,
+                sell.size_micro,
+                sell.neg_risk,
+                serde_json::json!({"balance": "5000000", "new_venue_field": true}),
+                5_000_000,
+                true,
+                holding,
+            )
+            .unwrap()
+        };
+        let reviewed = read(Some(5_000_000));
+        let review = sell_review(&sell, owner, funder, &reviewed);
+        let policy = serde_json::json!({"policy_status": "passed"});
+        for holding in [None, Some(0), Some(9_000_000)] {
+            let mut live = read(holding);
+            live["clob_balance_allowance"]["new_venue_field"] = false.into();
+            review_intent_matches_draft(&review, &sell, owner, funder, &policy, Some(&live))
+                .unwrap();
+        }
+        for field in [
+            "deposit_wallet",
+            "token_id",
+            "requested_size_micro",
+            "clob_balance_micro",
+            "chain_ctf_balance_micro",
+            "ctf_operator",
+            "ctf_approved_for_all",
+        ] {
+            let mut live = reviewed.clone();
+            live.as_object_mut().unwrap().remove(field);
+            assert!(
+                review_intent_matches_draft(&review, &sell, owner, funder, &policy, Some(&live),)
+                    .is_err(),
+                "{field}"
+            );
+        }
     }
 
     /// Revalidate refuses a SELL its balances do not cover, with the reason.
