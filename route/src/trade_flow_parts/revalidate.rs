@@ -1,8 +1,9 @@
 use crate::prelude::*;
 
+use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
-use crate::trade_flow_parts::policy::enable_trade_posting;
+use crate::trade_flow_parts::policy::enable_sell_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
@@ -113,24 +114,15 @@ pub fn revalidate_trade_draft(
         Err(resp) => return resp,
     };
 
-    draft.limit_price_micro = quote.price_micro;
-    draft.size_micro = quote.size_micro;
-    draft.maker_micro = quote.maker_micro;
-    draft.taker_micro = quote.taker_micro;
+    draft.requote(&quote, &snapshot, now_secs());
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
-    draft.tick_micro = snapshot.tick_micro;
-    draft.min_order_size_micro = snapshot.min_size_micro;
-    draft.neg_risk = snapshot.neg_risk;
-    draft.active = snapshot.active;
-    draft.closed = snapshot.closed;
-    draft.order_book_enabled = snapshot.order_book_enabled;
-    draft.binary_outcomes = snapshot.market.is_binary();
-    draft.best_ask_micro = snapshot.best_ask_micro;
-    draft.best_bid_micro = snapshot.best_bid_micro;
-    draft.book_snapshot_secs = now_secs();
     draft.status = "revalidated".into();
+    let fee_cap = match draft.fee_cap_micro() {
+        Ok(cap) => cap,
+        Err(e) => return polymarket_error(e),
+    };
     let mut policy_check = match trade_policy_check(wallet, &draft) {
         Ok(check) => check,
         Err(resp) => return resp,
@@ -168,6 +160,10 @@ pub fn revalidate_trade_draft(
             "min_order_size": format_micro(draft.min_order_size_micro),
             "best_ask_micro": draft.best_ask_micro,
             "best_bid_micro": draft.best_bid_micro,
+            "fee": draft.fee,
+            "fee_cap_micro": fee_cap,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "status": "revalidated"
         }),
         false,
@@ -200,20 +196,22 @@ pub fn revalidate_trade_draft(
             &draft.token_id,
             draft.size_micro,
             draft.neg_risk,
-        ) {
-            Ok(preflight) => {
-                enable_trade_posting(
-                    &mut policy_check,
-                    "sell can be posted after final review because chain CTF balance and approval checks passed",
-                );
-                Some(preflight)
-            }
+        )
+        .and_then(|preflight| {
+            enable_sell_posting(&mut policy_check, &draft, funder, &preflight)?;
+            Ok(preflight)
+        }) {
+            Ok(preflight) => Some(preflight),
             Err(resp) => {
+                // Read failures leave the persisted draft and approval retryable.
+                if matches!(&resp, DispatchResponse::Error { code: -4, .. }) {
+                    return resp;
+                }
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
                     Err(_) => return error(-4, "failed to clear stale review intent"),
                 }
-                draft.status = "preflight_denied".into();
+                draft.status = "review".into();
                 if let DispatchResponse::Error { .. } =
                     store_put_json(&format!("{base}/order.json"), &draft, false)
                 {
@@ -251,6 +249,9 @@ pub fn revalidate_trade_draft(
             "size": format_micro(draft.size_micro),
             "maker": format_micro(draft.maker_micro),
             "taker": format_micro(draft.taker_micro),
+            "fee": draft.fee,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "neg_risk": draft.neg_risk,
             "policy_status": policy_status,
             "sell_preflight": sell_preflight,
@@ -308,23 +309,11 @@ pub fn refresh_trade_post_inputs(
         &snapshot,
         draft.order_type,
     )?;
-    draft.limit_price_micro = quote.price_micro;
-    draft.size_micro = quote.size_micro;
-    draft.maker_micro = quote.maker_micro;
-    draft.taker_micro = quote.taker_micro;
+    draft.requote(&quote, &snapshot, now_secs());
     if draft.side == Side::Sell {
         draft.amount_micro = draft.taker_micro;
     }
-    draft.tick_micro = snapshot.tick_micro;
-    draft.min_order_size_micro = snapshot.min_size_micro;
-    draft.neg_risk = snapshot.neg_risk;
-    draft.active = snapshot.active;
-    draft.closed = snapshot.closed;
-    draft.order_book_enabled = snapshot.order_book_enabled;
-    draft.binary_outcomes = snapshot.market.is_binary();
-    draft.best_ask_micro = snapshot.best_ask_micro;
-    draft.best_bid_micro = snapshot.best_bid_micro;
-    draft.book_snapshot_secs = now_secs();
+    let fee_cap = draft.fee_cap_micro().map_err(polymarket_error)?;
     let mut policy_check = trade_policy_check(wallet, draft)?;
     let policy_deny = policy_check
         .get("policy_deny")
@@ -354,6 +343,10 @@ pub fn refresh_trade_post_inputs(
             "min_order_size": format_micro(draft.min_order_size_micro),
             "best_ask_micro": draft.best_ask_micro,
             "best_bid_micro": draft.best_bid_micro,
+            "fee": draft.fee,
+            "fee_cap_micro": fee_cap,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "status": "post_revalidated"
         }),
         false,
@@ -388,10 +381,7 @@ pub fn refresh_trade_post_inputs(
             draft.size_micro,
             draft.neg_risk,
         )?;
-        enable_trade_posting(
-            &mut policy_check,
-            "sell can be posted after final review because chain CTF balance and approval checks passed",
-        );
+        enable_sell_posting(&mut policy_check, draft, funder, &preflight)?;
         Some(preflight)
     } else {
         None
@@ -416,6 +406,19 @@ pub fn review_intent_matches_draft(
         Side::Buy => "BUY",
         Side::Sell => "SELL",
     };
+    // The live checks just run must enable this post on their own; the final
+    // review alone cannot.
+    if policy_check
+        .get("posting_enabled")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        let reason = policy_check
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("posting is not enabled");
+        return Err(format!("live post checks refuse this post: {reason}"));
+    }
     let policy_status = policy_check
         .get("policy_status")
         .and_then(serde_json::Value::as_str)
@@ -443,6 +446,19 @@ pub fn review_intent_matches_draft(
             ));
         }
     }
+    // A BUY's claim declares its fee bound, so the owner must have reviewed
+    // the live schedule and bound. A SELL's claim does not depend on the fee.
+    if draft.side == Side::Buy {
+        let fee_cap = draft.fee_cap_micro().map_err(|err| err.to_string())?;
+        if review.get("fee_cap").and_then(serde_json::Value::as_str)
+            != Some(format_micro(fee_cap).as_str())
+        {
+            return Err("final review field 'fee_cap' no longer matches live post inputs".into());
+        }
+        if review.get("fee") != Some(&serde_json::json!(draft.fee)) {
+            return Err("final review field 'fee' no longer matches live post inputs".into());
+        }
+    }
     if review.get("neg_risk").and_then(serde_json::Value::as_bool) != Some(draft.neg_risk) {
         return Err("final review field 'neg_risk' no longer matches live post inputs".into());
     }
@@ -450,10 +466,24 @@ pub fn review_intent_matches_draft(
         let Some(fresh) = sell_preflight else {
             return Err("final review field 'sell_preflight' is missing live post evidence".into());
         };
-        if review.get("sell_preflight") != Some(fresh) {
-            return Err(
-                "final review field 'sell_preflight' no longer matches live post inputs".into(),
-            );
+        for field in [
+            "deposit_wallet",
+            "token_id",
+            "requested_size_micro",
+            "clob_balance_micro",
+            "chain_ctf_balance_micro",
+            "ctf_operator",
+            "ctf_approved_for_all",
+        ] {
+            let live = fresh.get(field).filter(|value| !value.is_null());
+            let reviewed = review
+                .get("sell_preflight")
+                .and_then(|value| value.get(field));
+            if live.is_none() || reviewed != live {
+                return Err(format!(
+                    "final review field 'sell_preflight' ({field}) no longer matches live post inputs"
+                ));
+            }
         }
     }
     Ok(())
