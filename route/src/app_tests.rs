@@ -2,6 +2,7 @@
 mod tests {
     use crate::app_types::{StoreTradeDraft, TradeSnapshot};
     use crate::infra_parts::util::{url_with_query, validate_relative_path};
+    use crate::polymarket::fees::MarketFee;
     use crate::polymarket::order::OrderType;
     use crate::polymarket::{Market, Side};
     use crate::prelude::*;
@@ -24,6 +25,9 @@ mod tests {
             order_price_min_tick_size: None,
             order_min_size: None,
             neg_risk: false,
+            fees_enabled: Some(serde_json::json!(false)),
+            fee_type: None,
+            fee_schedule: None,
         }
     }
 
@@ -40,6 +44,7 @@ mod tests {
             active: true,
             closed: false,
             order_book_enabled: true,
+            fee: MarketFee::Disabled,
         }
     }
 
@@ -49,6 +54,7 @@ mod tests {
             condition_id: "0xabc".into(),
             side: LocalPolicySide::Buy,
             amount_microusd: 10_000_000,
+            fee_cap_microusd: 0,
             limit_price_micro: 695_000,
             active: true,
             closed: false,
@@ -89,6 +95,7 @@ mod tests {
             best_ask_micro: Some(90_000),
             best_bid_micro: Some(80_000),
             book_snapshot_secs: 1,
+            fee: Some(MarketFee::Disabled),
             status: "signed".into(),
             salt: Some(42),
             clob_order_id: None,
@@ -502,12 +509,356 @@ max_daily_usd = "100"
             crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 500).unwrap()
         );
     }
+    fn crypto_fee() -> MarketFee {
+        MarketFee::Enabled {
+            fee_type: Some("crypto_fees_v2".into()),
+            rate_ppm: 70_000,
+            taker_only: true,
+        }
+    }
+
+    fn unbounded_fee() -> MarketFee {
+        MarketFee::Unbounded {
+            fee_type: Some("crypto_fees_v2".into()),
+            reason: "feeSchedule exponent 2 is not 1, the only fee curve this Petal bounds".into(),
+        }
+    }
+
+    fn fee_enabled_buy() -> StoreTradeDraft {
+        StoreTradeDraft {
+            amount_micro: 2_000_000,
+            price_bound_micro: 400_000,
+            limit_price_micro: 400_000,
+            size_micro: 5_000_000,
+            maker_micro: 2_000_000,
+            taker_micro: 5_000_000,
+            fee: Some(crypto_fee()),
+            ..draft()
+        }
+    }
+
+    fn check(checks: &[LocalPolicyCheck], rule: &str) -> LocalPolicyOutcome {
+        checks
+            .iter()
+            .find(|check| check.rule == rule)
+            .unwrap_or_else(|| panic!("no {rule} check"))
+            .outcome
+    }
+
+    #[test]
+    fn a_snapshot_records_a_fee_it_cannot_bound_without_failing() {
+        use crate::polymarket::OrderBook;
+        use crate::polymarket::fees::tests::FEE_ENABLED_MARKET;
+        use crate::trade_flow_parts::pricing::snapshot_from_book;
+
+        let mut value: serde_json::Value = serde_json::from_str(FEE_ENABLED_MARKET).unwrap();
+        value["feeSchedule"]["exponent"] = 2.into();
+        let book: OrderBook = serde_json::from_value(serde_json::json!({
+            "market": "0xabc",
+            "asset_id": "1",
+            "tick_size": "0.01",
+        }))
+        .unwrap();
+        let snapshot = snapshot_from_book(
+            serde_json::from_value(value).unwrap(),
+            "YES",
+            "1".into(),
+            book,
+        )
+        .unwrap();
+        assert!(matches!(snapshot.fee, MarketFee::Unbounded { .. }));
+    }
+
+    #[test]
+    fn the_fee_bound_is_taken_on_the_maker_amount() {
+        let draft = StoreTradeDraft {
+            amount_micro: 2_100_000,
+            ..fee_enabled_buy()
+        };
+        assert_eq!(draft.fee_cap_micro().unwrap(), 141_000);
+    }
+
+    #[test]
+    fn the_fee_bound_counts_against_the_usd_caps() {
+        let policy: PolymarketVenueConfig = toml::from_str(
+            r#"
+enabled = true
+max_order_usd = "2.1"
+max_daily_usd = "10"
+require_flag_above_usd = "2.05"
+"#,
+        )
+        .unwrap();
+
+        // 2.0 alone fits every cap; 2.0 + 0.141 does not.
+        let free = StoreTradeDraft {
+            fee: Some(MarketFee::Disabled),
+            ..fee_enabled_buy()
+        };
+        let ctx = LocalPolymarketOrderCtx::for_draft(&free, true, Some(7_900_000)).unwrap();
+        assert_eq!(ctx.fee_cap_microusd, 0);
+        let checks = evaluate_local_polymarket_order(&policy, &ctx);
+        assert_eq!(
+            check(&checks, "polymarket.max_order_usd"),
+            LocalPolicyOutcome::Pass
+        );
+        assert_eq!(
+            check(&checks, "polymarket.max_daily_usd"),
+            LocalPolicyOutcome::Pass
+        );
+        assert!(!local_policy_has_warn(&checks));
+
+        let buy = fee_enabled_buy();
+        let ctx = LocalPolymarketOrderCtx::for_draft(&buy, true, Some(7_900_000)).unwrap();
+        assert_eq!(ctx.amount_microusd, 2_000_000);
+        assert_eq!(ctx.fee_cap_microusd, 141_000);
+        let checks = evaluate_local_polymarket_order(&policy, &ctx);
+        assert_eq!(
+            check(&checks, "polymarket.max_order_usd"),
+            LocalPolicyOutcome::Deny
+        );
+        assert_eq!(
+            check(&checks, "polymarket.max_daily_usd"),
+            LocalPolicyOutcome::Deny
+        );
+        assert_eq!(
+            check(&checks, "polymarket.require_flag_above_usd"),
+            LocalPolicyOutcome::Warn
+        );
+        let message = &checks
+            .iter()
+            .find(|check| check.rule == "polymarket.max_order_usd")
+            .unwrap()
+            .message;
+        assert!(
+            message.contains("2.141 (amount 2 + fee bound 0.141)"),
+            "{message}"
+        );
+
+        // A BUY whose fee cannot be bounded has no policy view at all.
+        let unbounded = StoreTradeDraft {
+            fee: Some(unbounded_fee()),
+            ..fee_enabled_buy()
+        };
+        assert!(LocalPolymarketOrderCtx::for_draft(&unbounded, true, Some(0)).is_err());
+    }
+
+    #[test]
+    fn receipts_carry_the_fee_bound_into_the_daily_cap() {
+        use crate::trade_flow_parts::policy::receipt_daily_exposure_microusd;
+
+        let funder = Address::repeat_byte(0x22).to_checksum(None);
+        let mut receipt =
+            StoreTradeReceipt::for_draft(&fee_enabled_buy(), funder.clone(), 42, "h".into())
+                .unwrap();
+        assert_eq!(receipt.fee_cap_microusd, Some(141_000));
+        assert_eq!(receipt.fee, Some(crypto_fee()));
+        assert_eq!(receipt.funder.as_deref(), Some(funder.as_str()));
+        assert_eq!(receipt.review_intent_hash.as_deref(), Some("h"));
+        assert_eq!(receipt.clob_status, "ambiguous");
+        receipt.clob_status = "matched".into();
+        receipt.posted_ms = 1_000;
+        let stored = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(stored["fee"]["kind"], "enabled");
+        assert_eq!(stored["fee"]["rate_ppm"], 70_000);
+        assert_eq!(stored["fee_cap_microusd"], 141_000);
+        let policy: StoreTradeReceiptPolicy = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(receipt_daily_exposure_microusd(&policy, 1_000), 2_141_000);
+        // Outside the day, rejected, or a SELL: nothing.
+        assert_eq!(receipt_daily_exposure_microusd(&policy, 1_001), 0);
+        let rejected = StoreTradeReceiptPolicy {
+            clob_status: "rejected".into(),
+            ..policy.clone()
+        };
+        assert_eq!(receipt_daily_exposure_microusd(&rejected, 0), 0);
+        let sell = StoreTradeReceiptPolicy {
+            side: Side::Sell,
+            ..policy
+        };
+        assert_eq!(receipt_daily_exposure_microusd(&sell, 0), 0);
+
+        // A receipt written before fees were bounded counts the bound at the
+        // highest accepted rate (2,000,000 × 0.25 + 1,000), even after the
+        // cancel path rewrites it.
+        let mut old = stored;
+        let object = old.as_object_mut().unwrap();
+        object.remove("fee_cap_microusd");
+        object.remove("fee");
+        let rewritten: StoreTradeReceipt = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(rewritten.fee, None);
+        for value in [old, serde_json::to_value(&rewritten).unwrap()] {
+            let policy: StoreTradeReceiptPolicy = serde_json::from_value(value).unwrap();
+            assert_eq!(policy.fee_cap_microusd, None);
+            assert_eq!(receipt_daily_exposure_microusd(&policy, 0), 2_501_000);
+        }
+
+        // No receipt is built for a BUY whose fee is unbounded or unrecorded.
+        for fee in [Some(unbounded_fee()), None] {
+            let draft = StoreTradeDraft {
+                fee,
+                ..fee_enabled_buy()
+            };
+            assert!(StoreTradeReceipt::for_draft(&draft, funder.clone(), 42, "h".into()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_draft_without_fee_data_must_be_revalidated() {
+        let mut stored = serde_json::to_value(fee_enabled_buy()).unwrap();
+        stored.as_object_mut().unwrap().remove("fee");
+        let old: StoreTradeDraft = serde_json::from_value(stored).unwrap();
+        assert_eq!(old.fee, None);
+        let err = old.fee_cap_micro().unwrap_err().to_string();
+        assert!(err.contains("write revalidate"), "{err}");
+
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let policy_check = serde_json::json!({"policy_status": "passed", "posting_enabled": true});
+        let old_review = serde_json::json!({
+            "wallet": old.wallet,
+            "draft_id": old.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": old.slug,
+            "condition_id": old.condition_id,
+            "outcome": old.outcome,
+            "token_id": old.token_id,
+            "side": "BUY",
+            "order_type": old.order_type.as_str(),
+            "limit_price": "0.4",
+            "size": "5",
+            "maker": "2",
+            "taker": "5",
+            "neg_risk": false,
+            "policy_status": "passed",
+        });
+        // Not postable while the draft has no fee, even against a review
+        // that recorded no fee and a zero bound ...
+        assert!(
+            review_intent_matches_draft(&old_review, &old, owner, funder, &policy_check, None)
+                .is_err()
+        );
+        let mut feeless_review = old_review.clone();
+        feeless_review["fee"] = serde_json::Value::Null;
+        feeless_review["fee_cap"] = "0".into();
+        let err =
+            review_intent_matches_draft(&feeless_review, &old, owner, funder, &policy_check, None)
+                .unwrap_err();
+        assert!(err.contains("write revalidate"), "{err}");
+        // ... nor once post refreshes it from the live market, because the
+        // owner never reviewed a fee bound.
+        let refreshed = fee_enabled_buy();
+        let err = review_intent_matches_draft(
+            &old_review,
+            &refreshed,
+            owner,
+            funder,
+            &policy_check,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("fee_cap"), "{err}");
+
+        // A final review that shows the fee and its bound matches.
+        let mut review = old_review;
+        review["fee"] = serde_json::json!(refreshed.fee);
+        review["fee_cap"] = "0.141".into();
+        review_intent_matches_draft(&review, &refreshed, owner, funder, &policy_check, None)
+            .unwrap();
+        // A changed schedule does not.
+        let changed = StoreTradeDraft {
+            fee: Some(MarketFee::Enabled {
+                fee_type: Some("crypto_fees_v2".into()),
+                rate_ppm: 70_000,
+                taker_only: false,
+            }),
+            ..fee_enabled_buy()
+        };
+        let err =
+            review_intent_matches_draft(&review, &changed, owner, funder, &policy_check, None)
+                .unwrap_err();
+        assert!(err.contains("'fee'"), "{err}");
+        // Nor does a changed rate, which changes the bound.
+        let pricier = StoreTradeDraft {
+            fee: Some(MarketFee::Enabled {
+                fee_type: Some("crypto_fees_v2".into()),
+                rate_ppm: 75_000,
+                taker_only: true,
+            }),
+            ..fee_enabled_buy()
+        };
+        let err =
+            review_intent_matches_draft(&review, &pricier, owner, funder, &policy_check, None)
+                .unwrap_err();
+        assert!(err.contains("'fee_cap'"), "{err}");
+    }
+
+    #[test]
+    fn a_sell_is_not_held_to_the_fee_schedule() {
+        let sell = StoreTradeDraft {
+            side: Side::Sell,
+            fee: Some(unbounded_fee()),
+            ..fee_enabled_buy()
+        };
+        assert_eq!(sell.fee_cap_micro().unwrap(), 0);
+        let quoted_by_an_old_build = StoreTradeDraft {
+            fee: None,
+            ..sell.clone()
+        };
+        assert_eq!(quoted_by_an_old_build.fee_cap_micro().unwrap(), 0);
+        let ctx = LocalPolymarketOrderCtx::for_draft(&sell, true, Some(0)).unwrap();
+        assert_eq!(ctx.fee_cap_microusd, 0);
+        let receipt = StoreTradeReceipt::for_draft(&sell, "0x22".into(), 42, "h".into()).unwrap();
+        assert_eq!(receipt.fee_cap_microusd, Some(0));
+
+        // A SELL reviewed before fees were recorded, or under a schedule that
+        // has since changed, still matches its final review.
+        let owner = Address::repeat_byte(0x11);
+        let funder = Address::repeat_byte(0x22);
+        let preflight = serde_json::json!({"balance": "5"});
+        let review = serde_json::json!({
+            "wallet": sell.wallet,
+            "draft_id": sell.id,
+            "owner": owner.to_checksum(None),
+            "funder": funder.to_checksum(None),
+            "slug": sell.slug,
+            "condition_id": sell.condition_id,
+            "outcome": sell.outcome,
+            "token_id": sell.token_id,
+            "side": "SELL",
+            "order_type": sell.order_type.as_str(),
+            "limit_price": "0.4",
+            "size": "5",
+            "maker": "2",
+            "taker": "5",
+            "neg_risk": false,
+            "policy_status": "passed",
+            "sell_preflight": preflight,
+        });
+        let policy_check = serde_json::json!({"policy_status": "passed", "posting_enabled": true});
+        for fee in [Some(unbounded_fee()), Some(crypto_fee()), None] {
+            let sell = StoreTradeDraft {
+                fee,
+                ..sell.clone()
+            };
+            review_intent_matches_draft(
+                &review,
+                &sell,
+                owner,
+                funder,
+                &policy_check,
+                Some(&preflight),
+            )
+            .unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
 mod sell_posting_tests {
     use crate::app_types::StoreTradeDraft;
     use crate::polymarket::Side;
+    use crate::polymarket::fees::MarketFee;
     use crate::polymarket::order::{OrderType, format_micro};
     use crate::trade_flow_parts::policy::{
         SellPreflightReads, enable_sell_posting, evaluate_sell_preflight,
@@ -555,6 +906,7 @@ mod sell_posting_tests {
             best_ask_micro: Some(360_000),
             best_bid_micro: Some(350_000),
             book_snapshot_secs: 1,
+            fee: Some(MarketFee::Disabled),
             status: "revalidated".into(),
             salt: None,
             clob_order_id: None,
@@ -609,6 +961,8 @@ mod sell_posting_tests {
             "size": format_micro(draft.size_micro),
             "maker": format_micro(draft.maker_micro),
             "taker": format_micro(draft.taker_micro),
+            "fee": draft.fee,
+            "fee_cap": format_micro(draft.fee_cap_micro().unwrap()),
             "neg_risk": draft.neg_risk,
             "policy_status": policy["policy_status"],
             "sell_preflight": preflight,
@@ -801,7 +1155,7 @@ mod sell_posting_tests {
     }
 
     #[test]
-    fn buy_posting_is_unchanged() {
+    fn fee_free_buy_posts_without_sell_preflight() {
         let mut draft = sell_draft();
         draft.side = Side::Buy;
         let policy = quote_policy(Side::Buy, false);

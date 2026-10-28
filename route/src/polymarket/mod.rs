@@ -1,6 +1,7 @@
 pub mod builder_creds;
 pub mod creds;
 pub mod eip712;
+pub mod fees;
 pub mod order;
 pub mod order_model;
 #[cfg(test)]
