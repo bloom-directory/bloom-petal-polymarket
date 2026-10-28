@@ -1,7 +1,6 @@
 use crate::polymarket::order::{Order, SIG_TYPE_POLY_1271, poly1271_signing_preimage};
 use alloy::primitives::{Address, B256, Signature, U256};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 use crate::prelude::*;
@@ -391,60 +390,20 @@ fn batch_claim(
     payloads: &[petal::PayloadSignItem],
     prepared: &[&PreparedSigning],
 ) -> Result<Vec<u8>, DispatchResponse> {
-    let route = ctx
-        .params
-        .iter()
-        .find_map(|(name, value)| (name == "bloom.route_id").then_some(value.as_str()))
-        .ok_or_else(|| error(-4, "trusted Petal route id is unavailable"))?;
-    let payload_digest = petal::payload_batch_digest(payloads).map_err(sdk_error)?;
-    let ordered_hashes = payloads
-        .iter()
-        .map(|payload| hex::encode(payload.claimed_hash))
-        .collect::<Vec<_>>();
-    let nonce = Sha256::digest(
-        [
-            ctx.package_hash.as_bytes(),
-            route.as_bytes(),
-            operation_class.as_bytes(),
-            payload_digest.as_slice(),
-        ]
-        .concat(),
-    );
-    serde_jcs::to_vec(&serde_json::json!({
-        "package_hash": ctx.package_hash,
-        "route": route,
-        "operation_class": operation_class,
-        "crypto_suite": "secp256k1-keccak256-recoverable",
-        "payload_digest": hex::encode(payload_digest),
-        "ordered_hashes": ordered_hashes,
-        "declared_debits": order_debits(operation_class, prepared)?,
-        "declared_destinations": [],
-        "declared_fee": {"kind": "none"},
-        "economic_effects": economic_effects(operation_class, payloads.len()),
-        "nonce": hex::encode(&nonce[..16]),
-        "claim_assurance": {"kind": "machine_asserted"}
-    }))
-    .map_err(|err| error(-4, format!("encode Petal use claim: {err}")))
-}
-
-/// Versioned economic declaration consumed by the shared Broker budget path.
-/// Machine binds each context to the actual selected account before submission;
-/// the Petal cannot invent a KeyRef from its wallet display path. Credential and
-/// other non-order requests must keep their existing separate approval profile.
-fn economic_effects(operation_class: &str, payload_count: usize) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": 1,
-        "payload_contexts": (0..payload_count).map(|payload_index| serde_json::json!({
-            "payload_index": payload_index,
-            "network": "evm-137",
-            "spending_accounts": [],
-        })).collect::<Vec<_>>(),
-        "permission_effect": if operation_class == "polymarket.order.poly1271" {
-            "none"
-        } else {
-            "requires_separate_approval"
-        },
-    })
+    let permission = if operation_class == "polymarket.order.poly1271" {
+        petal::effects::PermissionEffect::None
+    } else {
+        petal::effects::PermissionEffect::RequiresSeparateApproval
+    };
+    petal::effects::Effects::new("evm-137", permission)
+        .with_debits(order_debits(operation_class, prepared)?)
+        .batch_claim(
+            ctx,
+            operation_class,
+            "secp256k1-keccak256-recoverable",
+            payloads,
+        )
+        .map_err(sdk_error)
 }
 
 /// Derive what leaves the maker's account from the exact prepared order.
@@ -453,7 +412,7 @@ fn economic_effects(operation_class: &str, payload_count: usize) -> serde_json::
 fn order_debits(
     operation_class: &str,
     prepared: &[&PreparedSigning],
-) -> Result<Vec<serde_json::Value>, DispatchResponse> {
+) -> Result<Vec<petal::effects::Debit>, DispatchResponse> {
     if operation_class != "polymarket.order.poly1271" {
         return Ok(Vec::new());
     }
@@ -506,11 +465,12 @@ fn order_debits(
     }
     Ok(amounts
         .into_iter()
-        .map(|(asset, amount)| {
-            serde_json::json!({
-                "asset": {"chain": "evm-137", "asset": asset},
-                "amount": amount.to_string()
-            })
+        .map(|(asset, amount)| petal::effects::Debit {
+            asset: petal::effects::Asset {
+                chain: "evm-137".into(),
+                asset,
+            },
+            amount: amount.to_string(),
         })
         .collect())
 }
@@ -598,28 +558,75 @@ mod tests {
         let debits = order_debits("polymarket.order.poly1271", &[&buy, &other_buy, &sell]).unwrap();
         let collateral = debits
             .iter()
-            .find(|debit| {
-                debit["asset"]["asset"] == format!("{:#x}", crate::polymarket::eip712::PUSD)
-            })
+            .find(|debit| debit.asset.asset == format!("{:#x}", crate::polymarket::eip712::PUSD))
             .unwrap();
-        assert_eq!(collateral["amount"], "15000000");
-        assert_eq!(collateral["asset"]["chain"], "evm-137");
+        assert_eq!(collateral.amount, "15000000");
+        assert_eq!(collateral.asset.chain, "evm-137");
         let shares = debits
             .iter()
-            .find(|debit| {
-                debit["asset"]["asset"] != format!("{:#x}", crate::polymarket::eip712::PUSD)
-            })
+            .find(|debit| debit.asset.asset != format!("{:#x}", crate::polymarket::eip712::PUSD))
             .unwrap();
-        assert_eq!(shares["amount"], "2000000");
+        assert_eq!(shares.amount, "2000000");
         assert_eq!(
-            shares["asset"]["asset"],
+            shares.asset.asset,
             format!("erc1155:{:#x}:42", crate::polymarket::eip712::CTF)
         );
     }
 
     #[test]
     fn generic_effects_bind_each_payload_and_keep_credentials_out_of_budget_sessions() {
-        let effects = economic_effects("polymarket.order.poly1271", 2);
+        struct Route;
+        impl petal::RouteIdentity for Route {
+            const PATH: &'static str = "trade/[wallet]/[index]/submit";
+            const CANONICAL_PATH: &'static str = "trade/[wallet]/[index]/submit";
+            const PARAMS: &'static [(&'static str, usize)] = &[];
+        }
+        let ctx = petal::Ctx::bind::<Route>(petal::RawCtx {
+            petal_root: "polymarket".into(),
+            package_hash: "ab".repeat(32),
+            path: "trade/main/0/submit".into(),
+            params: vec![("bloom.route_id".into(), "r000001".into())],
+            actor: None,
+        });
+        let first = prepared_order(0, 10_000_000);
+        let second = prepared_order(0, 5_000_000);
+        let payloads = [&first, &second]
+            .iter()
+            .map(|p| petal::PayloadSignItem {
+                preimage: p.signing_preimage().unwrap(),
+                claimed_hash: p.hash().unwrap().into(),
+            })
+            .collect::<Vec<_>>();
+        let claim = batch_claim(
+            &ctx,
+            "polymarket.order.poly1271",
+            &payloads,
+            &[&first, &second],
+        )
+        .unwrap();
+        let typed: bloom_broker_api::PetalUseClaim = serde_json::from_slice(&claim).unwrap();
+        assert_eq!(typed.declared_debits[0].amount.as_str(), "15000000");
+        assert_eq!(
+            typed
+                .economic_effects
+                .as_ref()
+                .unwrap()
+                .payload_contexts
+                .len(),
+            2
+        );
+        assert!(
+            typed
+                .economic_effects
+                .as_ref()
+                .unwrap()
+                .payload_contexts
+                .iter()
+                .all(|c| c.spending_accounts.is_empty())
+        );
+        let claim: serde_json::Value = serde_json::from_slice(&claim).unwrap();
+        assert_eq!(claim["declared_debits"][0]["amount"], "15000000");
+        let effects = &claim["economic_effects"];
         assert_eq!(effects["schema_version"], 1);
         assert_eq!(effects["permission_effect"], "none");
         assert_eq!(
@@ -631,7 +638,10 @@ mod tests {
         );
         for class in ["polymarket.auth", "unknown.operation"] {
             assert_eq!(
-                economic_effects(class, 1)["permission_effect"],
+                serde_json::from_slice::<serde_json::Value>(
+                    &batch_claim(&ctx, class, &payloads[..1], &[&first]).unwrap()
+                )
+                .unwrap()["economic_effects"]["permission_effect"],
                 "requires_separate_approval"
             );
             assert!(order_debits(class, &[]).unwrap().is_empty());

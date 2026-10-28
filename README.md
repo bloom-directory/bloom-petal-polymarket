@@ -144,3 +144,19 @@ login, wallet setup, fees, funding and withdrawals do not inherit the BUY scope.
 Without a matching session, orders retain exact owner review. A published,
 installer-certified package identity is required before default onboarding can
 use this candidate; a local build is not a released default package.
+
+### Shared reusable-signing effects
+
+The route uses `petal::effects` for typed debit declarations, canonical claim
+serialization and exact package/route/payload bindings. The Polymarket adapter
+retains protocol-specific order reconstruction, signed-preimage checks and
+gross collateral/share calculations. This removes claim-envelope duplication;
+it does not make generic declarations proof of economic effects.
+
+Automatic onboarding discovers Broker-supported operation profiles through
+installer-certified route/effects declarations. The BUY profile remains
+fee-free and collateral-bounded; SELL, builder fees, credentials, delegation
+and on-chain approvals retain their existing separate review. Upgrades to
+shared accounting/retry infrastructure do not require copying that machinery
+into this route or other Petals. A new Polymarket signing format still requires
+an adapter update and its signed-byte tests.
