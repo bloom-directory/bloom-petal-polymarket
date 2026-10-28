@@ -68,6 +68,19 @@ pub fn post_trade_draft(
             Ok(inputs) => inputs,
             Err(resp) => return resp,
         };
+    // The live checks just run must enable this post on their own; the final
+    // review alone cannot.
+    if policy_check
+        .get("posting_enabled")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        let reason = policy_check
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("posting is not enabled");
+        return error(-3, format!("live post checks refuse this post: {reason}"));
+    }
     let policy_warn = policy_check
         .get("policy_warn")
         .and_then(serde_json::Value::as_bool)

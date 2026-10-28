@@ -3,7 +3,6 @@ use crate::prelude::*;
 use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{OrderType, format_micro};
 use crate::polymarket::{Result, Side, validate_wallet_name};
-use crate::trade_flow_parts::policy::enable_trade_posting;
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
@@ -196,20 +195,25 @@ pub fn revalidate_trade_draft(
             &draft.token_id,
             draft.size_micro,
             draft.neg_risk,
-        ) {
-            Ok(preflight) => {
-                enable_trade_posting(
-                    &mut policy_check,
-                    "sell can be posted after final review because chain CTF balance and approval checks passed",
-                );
-                Some(preflight)
-            }
+        )
+        .and_then(|preflight| {
+            enable_sell_posting(&mut policy_check, &draft, funder, &preflight)?;
+            Ok(preflight)
+        }) {
+            Ok(preflight) => Some(preflight),
             Err(resp) => {
+                // A failed read is not a decision about this draft. Keep the
+                // stored draft and approval available for a fresh retry.
+                if matches!(&resp, DispatchResponse::Error { code: -4, .. }) {
+                    return resp;
+                }
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
                     Err(_) => return error(-4, "failed to clear stale review intent"),
                 }
-                draft.status = "preflight_denied".into();
+                // A genuine refusal invalidates review, but settlement or an
+                // operator approval can make this same draft valid later.
+                draft.status = "review".into();
                 if let DispatchResponse::Error { .. } =
                     store_put_json(&format!("{base}/order.json"), &draft, false)
                 {
@@ -379,10 +383,7 @@ pub fn refresh_trade_post_inputs(
             draft.size_micro,
             draft.neg_risk,
         )?;
-        enable_trade_posting(
-            &mut policy_check,
-            "sell can be posted after final review because chain CTF balance and approval checks passed",
-        );
+        enable_sell_posting(&mut policy_check, draft, funder, &preflight)?;
         Some(preflight)
     } else {
         None
@@ -454,10 +455,24 @@ pub fn review_intent_matches_draft(
         let Some(fresh) = sell_preflight else {
             return Err("final review field 'sell_preflight' is missing live post evidence".into());
         };
-        if review.get("sell_preflight") != Some(fresh) {
-            return Err(
-                "final review field 'sell_preflight' no longer matches live post inputs".into(),
-            );
+        for field in [
+            "deposit_wallet",
+            "token_id",
+            "requested_size_micro",
+            "clob_balance_micro",
+            "chain_ctf_balance_micro",
+            "ctf_operator",
+            "ctf_approved_for_all",
+        ] {
+            let live = fresh.get(field).filter(|value| !value.is_null());
+            let reviewed = review
+                .get("sell_preflight")
+                .and_then(|value| value.get(field));
+            if live.is_none() || reviewed != live {
+                return Err(format!(
+                    "final review field 'sell_preflight' ({field}) no longer matches live post inputs"
+                ));
+            }
         }
     }
     Ok(())
