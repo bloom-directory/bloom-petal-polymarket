@@ -815,7 +815,15 @@ require_flag_above_usd = "2.05"
         // has since changed, still matches its final review.
         let owner = Address::repeat_byte(0x11);
         let funder = Address::repeat_byte(0x22);
-        let preflight = serde_json::json!({"balance": "5"});
+        let preflight = serde_json::json!({
+            "deposit_wallet": funder.to_checksum(None),
+            "token_id": sell.token_id,
+            "requested_size_micro": sell.size_micro,
+            "clob_balance_micro": 5_000_000,
+            "chain_ctf_balance_micro": 5_000_000,
+            "ctf_operator": crate::polymarket::eip712::CTF_EXCHANGE.to_checksum(None),
+            "ctf_approved_for_all": true
+        });
         let review = serde_json::json!({
             "wallet": sell.wallet,
             "draft_id": sell.id,
@@ -1009,6 +1017,52 @@ mod sell_posting_tests {
             Some(&fresh),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn advisory_sell_reads_do_not_invalidate_owner_review() {
+        let draft = sell_draft();
+        let (policy, preview) = sell_checks(&draft, reads(SIZE, SIZE, true)).unwrap();
+        let stored = review(&draft, &policy, Some(&preview));
+        for holding in [None, Some(0), Some(SIZE * 2)] {
+            let mut changed = reads(SIZE, SIZE, true);
+            changed.data_api_holding_micro = holding;
+            changed.clob_balance_allowance["new_venue_field"] = "ignored".into();
+            let (post_policy, fresh) = sell_checks(&draft, changed).unwrap();
+            review_intent_matches_draft(
+                &stored,
+                &draft,
+                owner(),
+                deposit(),
+                &post_policy,
+                Some(&fresh),
+            )
+            .unwrap();
+        }
+        for field in [
+            "deposit_wallet",
+            "token_id",
+            "requested_size_micro",
+            "clob_balance_micro",
+            "chain_ctf_balance_micro",
+            "ctf_operator",
+            "ctf_approved_for_all",
+        ] {
+            let mut missing = preview.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                review_intent_matches_draft(
+                    &stored,
+                    &draft,
+                    owner(),
+                    deposit(),
+                    &policy,
+                    Some(&missing),
+                )
+                .is_err(),
+                "{field}"
+            );
+        }
     }
 
     #[test]

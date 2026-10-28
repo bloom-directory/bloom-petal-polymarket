@@ -203,11 +203,15 @@ pub fn revalidate_trade_draft(
         }) {
             Ok(preflight) => Some(preflight),
             Err(resp) => {
+                // Read failures leave the persisted draft and approval retryable.
+                if matches!(&resp, DispatchResponse::Error { code: -4, .. }) {
+                    return resp;
+                }
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
                     Err(_) => return error(-4, "failed to clear stale review intent"),
                 }
-                draft.status = "preflight_denied".into();
+                draft.status = "review".into();
                 if let DispatchResponse::Error { .. } =
                     store_put_json(&format!("{base}/order.json"), &draft, false)
                 {
@@ -462,10 +466,24 @@ pub fn review_intent_matches_draft(
         let Some(fresh) = sell_preflight else {
             return Err("final review field 'sell_preflight' is missing live post evidence".into());
         };
-        if review.get("sell_preflight") != Some(fresh) {
-            return Err(
-                "final review field 'sell_preflight' no longer matches live post inputs".into(),
-            );
+        for field in [
+            "deposit_wallet",
+            "token_id",
+            "requested_size_micro",
+            "clob_balance_micro",
+            "chain_ctf_balance_micro",
+            "ctf_operator",
+            "ctf_approved_for_all",
+        ] {
+            let live = fresh.get(field).filter(|value| !value.is_null());
+            let reviewed = review
+                .get("sell_preflight")
+                .and_then(|value| value.get(field));
+            if live.is_none() || reviewed != live {
+                return Err(format!(
+                    "final review field 'sell_preflight' ({field}) no longer matches live post inputs"
+                ));
+            }
         }
     }
     Ok(())
