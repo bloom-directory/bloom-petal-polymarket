@@ -122,6 +122,32 @@ pub fn sign_action(
     action: &petal::signing::PreparedAction,
     operation_key: &str,
 ) -> Result<Vec<u8>, DispatchResponse> {
+    sign_action_for(ctx, wallet, action, operation_key, None)
+}
+
+pub fn operation_identity(key: &str, class: &str, attempt: Option<&str>) -> String {
+    match attempt {
+        Some(attempt) => format!("{key}:{class}:{attempt}"),
+        None => format!("{key}:{class}"),
+    }
+}
+
+pub fn relayer_attempt(prepared: &PreparedSigning) -> Result<String, DispatchResponse> {
+    prepared
+        .preimage
+        .get("nonce")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n.to_string())
+        .ok_or_else(|| error(-4, "prepared relayer batch is missing nonce"))
+}
+
+pub fn sign_action_for(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    action: &petal::signing::PreparedAction,
+    operation_key: &str,
+    attempt: Option<&str>,
+) -> Result<Vec<u8>, DispatchResponse> {
     // Old hints belong to the previous package and must never be reinterpreted
     // as authority by this one. Leave them inspectable for the old build.
     match petal::sdk::store_get(operation_key, MAX_STORE_BYTES) {
@@ -134,7 +160,7 @@ pub fn sign_action(
         Err(SdkError::Host(HostStatus::NotFound)) => (),
         Err(e) => return Err(sdk_error(e)),
     }
-    let key = format!("{}:{}", operation_key, action.operation_class);
+    let key = operation_identity(operation_key, &action.operation_class, attempt);
     match petal::signing::sign(ctx, wallet, action, &key) {
         Ok(petal::signing::SigningOutcome::Signed { signature }) => Ok(signature),
         Ok(petal::signing::SigningOutcome::ApprovalPending { action_id, .. }) => Err(error(
@@ -156,7 +182,17 @@ pub fn sign_prepared(
     prepared: &PreparedSigning,
     operation_key: &str,
 ) -> Result<Vec<u8>, DispatchResponse> {
-    sign_action(ctx, wallet, &action_for_prepared(prepared)?, operation_key)
+    let attempt = match prepared.intent.as_str() {
+        "polymarket.relayer_batch" | "polymarket.onboard" => Some(relayer_attempt(prepared)?),
+        _ => None,
+    };
+    sign_action_for(
+        ctx,
+        wallet,
+        &action_for_prepared(prepared)?,
+        operation_key,
+        attempt.as_deref(),
+    )
 }
 
 /// Read-only projection of Machine's operation state. Legacy artifacts remain
@@ -165,7 +201,7 @@ pub fn approval_projection(
     ctx: &petal::Ctx,
     wallet: &str,
     key: &str,
-    classes: &[&str],
+    operations: &[String],
 ) -> Result<Option<serde_json::Value>, DispatchResponse> {
     match petal::sdk::store_get(key, MAX_STORE_BYTES) {
         Ok(bytes) => {
@@ -176,8 +212,8 @@ pub fn approval_projection(
         Err(SdkError::Host(HostStatus::NotFound)) => (),
         Err(e) => return Err(sdk_error(e)),
     }
-    for class in classes {
-        match petal::signing::status(ctx, wallet, &format!("{key}:{class}")) {
+    for operation in operations {
+        match petal::signing::status(ctx, wallet, operation) {
             Ok(petal::signing::SigningOutcome::ApprovalPending {
                 action_id,
                 expires_ms,
@@ -199,4 +235,48 @@ pub fn approval_projection(
         }
     }
     Ok(None)
+}
+
+/// Locate the current relayer operation from its durable domain record.
+pub fn relayer_operation(key: &str, prepared_key: &str) -> Result<Vec<String>, DispatchResponse> {
+    match load_prepared_signing(prepared_key)? {
+        Some(prepared) => Ok(vec![operation_identity(
+            key,
+            &prepared.intent,
+            Some(&relayer_attempt(&prepared)?),
+        )]),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn relayer_nonce_identifies_a_durable_attempt() {
+        let prepared = |nonce| {
+            PreparedSigning::new(
+                "relayer",
+                "polymarket.relayer_batch",
+                Address::repeat_byte(1),
+                vec![1],
+                alloy::primitives::keccak256([1]),
+                serde_json::json!({"nonce": nonce}),
+            )
+        };
+        let first = prepared(8);
+        let reloaded: PreparedSigning =
+            serde_json::from_slice(&serde_json::to_vec(&first).unwrap()).unwrap();
+        let key = "actions/test/withdraw/approval.json";
+        let identity = |p: &PreparedSigning| {
+            operation_identity(key, &p.intent, Some(&relayer_attempt(p).unwrap()))
+        };
+        assert_eq!(identity(&first), identity(&reloaded));
+        assert_ne!(identity(&first), identity(&prepared(9)));
+        let malformed = PreparedSigning {
+            preimage: serde_json::json!({}),
+            ..first
+        };
+        assert!(relayer_attempt(&malformed).is_err());
+    }
 }

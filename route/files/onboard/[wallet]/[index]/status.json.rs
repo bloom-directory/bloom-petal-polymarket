@@ -21,7 +21,8 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         }),
     };
     status["approvals"]["preview_path"] = serde_json::json!(format!("onboard/{wallet}/{account}/approvals.json"));
-    let approval_pending = match crate::approval::approval_projection(ctx, wallet, &crate::onboarding::approval_key(wallet), &["polymarket.clob_auth.v1", "polymarket.onboard"]) {
+    let operations = match crate::onboarding::approval_operations(wallet) { Ok(value) => value, Err(resp) => return resp };
+    let approval_pending = match crate::approval::approval_projection(ctx, wallet, &crate::onboarding::approval_key(wallet), &operations) {
         Ok(value) => value.is_some(),
         Err(response) => return response,
     };

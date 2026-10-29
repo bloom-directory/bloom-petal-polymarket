@@ -256,13 +256,9 @@ pub fn relayer_batch_body(
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
     if prepared_relayer_batch_expired(&prepared, now_secs())? {
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
-        let _ = petal::sdk::store_del(&format!(
-            "creds/onboard/{wallet}/prepared_relayer_signature.json"
-        ));
         return Err(error(
-            -2,
-            "prepared onboarding approval signature expired; retry onboarding to prepare and approve a fresh bounded batch",
+            -3,
+            "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt",
         ));
     }
     let calls_json = prepared
@@ -329,12 +325,10 @@ pub fn prepare_relayer_batch(
     let review_key = format!("onboard/{wallet}/review_relayer_intent.json");
     let existing = match load_prepared_signing(&prepared_key)? {
         Some(prepared) if prepared_relayer_batch_expired(&prepared, now_secs())? => {
-            let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&format!(
-                "creds/onboard/{wallet}/prepared_relayer_signature.json"
+            return Err(error(
+                -3,
+                "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt",
             ));
-            let _ = petal::sdk::store_del(&review_key);
-            None
         }
         other => other,
     };
