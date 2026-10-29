@@ -1,9 +1,8 @@
-use crate::approval::order_from_prepared;
 use crate::prelude::*;
 
 use crate::polymarket::order::{
-    LimitQuote, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
+    LimitQuote, OrderBody, OrderParams, OrderType, PreparedOrder, SIG_TYPE_POLY_1271, build_order,
+    poly1271_digest, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::U256;
@@ -144,20 +143,19 @@ pub fn post_trade_draft(
     };
     let prepared_key = format!("{base}/prepared_signing.json");
     let approval_key = format!("{base}/approval.json");
-    let (order, prepared) = match load_prepared_signing(&prepared_key) {
-        Ok(Some(prepared)) => {
-            if prepared.operation != "order" || prepared.owner != owner.to_checksum(None) {
-                return error(-4, "prepared order does not match wallet");
+    let record: PreparedOrder = match petal::sdk::store_get(&prepared_key, MAX_STORE_BYTES) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(record) => record,
+            Err(_) => {
+                return error(
+                    -4,
+                    "legacy or corrupt prepared order; reconcile with the original package",
+                );
             }
-            let order = match order_from_prepared(&prepared.preimage) {
-                Ok(order) => order,
-                Err(resp) => return resp,
-            };
-            (order, prepared)
-        }
-        Ok(None) => {
+        },
+        Err(SdkError::Host(HostStatus::NotFound)) => {
             let timestamp_ms = match petal::sdk::try_now_ms() {
-                Ok(timestamp_ms) => timestamp_ms,
+                Ok(value) => value,
                 Err(err) => return sdk_error_with_context("read order timestamp", err),
             };
             let order = build_order(
@@ -176,53 +174,40 @@ pub fn post_trade_draft(
                 },
                 timestamp_ms,
             );
-            let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
-            let prepared = PreparedSigning::new(
-                "order",
-                "polymarket.order.poly1271",
+            let record = PreparedOrder {
+                version: 1,
+                order,
                 owner,
-                poly1271_signing_preimage(&order, chain_id, draft.neg_risk),
-                digest,
-                serde_json::json!({
-                    "draft_id": id,
-                    "owner": owner.to_checksum(None),
-                    "funder": funder.to_checksum(None),
-                    "token_id": order.tokenId.to_string(),
-                    "salt": order.salt.to_string(),
-                    "maker_amount": order.makerAmount.to_string(),
-                    "taker_amount": order.takerAmount.to_string(),
-                    "side": order.side,
-                    "signature_type": order.signatureType,
-                    "timestamp_ms": order.timestamp.to_string(),
-                    "neg_risk": draft.neg_risk,
-                    "chain_id": chain_id,
-                    "review_intent_hash": review_intent_hash,
-                    "policy_warnings_acknowledged": req.acknowledge_warnings,
-                }),
-            );
-            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
-                return resp;
+                funder,
+                chain_id,
+                neg_risk: draft.neg_risk,
+                draft_id: id.into(),
+                review_intent_hash: review_intent_hash.clone(),
+                policy_warnings_acknowledged: req.acknowledge_warnings,
+            };
+            if let Err(err) = record.validate(owner, funder, chain_id) {
+                return polymarket_error(err);
             }
-            (order, prepared)
+            if let DispatchResponse::Error { code, message } =
+                store_put_json(&prepared_key, &record, false)
+            {
+                return error(code, message);
+            }
+            record
         }
-        Err(resp) => return resp,
+        Err(err) => return sdk_error(err),
     };
-    if prepared
-        .preimage
-        .get("review_intent_hash")
-        .and_then(serde_json::Value::as_str)
-        != Some(review_intent_hash.as_str())
+    if let Err(err) = record.validate(owner, funder, chain_id) {
+        return polymarket_error(err);
+    }
+    if record.draft_id != id
+        || record.neg_risk != draft.neg_risk
+        || record.review_intent_hash != review_intent_hash
+        || record.policy_warnings_acknowledged != req.acknowledge_warnings
     {
         return error(-4, "prepared order does not match final review intent");
     }
-    if prepared
-        .preimage
-        .get("chain_id")
-        .and_then(serde_json::Value::as_u64)
-        != Some(chain_id)
-    {
-        return error(-4, "prepared order does not match configured chain");
-    }
+    let order = &record.order;
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -230,7 +215,7 @@ pub fn post_trade_draft(
     draft.salt = Some(salt);
     draft.status = "signing_prepared".into();
     draft.last_error = None;
-    let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
+    let digest = poly1271_digest(order, chain_id, draft.neg_risk);
     let digest_hash = blake3_hex(digest.as_slice());
     if let DispatchResponse::Error { .. } =
         store_put_json(&format!("{base}/order.json"), &draft, false)
@@ -255,16 +240,19 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
+    let action = match record.action(owner, funder, chain_id) {
+        Ok(action) => action,
+        Err(resp) => return resp,
+    };
+    let inner_sig = match crate::approval::sign_action(ctx, wallet, &action, &approval_key) {
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let signature = match wrap_poly1271_signature(&order, &inner_sig, chain_id, draft.neg_risk) {
+    let signature = match wrap_poly1271_signature(order, &inner_sig, chain_id, draft.neg_risk) {
         Ok(signature) => signature,
         Err(e) => return polymarket_error(e),
     };
-    let order_body = match OrderBody::from_signed(&order, &signature, &creds.key, draft.order_type)
-    {
+    let order_body = match OrderBody::from_signed(order, &signature, &creds.key, draft.order_type) {
         Ok(body) => body,
         Err(e) => return polymarket_error(e),
     };
@@ -330,7 +318,6 @@ pub fn post_trade_draft(
                 return error(-4, "failed to store receipt");
             }
             let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&approval_key);
             draft.status =
                 if clob_status_excluded_from_daily_cap(status.as_str(), Some(draft.order_type)) {
                     "rejected".into()
@@ -379,7 +366,6 @@ pub fn post_trade_draft(
                 return error(-4, "failed to persist rejected order state");
             }
             let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&approval_key);
             error(-3, "CLOB rejected the order; rejected receipt written")
         }
         Err(resp) => {

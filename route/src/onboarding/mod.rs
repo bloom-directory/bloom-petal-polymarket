@@ -113,7 +113,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
             "review_intent_hash": review_hash,
         }),
     );
-    let signature = match sign_prepared_reusable(ctx, wallet, &prepared, &approval_key) {
+    let signature = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
         Ok(signature) => format!("0x{}", hex::encode(signature)),
         Err(resp) => return resp,
     };
@@ -140,7 +140,6 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         let _ = store_put_json(&login_retry_key(wallet), &retry_after_ms, false);
         return login_failed_after_signing(response, retry_after_ms);
     }
-    let _ = petal::sdk::store_del(&approval_key);
     DispatchResponse::Write
 }
 
@@ -163,21 +162,6 @@ pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Disp
             }
             Err(error) => return sdk_error(error),
         };
-    // Retire only a stale CLOB approval. An exact deposit-wallet approval must
-    // survive retries of this continuation.
-    let key = approval_key(wallet);
-    let stale = match pending_approval_selector(&key) {
-        Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
-        Err(response) => return response,
-    };
-    if stale {
-        for key in [key, format!("onboard/{wallet}/review_intent.json")] {
-            match petal::sdk::store_del(&key) {
-                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                Err(error) => return sdk_error(error),
-            }
-        }
-    }
     let config = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config,
         Err(response) => return response,

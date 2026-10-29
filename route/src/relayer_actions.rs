@@ -277,7 +277,7 @@ fn execute(
                 {
                     return error(-4, "failed to persist relayer action receipt");
                 }
-                for key in [&prepared_key, &review_key, &approval_key, &progress_key] {
+                for key in [&prepared_key, &review_key, &progress_key] {
                     match petal::sdk::store_del(key) {
                         Ok(())
                         | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}

@@ -41,7 +41,7 @@ use crate::polymarket::{PolymarketError, Result};
 mod sol_defs {
     alloy::sol! {
         /// Polymarket CTF Exchange order struct.
-        #[derive(Debug, PartialEq)]
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
         struct Order {
             uint256 salt;
             address maker;
@@ -58,6 +58,102 @@ mod sol_defs {
     }
 }
 pub use sol_defs::Order;
+
+/// Durable order input. The generated order contains every signed field, including
+/// metadata and builder; those fields must never be reconstructed from a witness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreparedOrder {
+    pub version: u8,
+    pub order: Order,
+    pub owner: Address,
+    pub funder: Address,
+    pub chain_id: u64,
+    pub neg_risk: bool,
+    pub draft_id: String,
+    pub review_intent_hash: String,
+    pub policy_warnings_acknowledged: bool,
+}
+
+impl PreparedOrder {
+    pub fn validate(&self, owner: Address, funder: Address, chain_id: u64) -> Result<()> {
+        let o = &self.order;
+        // POLY_1271 signs for a deposit wallet: both maker and signer are the
+        // funder, while the EOA owner signs the wrapping payload.
+        if self.version != 1
+            || self.chain_id != crate::polymarket::POLYGON
+            || self.chain_id != chain_id
+            || self.owner != owner
+            || self.funder != funder
+            || o.maker != funder
+            || o.signer != funder
+            || owner == Address::ZERO
+            || funder == Address::ZERO
+            || o.signatureType != SIG_TYPE_POLY_1271
+            || o.side > 1
+            || o.makerAmount == U256::ZERO
+            || o.takerAmount == U256::ZERO
+            || o.metadata != B256::ZERO
+            || o.builder != B256::ZERO
+        {
+            return Err(PolymarketError::invalid(
+                "unsupported or invalid prepared order",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Derive signing bytes, Broker witness and debit from one validated order.
+    pub fn action(
+        &self,
+        owner: Address,
+        funder: Address,
+        chain_id: u64,
+    ) -> std::result::Result<petal::signing::PreparedAction, petal::sdk::DispatchResponse> {
+        self.validate(owner, funder, chain_id)
+            .map_err(crate::prelude::polymarket_error)?;
+        let preimage = poly1271_signing_preimage(&self.order, self.chain_id, self.neg_risk);
+        let prepared = crate::approval::PreparedSigning::new(
+            "order",
+            "polymarket.order.poly1271",
+            self.owner,
+            preimage.clone(),
+            alloy::primitives::keccak256(&preimage),
+            self.review_witness(),
+        );
+        let action = crate::approval::action_for_prepared(&prepared)?;
+        let spend = match self.order.side {
+            0 => petal::signing::Spend::erc20(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::PUSD),
+                self.order.makerAmount.to_string(),
+            ),
+            1 => petal::signing::Spend::erc1155(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::CTF),
+                self.order.tokenId.to_string(),
+                self.order.makerAmount.to_string(),
+            ),
+            _ => return Err(crate::prelude::error(-4, "unsupported order side")),
+        }
+        .map_err(|e| crate::prelude::error(-4, e.to_string()))?;
+        Ok(action.with_spend(spend))
+    }
+
+    /// Compatibility witness consumed by the current Broker order verifier.
+    pub fn review_witness(&self) -> serde_json::Value {
+        let o = &self.order;
+        serde_json::json!({
+            "draft_id": self.draft_id, "owner": self.owner.to_checksum(None),
+            "funder": self.funder.to_checksum(None), "token_id": o.tokenId.to_string(),
+            "salt": o.salt.to_string(), "maker_amount": o.makerAmount.to_string(),
+            "taker_amount": o.takerAmount.to_string(), "side": o.side,
+            "signature_type": o.signatureType, "timestamp_ms": o.timestamp.to_string(),
+            "neg_risk": self.neg_risk, "chain_id": self.chain_id,
+            "review_intent_hash": self.review_intent_hash,
+            "policy_warnings_acknowledged": self.policy_warnings_acknowledged,
+        })
+    }
+}
 
 /// One USD / one share in 6-dp fixed point.
 pub const MICRO: u64 = 1_000_000;
@@ -664,6 +760,189 @@ impl OrderBody {
 mod tests {
     use super::*;
     use alloy::primitives::address;
+
+    fn prepared_order_fixture() -> PreparedOrder {
+        let funder = Address::repeat_byte(2);
+        PreparedOrder {
+            version: 1,
+            order: Order {
+                salt: U256::from(7),
+                maker: funder,
+                signer: funder,
+                tokenId: U256::from(42),
+                makerAmount: U256::from(10_000_000),
+                takerAmount: U256::from(20_000_000),
+                side: 0,
+                signatureType: SIG_TYPE_POLY_1271,
+                timestamp: U256::from(123),
+                metadata: B256::ZERO,
+                builder: B256::ZERO,
+            },
+            owner: Address::repeat_byte(1),
+            funder,
+            chain_id: crate::polymarket::POLYGON,
+            neg_risk: false,
+            draft_id: "d1".into(),
+            review_intent_hash: "review".into(),
+            policy_warnings_acknowledged: true,
+        }
+    }
+
+    #[test]
+    fn prepared_order_round_trip_retains_signed_fields_and_action() {
+        let record = prepared_order_fixture();
+        let round: PreparedOrder =
+            serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
+        assert_eq!(round.order, record.order);
+        assert_eq!(
+            round
+                .action(round.owner, round.funder, round.chain_id)
+                .unwrap(),
+            record
+                .action(record.owner, record.funder, record.chain_id)
+                .unwrap()
+        );
+        let action = round
+            .action(round.owner, round.funder, round.chain_id)
+            .unwrap();
+        assert_eq!(
+            action.payload.preimage,
+            poly1271_signing_preimage(&round.order, round.chain_id, round.neg_risk)
+        );
+        assert_eq!(
+            action.payload.hash.as_slice(),
+            poly1271_digest(&round.order, round.chain_id, round.neg_risk).as_slice()
+        );
+        assert_eq!(round.review_witness()["maker_amount"], "10000000");
+    }
+    #[test]
+    fn prepared_order_sell_debits_shares() {
+        let mut r = prepared_order_fixture();
+        r.order.side = 1;
+        let action = r.action(r.owner, r.funder, r.chain_id).unwrap();
+        assert_eq!(
+            action.spend,
+            petal::signing::Spend::erc1155(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::CTF),
+                "42",
+                "10000000"
+            )
+            .unwrap()
+        );
+    }
+    #[test]
+    fn prepared_order_buy_debits_collateral() {
+        let r = prepared_order_fixture();
+        assert_eq!(
+            r.action(r.owner, r.funder, r.chain_id).unwrap().spend,
+            petal::signing::Spend::erc20(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::PUSD),
+                "10000000"
+            )
+            .unwrap()
+        );
+    }
+    macro_rules! rejects_prepared {
+        ($name:ident, $mutation:expr) => {
+            #[test]
+            fn $name() {
+                let mut r = prepared_order_fixture();
+                $mutation(&mut r);
+                assert!(
+                    r.action(r.owner, r.funder, crate::polymarket::POLYGON)
+                        .is_err()
+                );
+            }
+        };
+    }
+    rejects_prepared!(rejects_nonzero_metadata, |r: &mut PreparedOrder| r
+        .order
+        .metadata =
+        B256::repeat_byte(1));
+    rejects_prepared!(rejects_nonzero_builder, |r: &mut PreparedOrder| r
+        .order
+        .builder =
+        B256::repeat_byte(1));
+    rejects_prepared!(rejects_unknown_version, |r: &mut PreparedOrder| r.version =
+        2);
+    rejects_prepared!(rejects_wrong_chain, |r: &mut PreparedOrder| r.chain_id = 1);
+    rejects_prepared!(rejects_invalid_side, |r: &mut PreparedOrder| r.order.side =
+        2);
+    rejects_prepared!(rejects_wrong_signature_type, |r: &mut PreparedOrder| r
+        .order
+        .signatureType =
+        0);
+    rejects_prepared!(rejects_zero_maker_amount, |r: &mut PreparedOrder| r
+        .order
+        .makerAmount =
+        U256::ZERO);
+    rejects_prepared!(rejects_zero_taker_amount, |r: &mut PreparedOrder| r
+        .order
+        .takerAmount =
+        U256::ZERO);
+    rejects_prepared!(rejects_wrong_maker, |r: &mut PreparedOrder| r.order.maker =
+        Address::repeat_byte(3));
+    rejects_prepared!(rejects_wrong_signer, |r: &mut PreparedOrder| r
+        .order
+        .signer =
+        Address::repeat_byte(3));
+    #[test]
+    fn prepared_order_rejects_wrong_account() {
+        let r = prepared_order_fixture();
+        assert!(
+            r.action(Address::repeat_byte(4), r.funder, r.chain_id)
+                .is_err()
+        );
+        assert!(
+            r.action(r.owner, Address::repeat_byte(4), r.chain_id)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn prepared_action_binds_order_and_review_fields() {
+        let r = prepared_order_fixture();
+        let original = r.action(r.owner, r.funder, r.chain_id).unwrap();
+        let mut changes = Vec::new();
+        let mut v = r.clone();
+        v.order.salt += U256::from(1);
+        changes.push(v);
+        let mut v = r.clone();
+        v.order.timestamp += U256::from(1);
+        changes.push(v);
+        let mut v = r.clone();
+        v.order.tokenId += U256::from(1);
+        changes.push(v);
+        let mut v = r.clone();
+        v.order.makerAmount += U256::from(1);
+        changes.push(v);
+        let mut v = r.clone();
+        v.order.takerAmount += U256::from(1);
+        changes.push(v);
+        let mut v = r.clone();
+        v.order.side = 1;
+        changes.push(v);
+        let mut v = r.clone();
+        v.neg_risk = true;
+        changes.push(v);
+        let mut v = r.clone();
+        v.review_intent_hash = "other".into();
+        changes.push(v);
+        let mut v = r.clone();
+        v.draft_id = "other".into();
+        changes.push(v);
+        for v in changes {
+            assert_ne!(original, v.action(v.owner, v.funder, v.chain_id).unwrap());
+        }
+    }
+    #[test]
+    fn prepared_order_rejects_overflow_deserialization() {
+        let mut json = serde_json::to_value(prepared_order_fixture()).unwrap();
+        json["order"]["makerAmount"] = serde_json::json!(format!("0x1{}", "0".repeat(64)));
+        assert!(serde_json::from_value::<PreparedOrder>(json).is_err());
+    }
 
     const TICK_TENTH: u64 = 100_000;
     const TICK_HUNDREDTH: u64 = 10_000;

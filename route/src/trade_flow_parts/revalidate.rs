@@ -34,19 +34,10 @@ pub fn revalidate_trade_draft(
         Err(resp) => return resp,
     };
     if draft.status == "signing_prepared" {
-        for suffix in [
-            "prepared_signing.json",
-            "approval.json",
-            "post_attempt.json",
-        ] {
-            match petal::sdk::store_del(&format!("{base}/{suffix}")) {
-                Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
-                Err(err) => return sdk_error(err),
-            }
-        }
-        draft.status = "review".into();
-        draft.salt = None;
-        draft.last_error = None;
+        return error(
+            -3,
+            "this draft has a frozen signing operation; reconcile it before creating a new draft",
+        );
     } else if draft.status != "review" && draft.status != "revalidated" {
         return error(
             -3,

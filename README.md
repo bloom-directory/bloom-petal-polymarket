@@ -160,3 +160,20 @@ and on-chain approvals retain their existing separate review. Upgrades to
 shared accounting/retry infrastructure do not require copying that machinery
 into this route or other Petals. A new Polymarket signing format still requires
 an adapter update and its signed-byte tests.
+
+### Prepared signing migration
+
+Order signing persists a version 1 typed `PreparedOrder` before requesting
+signature. Its complete signed order, owner, funder, chain, market kind, draft
+and review-intent binding are checked again on every retry. The stored alloy
+integer representation is hexadecimal; the Broker compatibility witness still
+uses the prior decimal-string fields, so its signed-byte and debit format is
+unchanged. Metadata and builder attribution must be zero. BUY declares the
+maker amount of pUSD; SELL declares the maker amount of conditional tokens.
+
+The Petal constructs the order, witness and debit and owns venue submission and
+reconciliation. The SDK owns action encoding; Machine owns the durable signing
+operation, approval selection and result validation. Existing pre-migration
+prepared records and approval hints are not converted: reconcile them with the
+original package. A draft whose signing operation is frozen cannot be
+revalidated into a different order; create a new draft after reconciliation.

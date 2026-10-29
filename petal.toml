@@ -13,7 +13,7 @@ outputs = ["petal/polymarket"]
 summary = "Expose Polymarket market reads, onboarding, account views, funding drafts, and trade draft/post/cancel flows as a Petal."
 
 [caps]
-allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:vfs.write"]
+allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:sign.status", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:vfs.write"]
 
 [[net.allow]]
 binding = "gamma"
