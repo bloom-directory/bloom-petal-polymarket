@@ -145,23 +145,7 @@ Without a matching session, orders retain exact owner review. A published,
 installer-certified package identity is required before default onboarding can
 use this candidate; a local build is not a released default package.
 
-### Shared reusable-signing effects
-
-The route uses `petal::effects` for typed debit declarations, canonical claim
-serialization and exact package/route/payload bindings. The Polymarket adapter
-retains protocol-specific order reconstruction, signed-preimage checks and
-gross collateral/share calculations. This removes claim-envelope duplication;
-it does not make generic declarations proof of economic effects.
-
-Automatic onboarding discovers Broker-supported operation profiles through
-installer-certified route/effects declarations. The BUY profile remains
-fee-free and collateral-bounded; SELL, builder fees, credentials, delegation
-and on-chain approvals retain their existing separate review. Upgrades to
-shared accounting/retry infrastructure do not require copying that machinery
-into this route or other Petals. A new Polymarket signing format still requires
-an adapter update and its signed-byte tests.
-
-### Prepared signing migration
+### Prepared signing
 
 Order signing persists a version 1 typed `PreparedOrder` before requesting
 signature. Its complete signed order, owner, funder, chain, market kind, draft
@@ -172,8 +156,13 @@ unchanged. Metadata and builder attribution must be zero. BUY declares the
 maker amount of pUSD; SELL declares the maker amount of conditional tokens.
 
 The Petal constructs the order, witness and debit and owns venue submission and
-reconciliation. The SDK owns action encoding; Machine owns the durable signing
-operation, approval selection and result validation. Existing pre-migration
+reconciliation. It calls `petal::signing::sign` with a prepared action and a
+stable domain operation key. The SDK owns action encoding; Machine owns claims,
+approval continuation, durable operation identity and signature validation.
+Status routes use the separate read-only signing-status capability. Declaration
+alone does not establish eligibility or prove economic effects: the existing
+Broker verifier still checks the BUY order's signed bytes and collateral debit.
+Other operations retain their existing exact or recognized one-use login scopes. Existing pre-migration
 prepared records and approval hints are not converted: reconcile them with the
 original package. A draft whose signing operation is frozen cannot be
 revalidated into a different order; create a new draft after reconciliation.
