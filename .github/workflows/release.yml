@@ -16,12 +16,12 @@ jobs:
   release:
     # Keep this reference pinned to the full commit SHA that defines the
     # packaging and release contract; do not replace it with a branch or tag.
-    uses: bloom-directory/petal/.github/workflows/release-petal.yml@eab66e03708ff509397f76c7af920bb98e8cd7b1
+    uses: bloom-directory/petal/.github/workflows/release-petal.yml@a285dcd03187e0670722ce37285f6598fd20831d
     with:
       petal-name: polymarket
       # This independently pins the canonical CLI used to build and package the
       # release to the same reviewed tooling commit as `uses:`.
-      petal-tooling-ref: "eab66e03708ff509397f76c7af920bb98e8cd7b1"
+      petal-tooling-ref: "a285dcd03187e0670722ce37285f6598fd20831d"
       build-command: scripts/build.sh
       package-root: .
       expected-route-count: 110
