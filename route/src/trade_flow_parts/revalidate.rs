@@ -184,21 +184,19 @@ pub fn revalidate_trade_draft(
         return error(-3, "Polymarket policy denied; see policy_check.json");
     }
     let sell_preflight = if draft.side == Side::Sell {
-        match verify_sell_preflight(
-            wallet,
-            owner,
-            funder,
-            &draft.token_id,
-            draft.size_micro,
-            draft.neg_risk,
+        match enable_trade_posting(
+            &mut policy_check,
+            verify_sell_preflight(
+                wallet,
+                owner,
+                funder,
+                &draft.token_id,
+                draft.size_micro,
+                draft.neg_risk,
+            ),
+            "sell can be posted after final review because chain CTF balance and approval checks passed",
         ) {
-            Ok(preflight) => {
-                enable_trade_posting(
-                    &mut policy_check,
-                    "sell can be posted after final review because chain CTF balance and approval checks passed",
-                );
-                Some(preflight)
-            }
+            Ok(preflight) => Some(preflight),
             Err(resp) => {
                 match petal::sdk::store_del(&format!("{base}/review_intent.json")) {
                     Ok(()) | Err(SdkError::Host(HostStatus::NotFound)) => {}
@@ -371,18 +369,18 @@ pub fn refresh_trade_post_inputs(
     }
     let sell_preflight = if draft.side == Side::Sell {
         let funder = tradeable_deposit_wallet(wallet, owner)?;
-        let preflight = verify_sell_preflight(
-            wallet,
-            owner,
-            funder,
-            &draft.token_id,
-            draft.size_micro,
-            draft.neg_risk,
-        )?;
-        enable_trade_posting(
+        let preflight = enable_trade_posting(
             &mut policy_check,
+            verify_sell_preflight(
+                wallet,
+                owner,
+                funder,
+                &draft.token_id,
+                draft.size_micro,
+                draft.neg_risk,
+            ),
             "sell can be posted after final review because chain CTF balance and approval checks passed",
-        );
+        )?;
         Some(preflight)
     } else {
         None

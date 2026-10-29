@@ -7,12 +7,20 @@ use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn enable_trade_posting(policy_check: &mut serde_json::Value, reason: &str) {
+pub fn enable_trade_posting(
+    policy_check: &mut serde_json::Value,
+    preflight: Result<serde_json::Value, DispatchResponse>,
+    reason: &str,
+) -> Result<serde_json::Value, DispatchResponse> {
+    let preflight = preflight?;
     if let Some(map) = policy_check.as_object_mut() {
         map.insert("status".into(), serde_json::json!("approved"));
         map.insert("can_post".into(), serde_json::json!(true));
+        map.insert("signing_enabled".into(), serde_json::json!(true));
+        map.insert("posting_enabled".into(), serde_json::json!(true));
         map.insert("approval_reason".into(), serde_json::json!(reason));
     }
+    Ok(preflight)
 }
 
 fn venue_config_key(wallet: &str) -> String {
@@ -525,4 +533,35 @@ pub fn parse_api_float_micro(value: f64, field: &str) -> Result<u64, DispatchRes
         return Err(error(-4, format!("{field} is not a non-negative number")));
     }
     parse_micro(&format!("{value:.6}")).map_err(|e| error(-4, e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sell_posting_enabled_only_after_successful_preflight() {
+        let blocked = serde_json::json!({"signing_enabled":false,"posting_enabled":false});
+        let mut policy = blocked.clone();
+        let evidence = serde_json::json!({"status":"pass"});
+        assert_eq!(
+            enable_trade_posting(&mut policy, Ok(evidence.clone()), "preflight passed").unwrap(),
+            evidence
+        );
+        assert_eq!(policy["signing_enabled"], true);
+        assert_eq!(policy["posting_enabled"], true);
+        assert_eq!(policy["can_post"], true);
+        for refusal in [
+            "CLOB balance unavailable or insufficient",
+            "CTF balance unavailable or insufficient",
+            "CTF operator approval missing",
+        ] {
+            let mut policy = blocked.clone();
+            assert!(
+                enable_trade_posting(&mut policy, Err(error(-3, refusal)), "preflight passed")
+                    .is_err()
+            );
+            assert_eq!(policy, blocked);
+        }
+    }
 }
