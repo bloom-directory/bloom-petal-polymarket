@@ -243,7 +243,9 @@ mod help_tests {
 
     #[test]
     fn help_names_the_collateral_the_order_spends() {
-        assert!(HELP.contains("pUSD to spend when buying"));
-        assert!(!HELP.contains("USDC to spend"));
+        assert!(HELP.contains("pUSD of shares to buy, before fees"));
+        // A buy pulls amount plus the fee bound, so help must say fees add on.
+        assert!(HELP.contains("fee_cap"));
+        assert!(!HELP.contains("to spend"));
     }
 }
