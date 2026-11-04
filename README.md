@@ -19,8 +19,8 @@ Orders use complete ERC-7739 `TypedDataSign` EIP-712 data through the generic
 builder, is included. The Petal verifies that the generic typed data produces
 the exact protocol digest and verifies the returned signature against the owner.
 
-BUY declares its six-decimal pUSD principal debit on Polygon using the exact
-contract `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb`. SELL leaves spend
+BUY declares its six-decimal pUSD principal plus the validated operator-fee cap
+on Polygon using the exact contract `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb`. SELL leaves spend
 unspecified and requires exact review. Onboarding approvals, funding,
 withdrawals and other continuing permissions also retain exact review.
 Operator trading fees remain bounded and disclosed in the local draft and
@@ -36,8 +36,8 @@ advances the timestamp only after the previous attempt signed or completed.
 Broker trusts the pinned, installer-signed package's declared effects. It binds
 account, network, payload and grant, checks token policy and limits, and reserves
 usage, without a Polymarket-specific verifier. A persona choice alone does not
-activate a grant. Signed principal volume remains reserved after cancellation,
-venue expiry or an unknown submission outcome; rearm preserves prior usage.
+activate a grant. The declared principal plus fee cap remains reserved after
+cancellation, venue expiry or an unknown submission outcome; rearm preserves prior usage.
 
 ## Layout
 

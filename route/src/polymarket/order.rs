@@ -102,12 +102,14 @@ impl PreparedOrder {
         Ok(())
     }
 
-    /// Build standard ERC-7739 typed data and a declared BUY debit.
+    /// Build standard ERC-7739 typed data and declare the BUY principal plus
+    /// the fee cap from the draft's validated market schedule.
     pub fn action(
         &self,
         owner: Address,
         funder: Address,
         chain_id: u64,
+        fee_cap_micro: u64,
     ) -> std::result::Result<petal::signing::PreparedAction, petal::sdk::DispatchResponse> {
         self.validate(owner, funder, chain_id)
             .map_err(crate::prelude::polymarket_error)?;
@@ -124,10 +126,15 @@ impl PreparedOrder {
             ));
         }
         if self.order.side == 0 {
+            let debit = self
+                .order
+                .makerAmount
+                .checked_add(U256::from(fee_cap_micro))
+                .ok_or_else(|| crate::prelude::error(-4, "BUY principal plus fee cap overflows"))?;
             let spend = petal::signing::Spend::erc20(
                 "evm-137",
                 format!("{:#x}", crate::polymarket::eip712::PUSD),
-                self.order.makerAmount.to_string(),
+                debit.to_string(),
             )
             .map_err(|e| crate::prelude::error(-4, e.to_string()))?;
             Ok(action.with_spend(spend))
@@ -790,7 +797,7 @@ mod tests {
         for neg_risk in [false, true] {
             record.neg_risk = neg_risk;
             let action = record
-                .action(record.owner, record.funder, record.chain_id)
+                .action(record.owner, record.funder, record.chain_id, 0)
                 .unwrap();
             assert_eq!(
                 action.payload.preimage,
@@ -831,14 +838,14 @@ mod tests {
         assert_eq!(round.order, record.order);
         assert_eq!(
             round
-                .action(round.owner, round.funder, round.chain_id)
+                .action(round.owner, round.funder, round.chain_id, 0)
                 .unwrap(),
             record
-                .action(record.owner, record.funder, record.chain_id)
+                .action(record.owner, record.funder, record.chain_id, 0)
                 .unwrap()
         );
         let action = round
-            .action(round.owner, round.funder, round.chain_id)
+            .action(round.owner, round.funder, round.chain_id, 0)
             .unwrap();
         assert_eq!(
             action.payload.preimage,
@@ -856,20 +863,63 @@ mod tests {
     fn prepared_order_sell_debits_shares() {
         let mut r = prepared_order_fixture();
         r.order.side = 1;
-        let action = r.action(r.owner, r.funder, r.chain_id).unwrap();
+        let action = r.action(r.owner, r.funder, r.chain_id, 0).unwrap();
         assert_eq!(action.spend, petal::signing::Spend::Unspecified);
     }
     #[test]
     fn prepared_order_buy_debits_collateral() {
         let r = prepared_order_fixture();
         assert_eq!(
-            r.action(r.owner, r.funder, r.chain_id).unwrap().spend,
+            r.action(r.owner, r.funder, r.chain_id, 0).unwrap().spend,
             petal::signing::Spend::erc20(
                 "evm-137",
                 format!("{:#x}", crate::polymarket::eip712::PUSD),
                 "10000000"
             )
             .unwrap()
+        );
+    }
+    #[test]
+    fn prepared_order_buy_debits_principal_plus_nonzero_market_fee_cap() {
+        use crate::polymarket::fees::MarketFee;
+        let r = prepared_order_fixture();
+        let fee = MarketFee::Enabled {
+            fee_type: None,
+            rate_ppm: 70_000,
+            taker_only: true,
+        };
+        let cap = fee
+            .buy_fee_cap(u64::try_from(r.order.makerAmount).unwrap())
+            .unwrap();
+        assert_eq!(cap, 701_000);
+        let action = r.action(r.owner, r.funder, r.chain_id, cap).unwrap();
+        assert_eq!(
+            action.spend,
+            petal::signing::Spend::erc20(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::PUSD),
+                "10701000"
+            )
+            .unwrap()
+        );
+        let principal_only = r.action(r.owner, r.funder, r.chain_id, 0).unwrap();
+        assert_eq!(action.payload, principal_only.payload);
+        assert_eq!(action.review, principal_only.review);
+        assert_ne!(action, principal_only);
+    }
+    #[test]
+    fn prepared_order_buy_rejects_principal_plus_fee_overflow() {
+        let mut r = prepared_order_fixture();
+        r.order.makerAmount = U256::MAX;
+        let err = r.action(r.owner, r.funder, r.chain_id, 1).unwrap_err();
+        assert!(
+            matches!(err, petal::sdk::DispatchResponse::Error { code: -4, message } if message.contains("principal plus fee cap overflows"))
+        );
+        // SELL remains exact and never declares a collateral debit.
+        r.order.side = 1;
+        assert_eq!(
+            r.action(r.owner, r.funder, r.chain_id, 1).unwrap().spend,
+            petal::signing::Spend::Unspecified
         );
     }
     macro_rules! rejects_prepared {
@@ -879,7 +929,7 @@ mod tests {
                 let mut r = prepared_order_fixture();
                 $mutation(&mut r);
                 assert!(
-                    r.action(r.owner, r.funder, crate::polymarket::POLYGON)
+                    r.action(r.owner, r.funder, crate::polymarket::POLYGON, 0)
                         .is_err()
                 );
             }
@@ -920,11 +970,11 @@ mod tests {
     fn prepared_order_rejects_wrong_account() {
         let r = prepared_order_fixture();
         assert!(
-            r.action(Address::repeat_byte(4), r.funder, r.chain_id)
+            r.action(Address::repeat_byte(4), r.funder, r.chain_id, 0)
                 .is_err()
         );
         assert!(
-            r.action(r.owner, Address::repeat_byte(4), r.chain_id)
+            r.action(r.owner, Address::repeat_byte(4), r.chain_id, 0)
                 .is_err()
         );
     }
@@ -932,7 +982,7 @@ mod tests {
     #[test]
     fn prepared_action_binds_order_and_review_fields() {
         let r = prepared_order_fixture();
-        let original = r.action(r.owner, r.funder, r.chain_id).unwrap();
+        let original = r.action(r.owner, r.funder, r.chain_id, 0).unwrap();
         let mut changes = Vec::new();
         let mut v = r.clone();
         v.order.salt += U256::from(1);
@@ -956,7 +1006,10 @@ mod tests {
         v.neg_risk = true;
         changes.push(v);
         for v in changes {
-            assert_ne!(original, v.action(v.owner, v.funder, v.chain_id).unwrap());
+            assert_ne!(
+                original,
+                v.action(v.owner, v.funder, v.chain_id, 0).unwrap()
+            );
         }
     }
     #[test]

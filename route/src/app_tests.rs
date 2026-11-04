@@ -599,11 +599,60 @@ max_daily_usd = "100"
         assert_eq!(draft.book_snapshot_secs, 7);
 
         assert_eq!(draft.fee_cap_micro().unwrap(), 141_000);
+        let funder = Address::repeat_byte(0x22);
+        let owner = Address::repeat_byte(0x11);
+        let record = crate::polymarket::order::PreparedOrder {
+            version: 1,
+            order: signed_order(&draft),
+            owner,
+            funder,
+            chain_id: crate::polymarket::POLYGON,
+            neg_risk: draft.neg_risk,
+            draft_id: draft.id.clone(),
+            review_intent_hash: "review".into(),
+            policy_warnings_acknowledged: true,
+        };
+        let action = crate::trade_flow_parts::posting::prepared_order_action(
+            &draft,
+            &record,
+            owner,
+            funder,
+            crate::polymarket::POLYGON,
+        )
+        .unwrap();
+        assert_eq!(
+            action.spend,
+            petal::signing::Spend::erc20(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::PUSD),
+                "2141000",
+            )
+            .unwrap()
+        );
         let free = StoreTradeDraft {
             fee: Some(MarketFee::Disabled),
             ..draft
         };
         assert_eq!(free.fee_cap_micro().unwrap(), 0);
+        let free_action = crate::trade_flow_parts::posting::prepared_order_action(
+            &free,
+            &record,
+            owner,
+            funder,
+            crate::polymarket::POLYGON,
+        )
+        .unwrap();
+        assert_eq!(
+            free_action.spend,
+            petal::signing::Spend::erc20(
+                "evm-137",
+                format!("{:#x}", crate::polymarket::eip712::PUSD),
+                "2000000",
+            )
+            .unwrap()
+        );
+        assert_eq!(action.payload, free_action.payload);
+        assert_ne!(action, free_action);
     }
 
     #[test]

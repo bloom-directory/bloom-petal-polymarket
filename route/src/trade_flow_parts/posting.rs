@@ -127,13 +127,6 @@ pub fn post_trade_draft(
             format!("{message}; write revalidate again before posting"),
         );
     }
-    // Validation only. A draft whose fee bound cannot be computed must not
-    // post, but the bound itself no longer travels in the prepared record:
-    // Broker rebuilds that record against a closed key allow-list and refuses
-    // an unknown field, so fee data lives on the draft and the receipt.
-    if let Err(e) = draft.fee_cap_micro() {
-        return polymarket_error(e);
-    }
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
     };
@@ -227,6 +220,10 @@ pub fn post_trade_draft(
     {
         return error(-4, "prepared order does not match final review intent");
     }
+    let action = match prepared_order_action(&draft, &record, owner, funder, chain_id) {
+        Ok(action) => action,
+        Err(resp) => return resp,
+    };
     let order = &record.order;
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
@@ -268,10 +265,6 @@ pub fn post_trade_draft(
     ) {
         Ok(receipt) => receipt,
         Err(e) => return polymarket_error(e),
-    };
-    let action = match record.action(owner, funder, chain_id) {
-        Ok(action) => action,
-        Err(resp) => return resp,
     };
     let inner_sig = match crate::approval::sign_action(ctx, wallet, &action, &approval_key) {
         Ok(signature) => signature,
@@ -712,4 +705,17 @@ pub fn cancel_discovered_order(
         "discovered_order_cancelled",
         serde_json::json!({"clob_order_id": order_id}),
     )
+}
+
+/// Assemble the signing action from the final draft, including its validated
+/// market-fee cap. Keep this at the posting boundary so no fee is discarded.
+pub(crate) fn prepared_order_action(
+    draft: &StoreTradeDraft,
+    record: &PreparedOrder,
+    owner: Address,
+    funder: Address,
+    chain_id: u64,
+) -> std::result::Result<petal::signing::PreparedAction, DispatchResponse> {
+    let fee_cap_micro = draft.fee_cap_micro().map_err(polymarket_error)?;
+    record.action(owner, funder, chain_id, fee_cap_micro)
 }
