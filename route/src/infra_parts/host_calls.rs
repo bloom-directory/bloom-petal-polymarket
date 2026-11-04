@@ -2,40 +2,28 @@ use crate::prelude::*;
 
 use crate::polymarket::Result;
 use alloy::primitives::Address;
-use petal::sdk::{DispatchResponse, HostStatus, HttpRequest, SdkError};
+use petal::sdk::{DispatchResponse, HttpRequest};
 
-/// Resolve the selected account EVM owner of the Polymarket deposit wallet.
-pub fn wallet_address(wallet: &str, account: u32) -> Result<Address, DispatchResponse> {
-    petal::validate_wallet_id(wallet).map_err(|message| error(-3, message))?;
-    let path = wallet_address_path(wallet, account);
-    let bytes = petal::sdk::vfs_read(&path, 128).map_err(|e| match e {
-        SdkError::Host(HostStatus::Denied) => {
-            error(-3, format!("wallet {wallet}: read of {path} was denied"))
-        }
-        // Bloom's wallet VFS answers a missing account leaf with `NotAFile`,
-        // which reaches the Petal as `Invalid`.
-        SdkError::Host(HostStatus::NotFound | HostStatus::Invalid) => error(
-            -1,
+/// Resolve the selected account's EVM owner of the Polymarket deposit wallet,
+/// from `wallets/<wallet>/<account>/address.evm` as Bloom projects it.
+pub fn wallet_address(account: &petal::WalletAccount) -> Result<Address, DispatchResponse> {
+    owner_address(account, &mut petal::HostVfs)
+}
+
+fn owner_address<R: petal::VfsRead>(
+    account: &petal::WalletAccount,
+    vfs: &mut R,
+) -> Result<Address, DispatchResponse> {
+    let raw = account.address_evm_from(vfs)?;
+    raw.parse::<Address>().map_err(|err| {
+        error(
+            -4,
             format!(
-                "wallet {wallet} has no EVM address at {path}; the account may be missing or have no EVM key"
+                "invalid EVM address at {}: {err}",
+                account.address_evm_path()
             ),
-        ),
-        other => error(-4, format!("wallet {wallet}: read {path}: {}", other.message())),
-    })?;
-    parse_wallet_address(&path, &bytes)
-        .map_err(|message| error(-4, format!("wallet {wallet}: {message}")))
-}
-
-pub(crate) fn wallet_address_path(wallet: &str, account: u32) -> String {
-    format!("wallets/{wallet}/{account}/address.evm")
-}
-
-fn parse_wallet_address(path: &str, bytes: &[u8]) -> Result<Address, String> {
-    let raw = core::str::from_utf8(bytes)
-        .map_err(|_| format!("EVM address at {path} is not UTF-8"))?
-        .trim();
-    raw.parse::<Address>()
-        .map_err(|e| format!("invalid EVM address at {path}: {e}"))
+        )
+    })
 }
 
 pub fn http(
@@ -63,31 +51,61 @@ pub fn http(
 mod tests {
     use super::*;
 
-    #[test]
-    fn wallet_address_reads_account_scoped_evm_leaf() {
-        assert_eq!(wallet_address_path("main", 0), "wallets/main/0/address.evm");
-        assert_eq!(wallet_address_path("main", 1), "wallets/main/1/address.evm");
-        assert_eq!(wallet_address_path("main", 0), "wallets/main/0/address.evm");
+    use petal::testing::{MapVfs, wallet_account};
+    use petal::{DispatchResponse, HostStatus, SdkError};
+
+    fn code(response: DispatchResponse) -> i32 {
+        match response {
+            DispatchResponse::Error { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 
     #[test]
-    fn wallet_address_parses_trimmed_checksummed_address() {
-        let path = wallet_address_path("main", 0);
-        let address = parse_wallet_address(&path, b"0x52908400098527886E0F7030069857D2E4169EE7\n")
-            .expect("valid address");
+    fn wallet_address_reads_the_selected_account_evm_leaf() {
+        let vfs = || {
+            MapVfs::new()
+                .file(
+                    "wallets/main/0/address.evm",
+                    b"0x52908400098527886E0F7030069857D2E4169EE7\n",
+                )
+                .file(
+                    "wallets/main/1/address.evm",
+                    b"0x8617E340B3D01FA5F11F306F4090FD50E238070D\n",
+                )
+        };
+        let zero = owner_address(&wallet_account("main", 0), &mut vfs()).unwrap();
+        let one = owner_address(&wallet_account("main", 1), &mut vfs()).unwrap();
         assert_eq!(
-            address.to_checksum(None),
+            zero.to_checksum(None),
             "0x52908400098527886E0F7030069857D2E4169EE7"
         );
+        assert_ne!(zero, one);
     }
 
     #[test]
     fn wallet_address_errors_name_the_path() {
-        let path = wallet_address_path("main", 0);
-        let err = parse_wallet_address(&path, b"not-an-address").unwrap_err();
-        assert!(err.contains("wallets/main/0/address.evm"), "{err}");
-        let err = parse_wallet_address(&path, &[0xff, 0xfe]).unwrap_err();
-        assert!(err.contains("wallets/main/0/address.evm"), "{err}");
+        let account = wallet_account("main", 0);
+        assert_eq!(
+            code(owner_address(&account, &mut MapVfs::new()).unwrap_err()),
+            -1
+        );
+        let denied = MapVfs::new().failing(
+            "wallets/main/0/address.evm",
+            SdkError::Host(HostStatus::Denied),
+        );
+        assert_eq!(
+            code(owner_address(&account, &mut { denied }).unwrap_err()),
+            -2
+        );
+        let garbage = MapVfs::new().file("wallets/main/0/address.evm", b"not-an-address");
+        match owner_address(&account, &mut { garbage }).unwrap_err() {
+            DispatchResponse::Error { code, message } => {
+                assert_eq!(code, -4);
+                assert!(message.contains("wallets/main/0/address.evm"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

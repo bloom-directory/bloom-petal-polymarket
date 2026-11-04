@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, Signature};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::*;
@@ -31,6 +31,12 @@ impl PreparedSigning {
             signing_preimage_hex: hex::encode(signing_preimage),
             preimage,
         }
+    }
+
+    pub fn owner(&self) -> Result<Address, DispatchResponse> {
+        self.owner
+            .parse()
+            .map_err(|err| error(-4, format!("corrupt prepared owner: {err}")))
     }
 
     pub fn hash(&self) -> Result<B256, DispatchResponse> {
@@ -176,23 +182,41 @@ pub fn sign_action_for(
     }
 }
 
+/// Validate the returned signature and render v as 27/28 for the venue.
+pub fn verified_signature(
+    prepared: &PreparedSigning,
+    bytes: &[u8],
+) -> Result<Signature, DispatchResponse> {
+    let signature =
+        Signature::from_raw(bytes).map_err(|err| error(-4, format!("host signature: {err}")))?;
+    if signature
+        .recover_address_from_prehash(&prepared.hash()?)
+        .map_err(|err| error(-4, format!("recover host signature: {err}")))?
+        != prepared.owner()?
+    {
+        return Err(error(-4, "host signature does not match prepared owner"));
+    }
+    Ok(signature)
+}
+
 pub fn sign_prepared(
     ctx: &petal::Ctx,
     wallet: &str,
     prepared: &PreparedSigning,
     operation_key: &str,
-) -> Result<Vec<u8>, DispatchResponse> {
+) -> Result<Signature, DispatchResponse> {
     let attempt = match prepared.intent.as_str() {
         "polymarket.relayer_batch" | "polymarket.onboard" => Some(relayer_attempt(prepared)?),
         _ => None,
     };
-    sign_action_for(
+    let signature = sign_action_for(
         ctx,
         wallet,
         &action_for_prepared(prepared)?,
         operation_key,
         attempt.as_deref(),
-    )
+    )?;
+    verified_signature(prepared, &signature)
 }
 
 /// Read-only projection of Machine's operation state. Legacy artifacts remain
@@ -252,6 +276,34 @@ pub fn relayer_operation(key: &str, prepared_key: &str) -> Result<Vec<String>, D
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn signatures_are_checked_against_the_prepared_owner_and_normalized() {
+        use alloy::signers::{SignerSync, local::PrivateKeySigner};
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(7)).unwrap();
+        let preimage = vec![1, 2, 3];
+        let prepared = PreparedSigning::new(
+            "relayer",
+            "polymarket.relayer_batch",
+            signer.address(),
+            preimage.clone(),
+            alloy::primitives::keccak256(&preimage),
+            serde_json::json!({}),
+        );
+        let signature = signer.sign_hash_sync(&prepared.hash().unwrap()).unwrap();
+        let mut bytes = signature.as_bytes();
+        bytes[64] -= 27;
+        assert_eq!(
+            verified_signature(&prepared, &bytes).unwrap().to_string(),
+            signature.to_string()
+        );
+        assert!(verified_signature(&prepared, &bytes[..64]).is_err());
+        let wrong_owner = PreparedSigning {
+            owner: Address::repeat_byte(9).to_checksum(None),
+            ..prepared
+        };
+        assert!(verified_signature(&wrong_owner, &bytes).is_err());
+    }
+
     #[test]
     fn relayer_nonce_identifies_a_durable_attempt() {
         let prepared = |nonce| {

@@ -136,7 +136,11 @@ pub use status::{
     stored_status_for_wallet, tradeable_deposit_wallet,
 };
 
-pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
+pub fn begin_onboarding(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -148,7 +152,7 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -226,7 +230,10 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
         &approval_key,
         Some(&attempt.id),
     ) {
-        Ok(signature) => format!("0x{}", hex::encode(signature)),
+        Ok(signature) => match crate::approval::verified_signature(&prepared, &signature) {
+            Ok(signature) => signature.to_string(),
+            Err(resp) => return resp,
+        },
         Err(resp) => return resp,
     };
     let headers = [
@@ -258,11 +265,15 @@ pub fn begin_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> Dispatc
     }
 }
 
-pub fn continue_onboarding(ctx: &petal::Ctx, wallet: &str, account: u32) -> DispatchResponse {
+pub fn continue_onboarding(
+    ctx: &petal::Ctx,
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> DispatchResponse {
     if let Err(error) = validate_wallet_name(wallet) {
         return crate::prelude::error(-3, error.to_string());
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(response) => return response,
     };

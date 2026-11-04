@@ -33,7 +33,7 @@ jobs:
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.249.0 --locked
       - name: Install canonical Petal toolchain
-        run: cargo install --git https://github.com/bloom-directory/petal --rev 2beed2ff344ce2b0c112e07096027e1ae0404007 --locked bloom-petal-cli
+        run: cargo install --git https://github.com/bloom-directory/petal --rev 3e7ac46fcce2191aac6b0e41414d0eed9ec331b4 --locked bloom-petal-cli
       - name: Build source package
         run: scripts/build.sh
       - name: Checkout Bloom CLI
@@ -41,7 +41,7 @@ jobs:
         with:
           repository: bloom-directory/bloom
           # The versioned effects manifest requires the matching Machine parser.
-          ref: 014340b331ac49bad6988ecc262389b49b7256f7
+          ref: 95171f69800ef5138a942a617fd0213899b7d858
           path: bloom
           persist-credentials: false
       - name: Build key-free debug Bloom CLI for install smoke tests

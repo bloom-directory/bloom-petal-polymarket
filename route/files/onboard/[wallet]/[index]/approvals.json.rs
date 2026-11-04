@@ -1,5 +1,5 @@
 petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:vfs.read"]), read: |ctx: &petal::Ctx| {
-    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+    let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
     let wallet = match petal::wallet_param(ctx) {
         Ok(value) => value,
         Err(resp) => return resp,
@@ -11,7 +11,7 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:store", "bloom:v
         Ok(chain) => chain,
         Err(err) => return petal::error(-4, err),
     };
-    let owner = match crate::infra_parts::host_calls::wallet_address(wallet, account) {
+    let owner = match crate::infra_parts::host_calls::wallet_address(&account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };

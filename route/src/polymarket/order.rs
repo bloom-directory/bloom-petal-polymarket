@@ -111,15 +111,7 @@ impl PreparedOrder {
     ) -> std::result::Result<petal::signing::PreparedAction, petal::sdk::DispatchResponse> {
         self.validate(owner, funder, chain_id)
             .map_err(crate::prelude::polymarket_error)?;
-        let preimage = poly1271_signing_preimage(&self.order, self.chain_id, self.neg_risk);
-        let prepared = crate::approval::PreparedSigning::new(
-            "order",
-            "polymarket.order.poly1271",
-            self.owner,
-            preimage.clone(),
-            alloy::primitives::keccak256(&preimage),
-            self.review_witness(),
-        );
+        let prepared = crate::trade_flow_parts::posting::prepared_order_signing(self);
         let action = crate::approval::action_for_prepared(&prepared)?;
         let spend = match self.order.side {
             0 => petal::signing::Spend::erc20(
@@ -937,6 +929,29 @@ mod tests {
             assert_ne!(original, v.action(v.owner, v.funder, v.chain_id).unwrap());
         }
     }
+    #[test]
+    fn prepared_order_signatures_bind_the_owner_and_exact_order() {
+        use crate::approval::verified_signature;
+        use crate::trade_flow_parts::posting::prepared_order_signing;
+        use alloy::signers::{SignerSync, local::PrivateKeySigner};
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(7)).unwrap();
+        let mut record = prepared_order_fixture();
+        record.owner = signer.address();
+        let prepared = prepared_order_signing(&record);
+        let signature = signer.sign_hash_sync(&prepared.hash().unwrap()).unwrap();
+        let bytes = signature.as_bytes();
+        let mut normalized = bytes;
+        normalized[64] -= 27;
+        for bytes in [bytes, normalized] {
+            assert_eq!(verified_signature(&prepared, &bytes).unwrap(), signature);
+        }
+        let other = PrivateKeySigner::from_bytes(&B256::repeat_byte(8)).unwrap();
+        let wrong_owner = other.sign_hash_sync(&prepared.hash().unwrap()).unwrap();
+        assert!(verified_signature(&prepared, &wrong_owner.as_bytes()).is_err());
+        record.order.makerAmount += U256::from(1);
+        assert!(verified_signature(&prepared_order_signing(&record), &bytes).is_err());
+    }
+
     #[test]
     fn prepared_order_rejects_overflow_deserialization() {
         let mut json = serde_json::to_value(prepared_order_fixture()).unwrap();

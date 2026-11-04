@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::polymarket::fees::FEE_BOUND_NOTE;
 use crate::polymarket::order::{OrderType, format_micro, parse_micro};
 use crate::polymarket::{Side, validate_wallet_name};
 use petal::sdk::DispatchResponse;
@@ -91,39 +92,47 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
         Err(resp) => return resp,
     };
     let id = next_id(&format!("trade/{wallet}/drafts/"), "/order.json");
-    let draft = StoreTradeDraft {
+    let mut draft = StoreTradeDraft {
         id: id.clone(),
         wallet: wallet.into(),
         slug: req.slug,
-        question: snapshot.market.question,
-        condition_id: snapshot.market.condition_id,
-        outcome: snapshot.outcome,
-        token_id: snapshot.token_id,
+        question: snapshot.market.question.clone(),
+        condition_id: snapshot.market.condition_id.clone(),
+        outcome: snapshot.outcome.clone(),
+        token_id: snapshot.token_id.clone(),
         side,
         order_type,
         amount_micro,
         price_bound_micro: bound_micro,
         limit_price: req.limit_price,
         marketable,
-        limit_price_micro: quote.price_micro,
-        size_micro: quote.size_micro,
-        maker_micro: quote.maker_micro,
-        taker_micro: quote.taker_micro,
-        tick_micro: snapshot.tick_micro,
-        min_order_size_micro: snapshot.min_size_micro,
-        neg_risk: snapshot.neg_risk,
-        active: snapshot.active,
-        closed: snapshot.closed,
-        order_book_enabled: snapshot.order_book_enabled,
-        binary_outcomes: true,
-        best_ask_micro: snapshot.best_ask_micro,
-        best_bid_micro: snapshot.best_bid_micro,
-        book_snapshot_secs: now_secs(),
+        // The live quote and snapshot fields are set by `requote` below, the
+        // one place a draft records live market data.
+        limit_price_micro: 0,
+        size_micro: 0,
+        maker_micro: 0,
+        taker_micro: 0,
+        tick_micro: 0,
+        min_order_size_micro: 0,
+        neg_risk: false,
+        active: false,
+        closed: false,
+        order_book_enabled: false,
+        binary_outcomes: false,
+        best_ask_micro: None,
+        best_bid_micro: None,
+        book_snapshot_secs: 0,
+        fee: None,
         status: "review".into(),
         salt: None,
         clob_order_id: None,
         clob_status: None,
         last_error: None,
+    };
+    draft.requote(&quote, &snapshot, now_secs());
+    let fee_cap = match draft.fee_cap_micro() {
+        Ok(cap) => cap,
+        Err(e) => return polymarket_error(e),
     };
     let policy_check = match trade_policy_check(wallet, &draft) {
         Ok(check) => check,
@@ -164,6 +173,10 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
             "min_order_size": format_micro(draft.min_order_size_micro),
             "best_ask_micro": draft.best_ask_micro,
             "best_bid_micro": draft.best_bid_micro,
+            "fee": draft.fee,
+            "fee_cap_micro": fee_cap,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "status": "quoted"
         }),
         false,
@@ -180,6 +193,9 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
             "token_id": draft.token_id,
             "limit_price": format_micro(draft.limit_price_micro),
             "size": format_micro(draft.size_micro),
+            "fee": draft.fee,
+            "fee_cap": format_micro(fee_cap),
+            "fee_note": FEE_BOUND_NOTE,
             "status": "created"
         }),
         false,

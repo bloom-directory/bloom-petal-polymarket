@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::polymarket::fees::MarketFee;
 use crate::polymarket::order::{LimitQuote, OrderType, parse_micro};
 use crate::polymarket::trade as shared_trade;
 use crate::polymarket::types::BookLevel;
@@ -44,6 +45,19 @@ pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, Dispat
         &format!("{}/book", crate::runtime_config::clob_url()),
         &[("token_id", &token_id)],
     ))?;
+    snapshot_from_book(market, outcome, token_id, book)
+}
+
+/// The snapshot a quote is built from: `book`, the CLOB book for `outcome`'s
+/// `token_id`, checked against the Gamma `market` it belongs to, and the
+/// market's fee schedule. A schedule that cannot be bounded is recorded as
+/// such; it refuses a BUY when the BUY's fee bound is taken, not a SELL.
+pub fn snapshot_from_book(
+    market: Market,
+    outcome: &str,
+    token_id: String,
+    book: OrderBook,
+) -> Result<TradeSnapshot, DispatchResponse> {
     if !book.asset_id.is_empty() && book.asset_id != token_id {
         return Err(error(
             -4,
@@ -69,8 +83,8 @@ pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, Dispat
         return Err(error(
             -4,
             format!(
-                "neg_risk mismatch for '{slug}': Gamma={} CLOB={}",
-                market.neg_risk, book.neg_risk
+                "neg_risk mismatch for '{}': Gamma={} CLOB={}",
+                market.slug, market.neg_risk, book.neg_risk
             ),
         ));
     }
@@ -92,6 +106,7 @@ pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, Dispat
     };
     let best_ask_micro = best_price(&book.asks, true)?;
     let best_bid_micro = best_price(&book.bids, false)?;
+    let fee = MarketFee::from_market(&market);
     Ok(TradeSnapshot {
         market,
         outcome: outcome.into(),
@@ -104,6 +119,7 @@ pub fn trade_snapshot(slug: &str, outcome: &str) -> Result<TradeSnapshot, Dispat
         active: true,
         closed: false,
         order_book_enabled: true,
+        fee,
     })
 }
 
@@ -160,23 +176,9 @@ pub fn trade_policy_check(
 ) -> Result<serde_json::Value, DispatchResponse> {
     let policy = venue_config(wallet)?;
     let (receipt_store_readable, daily_posted_microusd) = daily_posted_microusd(wallet);
-    let ctx = LocalPolymarketOrderCtx {
-        slug: draft.slug.clone(),
-        condition_id: draft.condition_id.clone(),
-        side: match draft.side {
-            Side::Buy => LocalPolicySide::Buy,
-            Side::Sell => LocalPolicySide::Sell,
-        },
-        amount_microusd: draft.amount_micro,
-        limit_price_micro: draft.limit_price_micro,
-        active: draft.active,
-        closed: draft.closed,
-        order_book_enabled: draft.order_book_enabled,
-        binary_outcomes: draft.binary_outcomes,
-        neg_risk: draft.neg_risk,
-        receipt_store_readable,
-        daily_posted_microusd,
-    };
+    let ctx =
+        LocalPolymarketOrderCtx::for_draft(draft, receipt_store_readable, daily_posted_microusd)
+            .map_err(polymarket_error)?;
     let checks = evaluate_local_polymarket_order(&policy, &ctx);
     let deny = local_policy_has_deny(&checks);
     let warn = local_policy_has_warn(&checks);

@@ -18,19 +18,17 @@ base64 = "0.22"
 blake3 = "1"
 hex = "0.4"
 hmac = "0.12"
-petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "a285dcd03187e0670722ce37285f6598fd20831d" }
+petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "3e7ac46fcce2191aac6b0e41414d0eed9ec331b4" }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_jcs = "0.2"
 sha2 = "0.10"
 thiserror = "2"
 toml = "0.8"
 url = "2"
 
 [dev-dependencies]
-bloom-broker-api = { git = "https://github.com/bloom-directory/bloom-broker.git", rev = "ac8165925ca06476082f8a8e7ddc784148c08f20" }
 alloy = { version = "2", default-features = false, features = ["signer-local"] }
-bloom-petal-contract = { git = "https://github.com/bloom-directory/petal", rev = "a285dcd03187e0670722ce37285f6598fd20831d" }
+bloom-petal-contract = { git = "https://github.com/bloom-directory/petal", rev = "3e7ac46fcce2191aac6b0e41414d0eed9ec331b4" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -5,16 +5,16 @@ use crate::polymarket::order::{
     poly1271_digest, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
-use alloy::primitives::U256;
+use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     id: &str,
     body: &[u8],
 ) -> DispatchResponse {
-    let (_, chain_id) = match crate::runtime_config::chain() {
+    let (_chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -55,7 +55,7 @@ pub fn post_trade_draft(
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");
     }
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -68,6 +68,19 @@ pub fn post_trade_draft(
             Ok(inputs) => inputs,
             Err(resp) => return resp,
         };
+    // The live checks just run must enable this post on their own; the final
+    // review alone cannot.
+    if policy_check
+        .get("posting_enabled")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        let reason = policy_check
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("posting is not enabled");
+        return error(-3, format!("live post checks refuse this post: {reason}"));
+    }
     let policy_warn = policy_check
         .get("policy_warn")
         .and_then(serde_json::Value::as_bool)
@@ -113,6 +126,13 @@ pub fn post_trade_draft(
             -3,
             format!("{message}; write revalidate again before posting"),
         );
+    }
+    // Validation only. A draft whose fee bound cannot be computed must not
+    // post, but the bound itself no longer travels in the prepared record:
+    // Broker rebuilds that record against a closed key allow-list and refuses
+    // an unknown field, so fee data lives on the draft and the receipt.
+    if let Err(e) = draft.fee_cap_micro() {
+        return polymarket_error(e);
     }
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
@@ -240,6 +260,15 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
+    let unposted = match StoreTradeReceipt::for_draft(
+        &draft,
+        funder.to_checksum(None),
+        salt,
+        review_intent_hash.clone(),
+    ) {
+        Ok(receipt) => receipt,
+        Err(e) => return polymarket_error(e),
+    };
     let action = match record.action(owner, funder, chain_id) {
         Ok(action) => action,
         Err(resp) => return resp,
@@ -248,10 +277,16 @@ pub fn post_trade_draft(
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let signature = match wrap_poly1271_signature(order, &inner_sig, chain_id, draft.neg_risk) {
-        Ok(signature) => signature,
-        Err(e) => return polymarket_error(e),
-    };
+    let inner_sig =
+        match crate::approval::verified_signature(&prepared_order_signing(&record), &inner_sig) {
+            Ok(signature) => signature,
+            Err(resp) => return resp,
+        };
+    let signature =
+        match wrap_poly1271_signature(order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
+            Ok(signature) => signature,
+            Err(e) => return polymarket_error(e),
+        };
     let order_body = match OrderBody::from_signed(order, &signature, &creds.key, draft.order_type) {
         Ok(body) => body,
         Err(e) => return polymarket_error(e),
@@ -291,18 +326,6 @@ pub fn post_trade_draft(
             let filled_size_micro = clob_response_filled_size_micro(&raw_response);
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: clob_order_id.clone(),
                 clob_status: status.clone(),
                 filled_size_micro,
@@ -311,39 +334,39 @@ pub fn post_trade_draft(
                     &clob_order_id,
                     filled_size_micro,
                 ),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to store receipt");
             }
             let _ = petal::sdk::store_del(&prepared_key);
-            draft.status =
+            let outcome =
                 if clob_status_excluded_from_daily_cap(status.as_str(), Some(draft.order_type)) {
-                    "rejected".into()
+                    "rejected"
                 } else {
-                    "posted".into()
+                    "posted"
                 };
+            draft.status = outcome.into();
             draft.clob_order_id = clob_order_id;
             draft.clob_status = Some(status);
             draft.last_error = None;
-            store_put_json(&format!("{base}/order.json"), &draft, false)
+            let stored = store_put_json(&format!("{base}/order.json"), &draft, false);
+            if let DispatchResponse::Error { .. } = stored {
+                return stored;
+            }
+            // The order is posted and its receipt and draft are current, so a
+            // failure to update this record must not report the post as failed.
+            let _ = store_put_json(
+                &format!("{base}/post_attempt.json"),
+                &answered_post_attempt(&receipt, owner, &body_hash, outcome, None),
+                false,
+            );
+            stored
         }
         Err(DispatchResponse::Error { code: -3, message }) => {
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "rejected".into(),
                 filled_size_micro: None,
@@ -351,12 +374,14 @@ pub fn post_trade_draft(
                     "error": "CLOB rejected the order",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to persist rejected order receipt");
             }
+            let attempt =
+                answered_post_attempt(&receipt, owner, &body_hash, "rejected", Some(&message));
             draft.status = "rejected".into();
             draft.clob_status = Some("rejected".into());
             draft.last_error = Some(message);
@@ -366,6 +391,9 @@ pub fn post_trade_draft(
                 return error(-4, "failed to persist rejected order state");
             }
             let _ = petal::sdk::store_del(&prepared_key);
+            // The rejected receipt and draft are already written; this record
+            // is best effort so the caller still learns the CLOB refused.
+            let _ = store_put_json(&format!("{base}/post_attempt.json"), &attempt, false);
             error(-3, "CLOB rejected the order; rejected receipt written")
         }
         Err(resp) => {
@@ -377,18 +405,6 @@ pub fn post_trade_draft(
                 let filled_size_micro = clob_response_filled_size_micro(&raw_response);
                 let posted_ms = now_millis();
                 let receipt = StoreTradeReceipt {
-                    draft_id: id.into(),
-                    wallet: wallet.into(),
-                    slug: draft.slug.clone(),
-                    token_id: draft.token_id.clone(),
-                    side: draft.side,
-                    order_type: draft.order_type,
-                    funder: Some(funder.to_checksum(None)),
-                    signature_type: SIG_TYPE_POLY_1271,
-                    amount_microusd: draft.amount_micro,
-                    limit_price_micro: draft.limit_price_micro,
-                    size_micro: draft.size_micro,
-                    salt,
                     clob_order_id: clob_order_id.clone(),
                     clob_status: status.clone(),
                     filled_size_micro,
@@ -397,8 +413,8 @@ pub fn post_trade_draft(
                         &clob_order_id,
                         filled_size_micro,
                     ),
-                    review_intent_hash: Some(review_intent_hash),
                     posted_ms,
+                    ..unposted
                 };
                 if let DispatchResponse::Error { .. } = store_put_json(
                     &format!("{base}/post_attempt.json"),
@@ -437,18 +453,6 @@ pub fn post_trade_draft(
             }
             let posted_ms = now_millis();
             let receipt = StoreTradeReceipt {
-                draft_id: id.into(),
-                wallet: wallet.into(),
-                slug: draft.slug.clone(),
-                token_id: draft.token_id.clone(),
-                side: draft.side,
-                order_type: draft.order_type,
-                funder: Some(funder.to_checksum(None)),
-                signature_type: SIG_TYPE_POLY_1271,
-                amount_microusd: draft.amount_micro,
-                limit_price_micro: draft.limit_price_micro,
-                size_micro: draft.size_micro,
-                salt,
                 clob_order_id: None,
                 clob_status: "ambiguous".into(),
                 filled_size_micro: None,
@@ -456,8 +460,8 @@ pub fn post_trade_draft(
                     "error": "post outcome unknown after signing",
                     "body_hash": body_hash
                 }),
-                review_intent_hash: Some(review_intent_hash),
                 posted_ms,
+                ..unposted
             };
             draft.status = "ambiguous".into();
             draft.clob_status = Some("ambiguous".into());
@@ -482,7 +486,59 @@ pub fn post_trade_draft(
     }
 }
 
-pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -> DispatchResponse {
+/// Broker's existing closed review witness, derived from the exact typed order.
+pub fn prepared_order_signing(record: &PreparedOrder) -> PreparedSigning {
+    PreparedSigning::new(
+        "order",
+        "polymarket.order.poly1271",
+        record.owner,
+        crate::polymarket::order::poly1271_signing_preimage(
+            &record.order,
+            record.chain_id,
+            record.neg_risk,
+        ),
+        poly1271_digest(&record.order, record.chain_id, record.neg_risk),
+        record.review_witness(),
+    )
+}
+
+/// `post_attempt.json` once the CLOB has answered the post of `receipt`'s
+/// order, replacing the `signed` record: who signed it, the order body's
+/// hash, and the outcome `receipt` records, as the reconcile path writes one.
+/// `status` is the draft's resulting status, `posted` or `rejected`, and
+/// `reason` is the CLOB's reason when it refused the order.
+pub fn answered_post_attempt(
+    receipt: &StoreTradeReceipt,
+    owner: Address,
+    order_body_blake3: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut attempt = serde_json::json!({
+        "wallet": receipt.wallet,
+        "draft_id": receipt.draft_id,
+        "owner": owner.to_checksum(None),
+        "funder": receipt.funder,
+        "salt": receipt.salt,
+        "review_intent_hash": receipt.review_intent_hash,
+        "order_body_blake3": order_body_blake3,
+        "posted_ms": receipt.posted_ms,
+        "status": status,
+        "clob_order_id": receipt.clob_order_id,
+        "clob_status": receipt.clob_status,
+    });
+    if let Some(reason) = reason {
+        attempt["error"] = reason.into();
+    }
+    attempt
+}
+
+pub fn cancel_trade_receipt(
+    wallet: &str,
+    account: &petal::WalletAccount,
+    id: &str,
+    body: &[u8],
+) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
@@ -523,7 +579,7 @@ pub fn cancel_trade_receipt(wallet: &str, account: u32, id: &str, body: &[u8]) -
     let Some(order_id) = receipt.clob_order_id.clone() else {
         return error(-3, "receipt has no CLOB order id to cancel");
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(address) => address,
         Err(resp) => return resp,
     };
@@ -584,11 +640,14 @@ pub fn mark_trade_draft_cancelled(wallet: &str, id: &str) -> Result<(), Dispatch
     Ok(())
 }
 
-pub fn discoverable_order_ids(wallet: &str, account: u32) -> Result<Vec<String>, DispatchResponse> {
+pub fn discoverable_order_ids(
+    wallet: &str,
+    account: &petal::WalletAccount,
+) -> Result<Vec<String>, DispatchResponse> {
     if let Err(err) = validate_wallet_name(wallet) {
         return Err(error(-3, err.to_string()));
     }
-    let owner = wallet_address(wallet, account)?;
+    let owner = wallet_address(account)?;
     let creds = load_creds(wallet)?;
     let orders = clob_l2_get_json(owner, &creds, "/data/orders", &[])?;
     let rows = orders
@@ -608,7 +667,7 @@ pub fn discoverable_order_ids(wallet: &str, account: u32) -> Result<Vec<String>,
 
 pub fn cancel_discovered_order(
     wallet: &str,
-    account: u32,
+    account: &petal::WalletAccount,
     order_id: &str,
     body: &[u8],
 ) -> DispatchResponse {
@@ -631,7 +690,7 @@ pub fn cancel_discovered_order(
         Ok(lock) => lock,
         Err(resp) => return resp,
     };
-    let owner = match wallet_address(wallet, account) {
+    let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(resp) => return resp,
     };

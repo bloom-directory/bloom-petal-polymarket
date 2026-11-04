@@ -1,8 +1,12 @@
 use std::collections::BTreeSet;
 
-use crate::polymarket::order::{OrderType, parse_micro};
+use crate::polymarket::claim;
+use crate::polymarket::fees::{FEE_BOUND_NOTE, MarketFee};
+use crate::polymarket::order::{LimitQuote, Order, OrderType, SIG_TYPE_POLY_1271, parse_micro};
 use crate::polymarket::trade as shared_trade;
-use crate::polymarket::{Market, Side};
+use crate::polymarket::{Market, PolymarketError, Side};
+use alloy::primitives::U256;
+use petal::ClaimEffects;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeNewRequest {
@@ -111,6 +115,9 @@ pub struct LocalPolymarketOrderCtx {
     pub condition_id: String,
     pub side: LocalPolicySide,
     pub amount_microusd: u64,
+    /// The most pUSD Polymarket can charge a BUY in fees on top of
+    /// `amount_microusd`; zero for a SELL.
+    pub fee_cap_microusd: u64,
     pub limit_price_micro: u64,
     pub active: bool,
     pub closed: bool,
@@ -119,6 +126,35 @@ pub struct LocalPolymarketOrderCtx {
     pub neg_risk: bool,
     pub receipt_store_readable: bool,
     pub daily_posted_microusd: Option<u64>,
+}
+
+impl LocalPolymarketOrderCtx {
+    /// The policy view of `draft`, whose BUY costs its amount plus its fee
+    /// bound, against what the receipt store says was posted in the last day.
+    pub fn for_draft(
+        draft: &StoreTradeDraft,
+        receipt_store_readable: bool,
+        daily_posted_microusd: Option<u64>,
+    ) -> Result<Self, PolymarketError> {
+        Ok(Self {
+            slug: draft.slug.clone(),
+            condition_id: draft.condition_id.clone(),
+            side: match draft.side {
+                Side::Buy => LocalPolicySide::Buy,
+                Side::Sell => LocalPolicySide::Sell,
+            },
+            amount_microusd: draft.amount_micro,
+            fee_cap_microusd: draft.fee_cap_micro()?,
+            limit_price_micro: draft.limit_price_micro,
+            active: draft.active,
+            closed: draft.closed,
+            order_book_enabled: draft.order_book_enabled,
+            binary_outcomes: draft.binary_outcomes,
+            neg_risk: draft.neg_risk,
+            receipt_store_readable,
+            daily_posted_microusd,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -182,6 +218,11 @@ pub struct StoreTradeDraft {
     pub best_ask_micro: Option<u64>,
     pub best_bid_micro: Option<u64>,
     pub book_snapshot_secs: u64,
+    /// The market's fee as last snapshotted. `None` on a draft stored by a
+    /// build that did not read fees: such a BUY has no fee bound and must be
+    /// revalidated before it can be posted.
+    #[serde(default)]
+    pub fee: Option<MarketFee>,
     pub status: String,
     #[serde(default)]
     pub salt: Option<u64>,
@@ -193,12 +234,75 @@ pub struct StoreTradeDraft {
     pub last_error: Option<String>,
 }
 
+impl StoreTradeDraft {
+    /// Record a live quote and the market snapshot it was built from. Every
+    /// path that quotes a draft (create, revalidate, the refresh before post)
+    /// goes through here, so each records the live fee schedule.
+    pub fn requote(&mut self, quote: &LimitQuote, snapshot: &TradeSnapshot, now_secs: u64) {
+        self.limit_price_micro = quote.price_micro;
+        self.size_micro = quote.size_micro;
+        self.maker_micro = quote.maker_micro;
+        self.taker_micro = quote.taker_micro;
+        self.tick_micro = snapshot.tick_micro;
+        self.min_order_size_micro = snapshot.min_size_micro;
+        self.neg_risk = snapshot.neg_risk;
+        self.active = snapshot.active;
+        self.closed = snapshot.closed;
+        self.order_book_enabled = snapshot.order_book_enabled;
+        self.binary_outcomes = snapshot.market.is_binary();
+        self.best_ask_micro = snapshot.best_ask_micro;
+        self.best_bid_micro = snapshot.best_bid_micro;
+        self.book_snapshot_secs = now_secs;
+        self.fee = Some(snapshot.fee.clone());
+    }
+
+    /// The most pUSD Polymarket's operator can charge this order in fees under
+    /// the market's published schedule: [`MarketFee::buy_fee_cap`] of a BUY's
+    /// pUSD leg, and zero for a SELL, whose fee is expected to come out of
+    /// its proceeds (not yet verified on chain; see #20).
+    /// Refused for a BUY that recorded no fee or whose fee cannot be bounded.
+    pub fn fee_cap_micro(&self) -> Result<u64, PolymarketError> {
+        match self.side {
+            Side::Buy => self.recorded_fee()?.buy_fee_cap(self.maker_micro),
+            Side::Sell => Ok(0),
+        }
+    }
+
+    /// What signing `order` for this draft moves: [`claim::order_effects`]
+    /// under the draft's recorded fee. `order` must carry the `makerAmount`
+    /// the owner reviewed, the amount the fee bound is taken on.
+    pub fn order_effects(
+        &self,
+        chain: &str,
+        order: &Order,
+    ) -> Result<ClaimEffects, PolymarketError> {
+        if order.makerAmount != U256::from(self.maker_micro) {
+            return Err(PolymarketError::signing(
+                "prepared order makerAmount does not match the reviewed draft",
+            ));
+        }
+        claim::order_effects(chain, order, self.neg_risk, self.recorded_fee()?)
+    }
+
+    fn recorded_fee(&self) -> Result<&MarketFee, PolymarketError> {
+        self.fee.as_ref().ok_or_else(|| {
+            PolymarketError::invalid(format!(
+                "draft {} was quoted by a build that did not record the market's fee schedule; write revalidate",
+                self.id
+            ))
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct StoreTradeReceiptPolicy {
     pub side: Side,
     #[serde(default)]
     pub order_type: Option<OrderType>,
     pub amount_microusd: u64,
+    /// `None` on receipts written before fees were bounded.
+    #[serde(default)]
+    pub fee_cap_microusd: Option<u64>,
     pub clob_status: String,
     pub posted_ms: u128,
 }
@@ -214,6 +318,20 @@ pub struct StoreTradeReceipt {
     pub funder: Option<String>,
     pub signature_type: u8,
     pub amount_microusd: u64,
+    /// The fee bound the order was posted under: the most pUSD Polymarket
+    /// can charge it on top of `amount_microusd`. `None` on receipts written
+    /// before fees were bounded, and kept `None` when such a receipt is
+    /// rewritten.
+    #[serde(default)]
+    pub fee_cap_microusd: Option<u64>,
+    #[serde(default)]
+    pub fee: Option<MarketFee>,
+    /// [`FEE_BOUND_NOTE`] as it read when the receipt was written: what
+    /// enforces `fee_cap_microusd`. `None` on receipts written before it was
+    /// recorded, and left out when such a receipt is rewritten, so its JSON
+    /// does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_note: Option<String>,
     pub limit_price_micro: u64,
     pub size_micro: u64,
     pub salt: u64,
@@ -223,6 +341,45 @@ pub struct StoreTradeReceipt {
     pub raw_response: serde_json::Value,
     pub review_intent_hash: Option<String>,
     pub posted_ms: u128,
+}
+
+impl StoreTradeReceipt {
+    /// The receipt for `draft`'s order, signed with `salt` for `funder` under
+    /// the final review whose hash is `review_intent_hash`, as known before
+    /// the CLOB answers: the outcome is `ambiguous` until a post path sets
+    /// `clob_order_id`, `clob_status`, `filled_size_micro`, `raw_response`
+    /// and `posted_ms`. Built before signing, so a BUY whose fee cannot be
+    /// bounded is refused before any signature exists.
+    pub fn for_draft(
+        draft: &StoreTradeDraft,
+        funder: String,
+        salt: u64,
+        review_intent_hash: String,
+    ) -> Result<Self, PolymarketError> {
+        Ok(Self {
+            draft_id: draft.id.clone(),
+            wallet: draft.wallet.clone(),
+            slug: draft.slug.clone(),
+            token_id: draft.token_id.clone(),
+            side: draft.side,
+            order_type: draft.order_type,
+            funder: Some(funder),
+            signature_type: SIG_TYPE_POLY_1271,
+            amount_microusd: draft.amount_micro,
+            fee_cap_microusd: Some(draft.fee_cap_micro()?),
+            fee: draft.fee.clone(),
+            fee_note: Some(FEE_BOUND_NOTE.into()),
+            limit_price_micro: draft.limit_price_micro,
+            size_micro: draft.size_micro,
+            salt,
+            clob_order_id: None,
+            clob_status: "ambiguous".into(),
+            filled_size_micro: None,
+            raw_response: serde_json::Value::Null,
+            review_intent_hash: Some(review_intent_hash),
+            posted_ms: 0,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +395,7 @@ pub struct TradeSnapshot {
     pub active: bool,
     pub closed: bool,
     pub order_book_enabled: bool,
+    pub fee: MarketFee,
 }
 
 impl TradeSnapshot {

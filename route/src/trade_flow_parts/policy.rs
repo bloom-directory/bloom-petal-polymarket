@@ -2,25 +2,66 @@ use crate::prelude::*;
 use std::collections::BTreeSet;
 
 use crate::polymarket::eip712::{CTF, CTF_EXCHANGE, NEG_RISK_EXCHANGE};
-use crate::polymarket::order::{format_micro, parse_micro};
+use crate::polymarket::fees::max_buy_fee_cap;
+use crate::polymarket::order::{OrderType, format_micro, parse_micro};
 use crate::polymarket::{Position, Result, Side};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 
-pub fn enable_trade_posting(
+/// Enables posting a SELL only from a passing preflight taken for this
+/// draft's deposit wallet, token and size, or refuses with the reason.
+/// `trade_policy_check` never enables a SELL, so a quote alone cannot.
+pub fn enable_sell_posting(
     policy_check: &mut serde_json::Value,
-    preflight: Result<serde_json::Value, DispatchResponse>,
-    reason: &str,
-) -> Result<serde_json::Value, DispatchResponse> {
-    let preflight = preflight?;
-    if let Some(map) = policy_check.as_object_mut() {
-        map.insert("status".into(), serde_json::json!("approved"));
-        map.insert("can_post".into(), serde_json::json!(true));
-        map.insert("signing_enabled".into(), serde_json::json!(true));
-        map.insert("posting_enabled".into(), serde_json::json!(true));
-        map.insert("approval_reason".into(), serde_json::json!(reason));
+    draft: &StoreTradeDraft,
+    deposit: Address,
+    preflight: &serde_json::Value,
+) -> Result<(), DispatchResponse> {
+    if draft.side != Side::Sell {
+        return Err(error(-4, "sell posting check applied to a buy draft"));
     }
-    Ok(preflight)
+    if draft.order_type == OrderType::GTD {
+        return Err(error(-3, "posting GTD orders is pending expiry parity"));
+    }
+    if policy_check
+        .get("policy_deny")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(error(-3, "Polymarket policy denied; see policy_check.json"));
+    }
+    let deposit = deposit.to_checksum(None);
+    let size = serde_json::json!(draft.size_micro);
+    for (field, expected) in [
+        ("status", &serde_json::json!("pass")),
+        ("preflight_complete_for_posting", &serde_json::json!(true)),
+        ("ctf_approved_for_all", &serde_json::json!(true)),
+        ("deposit_wallet", &serde_json::json!(deposit)),
+        ("token_id", &serde_json::json!(draft.token_id)),
+        ("requested_size_micro", &size),
+    ] {
+        if preflight.get(field) != Some(expected) {
+            return Err(error(
+                -3,
+                format!("sell preflight field '{field}' does not cover this draft; refusing"),
+            ));
+        }
+    }
+    let Some(map) = policy_check.as_object_mut() else {
+        return Err(error(-4, "policy check is not an object"));
+    };
+    let reason = "sell can be posted after final review because chain CTF balance, CLOB conditional balance and CTF operator approval checks passed";
+    for (key, value) in [
+        ("status", serde_json::json!("approved")),
+        ("can_post", serde_json::json!(true)),
+        ("reason", serde_json::json!(reason)),
+        ("approval_reason", serde_json::json!(reason)),
+        ("signing_enabled", serde_json::json!(true)),
+        ("posting_enabled", serde_json::json!(true)),
+    ] {
+        map.insert(key.into(), value);
+    }
+    Ok(())
 }
 
 fn venue_config_key(wallet: &str) -> String {
@@ -115,15 +156,27 @@ pub fn daily_posted_microusd(wallet: &str) -> (bool, Option<u64>) {
             Ok(receipt) => receipt,
             Err(_) => return (false, None),
         };
-        if receipt.posted_ms < cutoff || receipt.side != Side::Buy {
-            continue;
-        }
-        if clob_status_excluded_from_daily_cap(receipt.clob_status.as_str(), receipt.order_type) {
-            continue;
-        }
-        total = total.saturating_add(receipt.amount_microusd);
+        total = total.saturating_add(receipt_daily_exposure_microusd(&receipt, cutoff));
     }
     (true, Some(total))
+}
+
+/// What one receipt counts against `max_daily_usd` when the day began at
+/// `cutoff_ms`: a BUY posted since then, unless its CLOB status excludes it,
+/// counts its amount plus its fee bound. A BUY receipt written before fee
+/// bounds were recorded counts the bound at the highest rate this Petal
+/// accepts, since its market's rate is unknown.
+pub fn receipt_daily_exposure_microusd(receipt: &StoreTradeReceiptPolicy, cutoff_ms: u128) -> u64 {
+    if receipt.posted_ms < cutoff_ms || receipt.side != Side::Buy {
+        return 0;
+    }
+    if clob_status_excluded_from_daily_cap(receipt.clob_status.as_str(), receipt.order_type) {
+        return 0;
+    }
+    let fee_cap = receipt
+        .fee_cap_microusd
+        .unwrap_or_else(|| max_buy_fee_cap(receipt.amount_microusd));
+    receipt.amount_microusd.saturating_add(fee_cap)
 }
 
 pub fn audited_receipt_ids_since(wallet: &str, cutoff_ms: u128) -> Result<Vec<String>, SdkError> {
@@ -160,6 +213,9 @@ pub fn audited_receipt_ids_since(wallet: &str, cutoff_ms: u128) -> Result<Vec<St
     Ok(ids)
 }
 
+/// Reads, at this moment, what a SELL of `size_micro` of `token_id` from
+/// `deposit` needs: the CLOB conditional balance, the on-chain CTF balance and
+/// the exchange's CTF operator approval. A read that fails refuses.
 pub fn verify_sell_preflight(
     wallet: &str,
     owner: Address,
@@ -193,6 +249,42 @@ pub fn verify_sell_preflight(
             ("signature_type", "3"),
         ],
     )?;
+    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
+    let ctf_approved = read_chain_ctf_approval(deposit, sell_operator(neg_risk))?;
+    sell_preflight(
+        deposit,
+        token_id,
+        size_micro,
+        neg_risk,
+        clob_balance_allowance,
+        chain_ctf_balance,
+        ctf_approved,
+        data_api_holding_micro,
+    )
+}
+
+/// The exchange that moves a SELL's CTF tokens.
+pub fn sell_operator(neg_risk: bool) -> Address {
+    if neg_risk {
+        NEG_RISK_EXCHANGE
+    } else {
+        CTF_EXCHANGE
+    }
+}
+
+/// The preflight evidence for a SELL of `size_micro` of `token_id` from
+/// `deposit`, or the refusal when the reads do not cover it.
+#[allow(clippy::too_many_arguments)]
+pub fn sell_preflight(
+    deposit: Address,
+    token_id: &str,
+    size_micro: u64,
+    neg_risk: bool,
+    clob_balance_allowance: serde_json::Value,
+    chain_ctf_balance: u64,
+    ctf_approved: bool,
+    data_api_holding_micro: Option<u64>,
+) -> Result<serde_json::Value, DispatchResponse> {
     let clob_balance_micro = clob_balance_allowance
         .get("balance")
         .and_then(parse_clob_raw_micro)
@@ -207,12 +299,7 @@ pub fn verify_sell_preflight(
             ),
         ));
     }
-    let operator = if neg_risk {
-        NEG_RISK_EXCHANGE
-    } else {
-        CTF_EXCHANGE
-    };
-    let chain_ctf_balance = read_chain_ctf_balance(deposit, token_id)?;
+    let operator = sell_operator(neg_risk);
     if chain_ctf_balance < size_micro {
         return Err(error(
             -3,
@@ -224,7 +311,6 @@ pub fn verify_sell_preflight(
             ),
         ));
     }
-    let ctf_approved = read_chain_ctf_approval(deposit, operator)?;
     if !ctf_approved {
         return Err(error(
             -3,
@@ -376,14 +462,23 @@ pub fn evaluate_local_polymarket_order(
         return out;
     }
 
+    // A BUY can cost its amount plus the most Polymarket can charge in fees,
+    // and every USD threshold below applies to that whole cost.
+    let order_usd = ctx.amount_microusd.saturating_add(ctx.fee_cap_microusd);
+    let order_text = format!(
+        "{} (amount {} + fee bound {})",
+        format_micro(order_usd),
+        format_micro(ctx.amount_microusd),
+        format_micro(ctx.fee_cap_microusd)
+    );
+
     if let Some(cap) = policy.max_order_usd {
-        if ctx.amount_microusd > cap {
+        if order_usd > cap {
             out.push(local_policy_check(
                 "max_order_usd",
                 LocalPolicyOutcome::Deny,
                 format!(
-                    "order {} USD exceeds max_order_usd {}",
-                    format_micro(ctx.amount_microusd),
+                    "order {order_text} USD exceeds max_order_usd {}",
                     format_micro(cap)
                 ),
             ));
@@ -391,11 +486,7 @@ pub fn evaluate_local_polymarket_order(
             out.push(local_policy_check(
                 "max_order_usd",
                 LocalPolicyOutcome::Pass,
-                format!(
-                    "{} <= {}",
-                    format_micro(ctx.amount_microusd),
-                    format_micro(cap)
-                ),
+                format!("{order_text} <= {}", format_micro(cap)),
             ));
         }
     }
@@ -408,15 +499,14 @@ pub fn evaluate_local_polymarket_order(
                 "daily cap configured but posted exposure is unknown (receipt store unreadable) - refusing rather than trading uncapped",
             )),
             (true, Some(daily)) => {
-                let total = daily.saturating_add(ctx.amount_microusd);
+                let total = daily.saturating_add(order_usd);
                 if total > cap {
                     out.push(local_policy_check(
                         "max_daily_usd",
                         LocalPolicyOutcome::Deny,
                         format!(
-                            "posted {} USD + order {} USD exceeds max_daily_usd {}",
+                            "posted {} USD + order {order_text} USD exceeds max_daily_usd {}",
                             format_micro(daily),
-                            format_micro(ctx.amount_microusd),
                             format_micro(cap)
                         ),
                     ));
@@ -425,9 +515,8 @@ pub fn evaluate_local_polymarket_order(
                         "max_daily_usd",
                         LocalPolicyOutcome::Pass,
                         format!(
-                            "{} + {} <= {}",
+                            "{} + {order_text} <= {}",
                             format_micro(daily),
-                            format_micro(ctx.amount_microusd),
                             format_micro(cap)
                         ),
                     ));
@@ -461,14 +550,13 @@ pub fn evaluate_local_polymarket_order(
     }
 
     if let Some(threshold) = policy.require_flag_above_usd
-        && ctx.amount_microusd > threshold
+        && order_usd > threshold
     {
         out.push(local_policy_check(
             "require_flag_above_usd",
             LocalPolicyOutcome::Warn,
             format!(
-                "order {} USD is above {} - acknowledge before value-moving post",
-                format_micro(ctx.amount_microusd),
+                "order {order_text} USD is above {} - acknowledge before value-moving post",
                 format_micro(threshold)
             ),
         ));
@@ -533,35 +621,4 @@ pub fn parse_api_float_micro(value: f64, field: &str) -> Result<u64, DispatchRes
         return Err(error(-4, format!("{field} is not a non-negative number")));
     }
     parse_micro(&format!("{value:.6}")).map_err(|e| error(-4, e.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sell_posting_enabled_only_after_successful_preflight() {
-        let blocked = serde_json::json!({"signing_enabled":false,"posting_enabled":false});
-        let mut policy = blocked.clone();
-        let evidence = serde_json::json!({"status":"pass"});
-        assert_eq!(
-            enable_trade_posting(&mut policy, Ok(evidence.clone()), "preflight passed").unwrap(),
-            evidence
-        );
-        assert_eq!(policy["signing_enabled"], true);
-        assert_eq!(policy["posting_enabled"], true);
-        assert_eq!(policy["can_post"], true);
-        for refusal in [
-            "CLOB balance unavailable or insufficient",
-            "CTF balance unavailable or insufficient",
-            "CTF operator approval missing",
-        ] {
-            let mut policy = blocked.clone();
-            assert!(
-                enable_trade_posting(&mut policy, Err(error(-3, refusal)), "preflight passed")
-                    .is_err()
-            );
-            assert_eq!(policy, blocked);
-        }
-    }
 }

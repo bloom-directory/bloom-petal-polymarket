@@ -1,10 +1,10 @@
 petal::route_file!(spec: petal::wallet_http_read_spec(10_000), read: |ctx: &petal::Ctx| {
-    let account = match crate::account::number(ctx) { Ok(value) => value, Err(resp) => return resp };
+    let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
     let wallet = match petal::wallet_param(ctx) {
         Ok(value) => value,
         Err(resp) => return resp,
     };
-    let user = match crate::public_reads::position_user(wallet, account) {
+    let user = match crate::public_reads::position_user(wallet, &account) {
         Ok(user) => user,
         Err(resp) => return resp,
     };
