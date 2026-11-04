@@ -1,5 +1,5 @@
-use crate::polymarket::claim::{BatchCall, PreparedBatch};
 use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash, batch_signing_preimage};
+use crate::polymarket::relayer_batch::{BatchCall, PreparedBatch};
 use crate::polymarket::wallet::approval_calls;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
@@ -257,7 +257,7 @@ pub fn relayer_batch_body(
             "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt",
         ));
     }
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
+    let batch = PreparedBatch::from_prepared(&prepared).map_err(polymarket_error)?;
     let signature = relayer_batch_signature(ctx, wallet, &prepared, approval_key)?;
     Ok(serde_json::json!({
         "type": "WALLET",
@@ -332,6 +332,7 @@ pub fn prepare_relayer_batch(
                 batch_signing_preimage(&batch, chain_id, deposit),
                 hash,
                 preimage,
+                crate::polymarket::eip712::batch_typed_data(&batch, chain_id, deposit),
             );
             store_prepared_signing(&prepared_key, &prepared)?;
             prepared
@@ -340,7 +341,7 @@ pub fn prepare_relayer_batch(
     if prepared.operation != "onboard_approvals" || prepared.owner != owner.to_checksum(None) {
         return Err(error(-4, "prepared onboarding batch identity mismatch"));
     }
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
+    let batch = PreparedBatch::from_prepared(&prepared).map_err(polymarket_error)?;
     if batch.chain_id != chain_id {
         return Err(error(
             -4,
@@ -382,11 +383,6 @@ pub fn relayer_batch_signature(
         Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
         Err(err) => return Err(sdk_error(err)),
     }
-    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
-    let _effects =
-        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, prepared.hash()?)
-            .map_err(polymarket_error)?;
     // alloy's `Signature` renders v as 27/28, the form the relayer expects.
     let signature = sign_prepared(ctx, wallet, prepared, approval_key)?.to_string();
     let value = PreparedRelayerSignature {

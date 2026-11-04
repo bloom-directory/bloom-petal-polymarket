@@ -18,8 +18,12 @@ pub fn approval_key(wallet: &str) -> String {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct LoginAttempt {
-    id: String,
     completed: bool,
+    timestamp: u64,
+}
+
+fn login_signing_attempt(attempt: &LoginAttempt) -> String {
+    attempt.timestamp.to_string()
 }
 
 fn login_attempt_key(wallet: &str) -> String {
@@ -29,13 +33,8 @@ fn login_attempt_key(wallet: &str) -> String {
 fn parse_login_attempt(bytes: &[u8]) -> Result<LoginAttempt, DispatchResponse> {
     let attempt: LoginAttempt = serde_json::from_slice(bytes)
         .map_err(|e| error(-4, format!("corrupt login attempt: {e}")))?;
-    if attempt.id.len() != 32
-        || !attempt
-            .id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(error(-4, "invalid login attempt identity"));
+    if attempt.timestamp == 0 {
+        return Err(error(-4, "invalid login attempt timestamp"));
     }
     Ok(attempt)
 }
@@ -48,25 +47,14 @@ fn load_login_attempt(wallet: &str) -> Result<Option<LoginAttempt>, DispatchResp
     }
 }
 
-/// A completed attempt advances only when an explicit begin finds no credentials.
+/// Durable payload identity is the server timestamp, never an arbitrary retry nonce.
 fn current_login_attempt(wallet: &str) -> Result<LoginAttempt, DispatchResponse> {
-    if let Some(attempt) = load_login_attempt(wallet)?
-        && !attempt.completed
-    {
-        return Ok(attempt);
-    }
-    let random = petal::sdk::random_bytes(16).map_err(sdk_error)?;
-    if random.len() != 16 {
-        return Err(error(-4, "invalid login attempt randomness"));
-    }
-    let attempt = LoginAttempt {
-        id: hex::encode(random),
-        completed: false,
-    };
-    match store_put_json(&login_attempt_key(wallet), &attempt, false) {
-        DispatchResponse::Write => Ok(attempt),
-        response => Err(response),
-    }
+    Ok(load_login_attempt(wallet)?
+        .filter(|attempt| !attempt.completed)
+        .unwrap_or(LoginAttempt {
+            completed: false,
+            timestamp: 0,
+        }))
 }
 
 fn complete_login_attempt(wallet: &str, mut attempt: LoginAttempt) -> Result<(), DispatchResponse> {
@@ -86,7 +74,7 @@ pub fn approval_operations(wallet: &str) -> Result<Vec<String>, DispatchResponse
         operations.push(crate::approval::operation_identity(
             &key,
             "polymarket.clob_auth.v1",
-            Some(&attempt.id),
+            Some(&login_signing_attempt(&attempt)),
         ));
     }
     if let Some(prepared) =
@@ -101,21 +89,7 @@ pub fn approval_operations(wallet: &str) -> Result<Vec<String>, DispatchResponse
     Ok(operations)
 }
 
-/// Store key holding when a CLOB login whose post-signing step failed may be
-/// retried. Machine keeps the spent single-use grant for APPROVAL_TTL_MS.
-fn login_retry_key(wallet: &str) -> String {
-    format!("onboard/{wallet}/login_retry_after.json")
-}
-const LOGIN_RETRY_WAIT_MS: u64 = 5 * 60 * 1000;
-
-/// When a CLOB login may be retried, if a failed attempt is still waiting.
-pub fn login_retry_after_ms(wallet: &str) -> Option<u64> {
-    store_get(&login_retry_key(wallet))
-        .and_then(|bytes| serde_json::from_slice::<u64>(&bytes).ok())
-        .filter(|after| *after > now_millis() as u64)
-}
-
-fn login_failed_after_signing(response: DispatchResponse, retry_after_ms: u64) -> DispatchResponse {
+fn login_failed_after_signing(response: DispatchResponse) -> DispatchResponse {
     let detail = match response {
         DispatchResponse::Error { message, .. } => message,
         other => format!("{other:?}"),
@@ -123,7 +97,7 @@ fn login_failed_after_signing(response: DispatchResponse, retry_after_ms: u64) -
     error(
         -4,
         format!(
-            "CLOB login failed after the owner approved it ({detail}); that single-use approval is spent, so wait until {retry_after_ms} ms (status.json retry_after_ms), then write begin again"
+            "CLOB login failed after signing ({detail}); retry begin to refresh the login payload"
         ),
     )
 }
@@ -140,6 +114,7 @@ pub fn begin_onboarding(
     ctx: &petal::Ctx,
     wallet: &str,
     account: &petal::WalletAccount,
+    refresh: bool,
 ) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
@@ -167,7 +142,7 @@ pub fn begin_onboarding(
             Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => None,
             Err(err) => return sdk_error(err),
         };
-    if existing_creds.is_some() {
+    if existing_creds.is_some() && !refresh {
         match load_login_attempt(wallet) {
             Ok(Some(attempt)) if !attempt.completed => {
                 if let Err(resp) = complete_login_attempt(wallet, attempt) {
@@ -179,15 +154,12 @@ pub fn begin_onboarding(
         }
         return DispatchResponse::Write;
     }
-    let attempt = match current_login_attempt(wallet) {
+    let mut attempt = match current_login_attempt(wallet) {
         Ok(attempt) => attempt,
         Err(resp) => return resp,
     };
-    // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
-    // faster than an owner ceremony completes. Build it fresh on every attempt
-    // and sign it under a single-use approval that is not bound to the bytes.
-    // The deposit-wallet approval batch is prepared and approved later, in the
-    // funded stage, so its one-hour deadline starts when it can be submitted.
+    // A refreshed server timestamp is a new exact payload, and therefore a new
+    // durable operation. Retries of that timestamp retain the same identity.
     let timestamp = match clob_server_time() {
         Ok(timestamp) => timestamp,
         Err(resp) => return resp,
@@ -206,6 +178,12 @@ pub fn begin_onboarding(
         Ok(hash) => hash,
         Err(resp) => return resp,
     };
+    attempt.timestamp = timestamp;
+    if let DispatchResponse::Error { code, message } =
+        store_put_json(&login_attempt_key(wallet), &attempt, false)
+    {
+        return error(code, message);
+    }
     let prepared = PreparedSigning::new(
         "clob_auth",
         "polymarket.clob_auth.v1",
@@ -218,9 +196,15 @@ pub fn begin_onboarding(
             "chain_id": chain_id,
             "review_intent_hash": review_hash,
         }),
+        crate::polymarket::eip712::clob_auth_typed_data(
+            owner,
+            timestamp,
+            CLOB_AUTH_NONCE,
+            chain_id,
+        ),
     );
     let prepared_action = match crate::approval::action_for_prepared(&prepared) {
-        Ok(action) => action,
+        Ok(action) => action.with_spend(petal::signing::Spend::None),
         Err(resp) => return resp,
     };
     let signature = match crate::approval::sign_action_for(
@@ -228,12 +212,14 @@ pub fn begin_onboarding(
         wallet,
         &prepared_action,
         &approval_key,
-        Some(&attempt.id),
+        Some(&login_signing_attempt(&attempt)),
     ) {
-        Ok(signature) => match crate::approval::verified_signature(&prepared, &signature) {
-            Ok(signature) => signature.to_string(),
-            Err(resp) => return resp,
-        },
+        Ok(signature) => {
+            match crate::approval::verified_signature(owner, action.signing_hash, &signature) {
+                Ok(signature) => signature.to_string(),
+                Err(resp) => return resp,
+            }
+        }
         Err(resp) => return resp,
     };
     let headers = [
@@ -255,9 +241,7 @@ pub fn begin_onboarding(
         }
     });
     if let Err(response) = stored {
-        let retry_after_ms = now_millis() as u64 + LOGIN_RETRY_WAIT_MS;
-        let _ = store_put_json(&login_retry_key(wallet), &retry_after_ms, false);
-        return login_failed_after_signing(response, retry_after_ms);
+        return login_failed_after_signing(response);
     }
     match complete_login_attempt(wallet, attempt) {
         Ok(()) => DispatchResponse::Write,
@@ -320,10 +304,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_attempt_identity_survives_timestamp_refresh_and_reload() {
+    fn login_attempt_identity_binds_refresh_and_survives_reload() {
         let first = LoginAttempt {
-            id: "0123456789abcdef0123456789abcdef".into(),
             completed: false,
+            timestamp: 100,
         };
         let reload = parse_login_attempt(&serde_json::to_vec(&first).unwrap()).unwrap();
         let key = approval_key("test");
@@ -341,37 +325,48 @@ mod tests {
         );
         assert_ne!(at_first.signing_hash, refreshed.signing_hash);
         assert_eq!(
-            crate::approval::operation_identity(&key, "polymarket.clob_auth.v1", Some(&first.id)),
-            crate::approval::operation_identity(&key, "polymarket.clob_auth.v1", Some(&reload.id))
+            crate::approval::operation_identity(
+                &key,
+                "polymarket.clob_auth.v1",
+                Some(&login_signing_attempt(&first))
+            ),
+            crate::approval::operation_identity(
+                &key,
+                "polymarket.clob_auth.v1",
+                Some(&login_signing_attempt(&reload))
+            )
         );
-        let next = "fedcba9876543210fedcba9876543210";
+        let mut fresh = reload.clone();
+        fresh.timestamp += 1;
         assert_ne!(
-            crate::approval::operation_identity(&key, "polymarket.clob_auth.v1", Some(&reload.id)),
-            crate::approval::operation_identity(&key, "polymarket.clob_auth.v1", Some(next))
+            login_signing_attempt(&reload),
+            login_signing_attempt(&fresh)
+        );
+        let same_payload = LoginAttempt {
+            completed: true,
+            timestamp: first.timestamp,
+        };
+        assert_eq!(
+            login_signing_attempt(&first),
+            login_signing_attempt(&same_payload)
         );
     }
 
     #[test]
-    fn login_attempt_rejects_corrupt_identity() {
-        for id in ["", "0000", "gggggggggggggggggggggggggggggggg"] {
-            let data = serde_json::to_vec(&LoginAttempt {
-                id: id.into(),
-                completed: false,
-            })
-            .unwrap();
-            assert!(parse_login_attempt(&data).is_err());
-        }
+    fn login_attempt_rejects_invalid_timestamp() {
+        assert!(parse_login_attempt(br#"{"timestamp":0,"completed":false}"#).is_err());
+        assert!(parse_login_attempt(br#"{"timestamp":"bad","completed":false}"#).is_err());
     }
 
     #[test]
-    fn login_failure_after_signing_explains_the_wait() {
+    fn login_failure_after_signing_allows_immediate_refresh() {
         let DispatchResponse::Error { code, message } =
-            login_failed_after_signing(error(-2, "clob refused"), 42)
+            login_failed_after_signing(error(-2, "clob refused"))
         else {
             panic!("must be an error");
         };
         assert_eq!(code, -4, "Bloom keeps the message of -4, not -2");
         assert!(message.contains("clob refused"));
-        assert!(message.contains("wait until 42 ms"));
+        assert!(message.contains("retry begin"));
     }
 }

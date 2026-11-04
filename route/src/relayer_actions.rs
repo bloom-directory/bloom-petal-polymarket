@@ -1,8 +1,8 @@
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::polymarket::claim::{BatchCall, PreparedBatch};
 use crate::polymarket::eip712::{Call, FACTORY, PUSD};
+use crate::polymarket::relayer_batch::{BatchCall, PreparedBatch};
 use crate::polymarket::signing::wallet_batch_action_and_hash;
 use crate::polymarket::wallet::{redeem_positions_call, revoke_calls, transfer_amount_call};
 use crate::polymarket::{Market, validate_wallet_name};
@@ -137,7 +137,7 @@ fn execute(
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let (chain, chain_id) = match crate::runtime_config::chain() {
+    let (_chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -209,7 +209,11 @@ fn execute(
                 owner,
                 built.signing_preimage,
                 built.signing_hash,
-                preimage,
+                preimage.clone(),
+                match PreparedBatch::from_preimage(&preimage) {
+                    Ok(batch) => batch.typed_data(),
+                    Err(e) => return polymarket_error(e),
+                },
             );
             if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
                 return resp;
@@ -218,7 +222,7 @@ fn execute(
         }
         Err(resp) => return resp,
     };
-    let batch = match PreparedBatch::from_preimage(&prepared.preimage) {
+    let batch = match PreparedBatch::from_prepared(&prepared) {
         Ok(batch) => batch,
         Err(e) => return polymarket_error(e),
     };
@@ -299,13 +303,6 @@ fn execute(
         }
     }
 
-    let _effects = match prepared.hash().and_then(|hash| {
-        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, hash)
-            .map_err(polymarket_error)
-    }) {
-        Ok(effects) => effects,
-        Err(resp) => return resp,
-    };
     // alloy's `Signature` renders v as 27/28, the form the relayer expects.
     let signature = match sign_prepared(ctx, wallet, &prepared, &approval_key) {
         Ok(signature) => signature.to_string(),

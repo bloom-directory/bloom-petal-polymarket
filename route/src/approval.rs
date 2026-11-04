@@ -12,6 +12,7 @@ pub struct PreparedSigning {
     pub signing_hash: String,
     pub signing_preimage_hex: String,
     pub preimage: serde_json::Value,
+    pub typed_data: serde_json::Value,
 }
 
 impl PreparedSigning {
@@ -22,6 +23,7 @@ impl PreparedSigning {
         signing_preimage: Vec<u8>,
         signing_hash: B256,
         preimage: serde_json::Value,
+        typed_data: serde_json::Value,
     ) -> Self {
         Self {
             operation: operation.into(),
@@ -30,6 +32,7 @@ impl PreparedSigning {
             signing_hash: format!("{signing_hash:#x}"),
             signing_preimage_hex: hex::encode(signing_preimage),
             preimage,
+            typed_data,
         }
     }
 
@@ -108,18 +111,39 @@ pub fn verify_review_intent(key: &str, expected_hash: &str) -> Result<(), Dispat
     Ok(())
 }
 
-/// Build the existing Broker witness once for the shared lifecycle adapter.
+/// The generic EIP-712 review and payload always come from the same typed data.
+pub fn typed_action(
+    class: &str,
+    typed_data: &serde_json::Value,
+) -> Result<petal::signing::PreparedAction, DispatchResponse> {
+    let typed: alloy_dyn_abi::TypedData = serde_json::from_value(typed_data.clone())
+        .map_err(|e| error(-4, format!("invalid typed data: {e}")))?;
+    let domain = typed.domain.separator();
+    let message = typed
+        .hash_struct()
+        .map_err(|e| error(-4, format!("hash typed data: {e}")))?;
+    let preimage = [&[0x19, 0x01][..], domain.as_slice(), message.as_slice()].concat();
+    let payload = petal::signing::SigningPayload::keccak256(preimage)
+        .map_err(|e| error(-4, e.to_string()))?;
+    let bytes = serde_json::to_vec(&serde_json::json!({"schema":"bloom.message.review.v1", "kind":"eip712", "typed_data":typed_data}))
+        .map_err(|e| error(-4, format!("encode review: {e}")))?;
+    let review = petal::signing::ReviewArtifact::new("bloom.message.review", 1, bytes)
+        .map_err(|e| error(-4, e.to_string()))?;
+    petal::signing::PreparedAction::new(class, payload, review)
+        .map_err(|e| error(-4, e.to_string()))
+}
+
 pub fn action_for_prepared(
     prepared: &PreparedSigning,
 ) -> Result<petal::signing::PreparedAction, DispatchResponse> {
-    let review =
-        serde_json::to_vec(&[prepared]).map_err(|e| error(-4, format!("encode review: {e}")))?;
-    let payload = petal::signing::SigningPayload::keccak256(prepared.signing_preimage()?)
-        .map_err(|e| error(-4, e.to_string()))?;
-    let review = petal::signing::ReviewArtifact::new("polymarket.prepared-record", 1, review)
-        .map_err(|e| error(-4, e.to_string()))?;
-    petal::signing::PreparedAction::new(&prepared.intent, payload, review)
-        .map_err(|e| error(-4, e.to_string()))
+    let action = typed_action(&prepared.intent, &prepared.typed_data)?;
+    if action.payload.preimage != prepared.signing_preimage()? {
+        return Err(error(
+            -4,
+            "typed review does not match prepared signing payload",
+        ));
+    }
+    Ok(action)
 }
 
 pub fn sign_action(
@@ -154,18 +178,6 @@ pub fn sign_action_for(
     operation_key: &str,
     attempt: Option<&str>,
 ) -> Result<Vec<u8>, DispatchResponse> {
-    // Old hints belong to the previous package and must never be reinterpreted
-    // as authority by this one. Leave them inspectable for the old build.
-    match petal::sdk::store_get(operation_key, MAX_STORE_BYTES) {
-        Ok(_) => {
-            return Err(error(
-                -3,
-                "legacy approval pending; reconcile with the original package",
-            ));
-        }
-        Err(SdkError::Host(HostStatus::NotFound)) => (),
-        Err(e) => return Err(sdk_error(e)),
-    }
     let key = operation_identity(operation_key, &action.operation_class, attempt);
     match petal::signing::sign(ctx, wallet, action, &key) {
         Ok(petal::signing::SigningOutcome::Signed { signature }) => Ok(signature),
@@ -184,15 +196,16 @@ pub fn sign_action_for(
 
 /// Validate the returned signature and render v as 27/28 for the venue.
 pub fn verified_signature(
-    prepared: &PreparedSigning,
+    owner: Address,
+    hash: B256,
     bytes: &[u8],
 ) -> Result<Signature, DispatchResponse> {
     let signature =
         Signature::from_raw(bytes).map_err(|err| error(-4, format!("host signature: {err}")))?;
     if signature
-        .recover_address_from_prehash(&prepared.hash()?)
+        .recover_address_from_prehash(&hash)
         .map_err(|err| error(-4, format!("recover host signature: {err}")))?
-        != prepared.owner()?
+        != owner
     {
         return Err(error(-4, "host signature does not match prepared owner"));
     }
@@ -216,7 +229,7 @@ pub fn sign_prepared(
         operation_key,
         attempt.as_deref(),
     )?;
-    verified_signature(prepared, &signature)
+    verified_signature(prepared.owner()?, prepared.hash()?, &signature)
 }
 
 /// Read-only projection of Machine's operation state. Legacy artifacts remain
@@ -224,18 +237,9 @@ pub fn sign_prepared(
 pub fn approval_projection(
     ctx: &petal::Ctx,
     wallet: &str,
-    key: &str,
+    _key: &str,
     operations: &[String],
 ) -> Result<Option<serde_json::Value>, DispatchResponse> {
-    match petal::sdk::store_get(key, MAX_STORE_BYTES) {
-        Ok(bytes) => {
-            return serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|e| error(-4, format!("corrupt legacy approval: {e}")));
-        }
-        Err(SdkError::Host(HostStatus::NotFound)) => (),
-        Err(e) => return Err(sdk_error(e)),
-    }
     for operation in operations {
         match petal::signing::status(ctx, wallet, operation) {
             Ok(petal::signing::SigningOutcome::ApprovalPending {
@@ -277,6 +281,29 @@ pub fn relayer_operation(key: &str, prepared_key: &str) -> Result<Vec<String>, D
 mod tests {
     use super::*;
     #[test]
+    fn generic_review_rebuilds_the_exact_authentication_payload() {
+        let owner = Address::repeat_byte(1);
+        let typed_data = crate::polymarket::eip712::clob_auth_typed_data(owner, 100, 0, 137);
+        let mut prepared = PreparedSigning::new(
+            "login",
+            "fixture.login",
+            owner,
+            crate::polymarket::eip712::clob_auth_signing_preimage(owner, 100, 0, 137),
+            crate::polymarket::eip712::clob_auth_signing_hash(owner, 100, 0, 137),
+            serde_json::Value::Null,
+            typed_data,
+        );
+        let action = action_for_prepared(&prepared).unwrap();
+        assert_eq!(action.review.format, "bloom.message.review");
+        assert_eq!(
+            action.payload.preimage,
+            prepared.signing_preimage().unwrap()
+        );
+        prepared.typed_data["message"]["timestamp"] = serde_json::json!("101");
+        assert!(action_for_prepared(&prepared).is_err());
+    }
+
+    #[test]
     fn signatures_are_checked_against_the_prepared_owner_and_normalized() {
         use alloy::signers::{SignerSync, local::PrivateKeySigner};
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(7)).unwrap();
@@ -288,20 +315,37 @@ mod tests {
             preimage.clone(),
             alloy::primitives::keccak256(&preimage),
             serde_json::json!({}),
+            serde_json::Value::Null,
         );
         let signature = signer.sign_hash_sync(&prepared.hash().unwrap()).unwrap();
         let mut bytes = signature.as_bytes();
         bytes[64] -= 27;
         assert_eq!(
-            verified_signature(&prepared, &bytes).unwrap().to_string(),
+            verified_signature(prepared.owner().unwrap(), prepared.hash().unwrap(), &bytes)
+                .unwrap()
+                .to_string(),
             signature.to_string()
         );
-        assert!(verified_signature(&prepared, &bytes[..64]).is_err());
+        assert!(
+            verified_signature(
+                prepared.owner().unwrap(),
+                prepared.hash().unwrap(),
+                &bytes[..64]
+            )
+            .is_err()
+        );
         let wrong_owner = PreparedSigning {
             owner: Address::repeat_byte(9).to_checksum(None),
             ..prepared
         };
-        assert!(verified_signature(&wrong_owner, &bytes).is_err());
+        assert!(
+            verified_signature(
+                wrong_owner.owner().unwrap(),
+                wrong_owner.hash().unwrap(),
+                &bytes
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -314,6 +358,7 @@ mod tests {
                 vec![1],
                 alloy::primitives::keccak256([1]),
                 serde_json::json!({"nonce": nonce}),
+                serde_json::Value::Null,
             )
         };
         let first = prepared(8);

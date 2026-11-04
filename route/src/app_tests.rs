@@ -488,6 +488,7 @@ max_daily_usd = "100"
             Vec::new(),
             alloy::primitives::B256::ZERO,
             serde_json::json!({"deadline": 500}),
+            serde_json::Value::Null,
         );
         assert!(
             !crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 499).unwrap()
@@ -556,13 +557,6 @@ max_daily_usd = "100"
         )
     }
 
-    fn pusd_debit(amount: &str) -> petal::ClaimDebit {
-        petal::ClaimDebit {
-            asset: crate::polymarket::claim::pusd_asset("polygon"),
-            amount: amount.into(),
-        }
-    }
-
     /// The live case end to end, without the host: Gamma's fee-enabled market
     /// and the CLOB book become the snapshot, the snapshot's fee lands on the
     /// draft, and the signed BUY declares makerAmount plus the fee bound.
@@ -604,20 +598,12 @@ max_daily_usd = "100"
         assert_eq!(draft.limit_price_micro, 400_000);
         assert_eq!(draft.book_snapshot_secs, 7);
 
-        let order = signed_order(&draft);
-        let effects = draft.order_effects("polygon", &order).unwrap();
-        // 2,000,000 + ceil(2,000,000 × 0.07) + 1,000: covers the 2,084,000
-        // the exchange pulled, at any fill price and any tick.
-        assert_eq!(effects.debits(), &[pusd_debit("2141000")]);
         assert_eq!(draft.fee_cap_micro().unwrap(), 141_000);
-
-        // A fee-free market declares the principal alone.
         let free = StoreTradeDraft {
             fee: Some(MarketFee::Disabled),
-            ..draft.clone()
+            ..draft
         };
-        let effects = free.order_effects("polygon", &order).unwrap();
-        assert_eq!(effects.debits(), &[pusd_debit("2000000")]);
+        assert_eq!(free.fee_cap_micro().unwrap(), 0);
     }
 
     #[test]
@@ -684,9 +670,6 @@ max_daily_usd = "100"
         };
         sell.requote(&quote, &snapshot, 7);
         assert_eq!(sell.fee_cap_micro().unwrap(), 0);
-        let effects = sell.order_effects("polygon", &signed_order(&sell)).unwrap();
-        assert_eq!(effects.debits().len(), 1);
-        assert_ne!(effects.debits()[0].asset, pusd_debit("0").asset);
 
         let quote =
             build_trade_quote(Side::Buy, 2_000_000, 400_000, &snapshot, OrderType::GTC).unwrap();
@@ -699,40 +682,24 @@ max_daily_usd = "100"
         let err = buy.fee_cap_micro().unwrap_err().to_string();
         assert!(err.contains("feesEnabled"), "{err}");
         assert!(err.contains("refusing to sign a BUY"), "{err}");
-        assert!(buy.order_effects("polygon", &signed_order(&buy)).is_err());
     }
 
     /// Posting refuses before signing when the prepared order is not the
     /// reviewed one, or the draft has no recorded fee.
     #[test]
     fn a_claim_is_only_declared_for_the_reviewed_order_and_fee() {
-        let draft = fee_enabled_buy();
-        let mut order = signed_order(&draft);
-        order.makerAmount = alloy::primitives::U256::from(1_000_000u64);
-        let err = draft
-            .order_effects("polygon", &order)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("does not match the reviewed draft"), "{err}");
-
         let old = StoreTradeDraft {
             fee: None,
             ..fee_enabled_buy()
         };
-        let err = old
-            .order_effects("polygon", &signed_order(&old))
-            .unwrap_err()
-            .to_string();
+        let err = old.fee_cap_micro().unwrap_err().to_string();
         assert!(err.contains("write revalidate"), "{err}");
 
         let unbounded = StoreTradeDraft {
             fee: Some(unbounded_fee()),
             ..fee_enabled_buy()
         };
-        let err = unbounded
-            .order_effects("polygon", &signed_order(&unbounded))
-            .unwrap_err()
-            .to_string();
+        let err = unbounded.fee_cap_micro().unwrap_err().to_string();
         assert!(err.contains("refusing to sign a BUY"), "{err}");
     }
 
@@ -870,109 +837,14 @@ require_flag_above_usd = "2.05"
         }
     }
 
-    /// Broker rebuilds this record from a closed key allow-list and refuses
-    /// any field outside it ("Polymarket prepared data has an unsupported
-    /// field"). Three fee keys were added here and made every order
-    /// unsignable, which no test noticed, so the whole key set is pinned.
-    ///
-    /// Adding a key means adding it to Broker's allow-list first. Carrying
-    /// fee data belongs on the draft or the receipt, which Broker never sees.
-    #[test]
-    fn the_prepared_preimage_matches_brokers_allow_list() {
-        use crate::trade_flow_parts::posting::prepared_order_signing;
-
-        let buy = fee_enabled_buy();
-        let order = signed_order(&buy);
-        let prepared = prepared_order_signing(&crate::polymarket::order::PreparedOrder {
-            version: 1,
-            order,
-            owner: Address::repeat_byte(0x11),
-            funder: Address::repeat_byte(0x22),
-            chain_id: 137,
-            neg_risk: buy.neg_risk,
-            draft_id: buy.id.clone(),
-            review_intent_hash: "h".into(),
-            policy_warnings_acknowledged: false,
-        });
-        let mut keys = prepared
-            .preimage
-            .as_object()
-            .expect("preimage is an object")
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            [
-                "chain_id",
-                "draft_id",
-                "funder",
-                "maker_amount",
-                "neg_risk",
-                "owner",
-                "policy_warnings_acknowledged",
-                "review_intent_hash",
-                "salt",
-                "side",
-                "signature_type",
-                "taker_amount",
-                "timestamp_ms",
-                "token_id",
-            ]
-        );
-    }
-
     /// The prepared approval record and the receipt show a BUY's fee bound
     /// with the note on what enforces it. Records an earlier build wrote
     /// without the note still load, and keep their JSON.
     #[test]
     fn the_fee_bound_note_is_shown_wherever_the_bound_is() {
         use crate::polymarket::fees::FEE_BOUND_NOTE;
-        use crate::polymarket::order::poly1271_digest;
-        use crate::trade_flow_parts::posting::prepared_order_signing;
-
         let buy = fee_enabled_buy();
-        let order = signed_order(&buy);
-        let owner = Address::repeat_byte(0x11);
         let funder = Address::repeat_byte(0x22);
-        let prepared = prepared_order_signing(&crate::polymarket::order::PreparedOrder {
-            version: 1,
-            order: order.clone(),
-            owner,
-            funder,
-            chain_id: 137,
-            neg_risk: buy.neg_risk,
-            draft_id: buy.id.clone(),
-            review_intent_hash: "h".into(),
-            policy_warnings_acknowledged: false,
-        });
-        // Broker rebuilds this record and refuses an unknown key, so no fee
-        // field may appear in it. The bound lives on the draft and the
-        // receipt instead; `the_prepared_preimage_matches_brokers_allow_list`
-        // pins the whole key set.
-        assert!(prepared.preimage.get("fee").is_none());
-        assert!(prepared.preimage.get("fee_cap").is_none());
-        assert!(prepared.preimage.get("fee_note").is_none());
-        assert_eq!(prepared.preimage["draft_id"], buy.id);
-        assert_eq!(prepared.preimage["review_intent_hash"], "h");
-        assert_eq!(
-            prepared.hash().unwrap(),
-            poly1271_digest(&order, 137, buy.neg_risk)
-        );
-        // Posting reuses a stored prepared record as it is, so one written by
-        // an earlier build keeps the bytes its owner approval is bound to.
-        let mut earlier = prepared.clone();
-        earlier
-            .preimage
-            .as_object_mut()
-            .unwrap()
-            .insert("fee_note".into(), FEE_BOUND_NOTE.into());
-        let stored = serde_json::to_vec(&earlier).unwrap();
-        let loaded: PreparedSigning = serde_json::from_slice(&stored).unwrap();
-        assert_eq!(loaded, earlier);
-        assert_eq!(serde_json::to_vec(&loaded).unwrap(), stored);
-
         let receipt =
             StoreTradeReceipt::for_draft(&buy, funder.to_checksum(None), 42, "h".into()).unwrap();
         assert_eq!(receipt.fee_note.as_deref(), Some(FEE_BOUND_NOTE));
@@ -1239,9 +1111,6 @@ require_flag_above_usd = "2.05"
         assert_eq!(quoted_by_an_old_build.fee_cap_micro().unwrap(), 0);
         let ctx = LocalPolymarketOrderCtx::for_draft(&sell, true, Some(0)).unwrap();
         assert_eq!(ctx.fee_cap_microusd, 0);
-        let effects = sell.order_effects("polygon", &signed_order(&sell)).unwrap();
-        assert_eq!(effects.debits().len(), 1);
-        assert_ne!(effects.debits()[0].asset, pusd_debit("0").asset);
         let receipt = StoreTradeReceipt::for_draft(&sell, "0x22".into(), 42, "h".into()).unwrap();
         assert_eq!(receipt.fee_cap_microusd, Some(0));
 

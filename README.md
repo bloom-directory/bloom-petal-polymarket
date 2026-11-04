@@ -7,17 +7,36 @@ holds no pUSD it stops at stage `fund`. Fund it with
 `fund/<wallet>/<index>/new`, then write `continue` again to approve.
 `status.json` names the next action at every stage. With existing
 credentials, `begin` acknowledges without another authentication signature.
+Write `{"refresh":true}` to `begin` to explicitly refresh those credentials.
 
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
 
 ## Persona session accounting
 
-Fee-free `polymarket.order.poly1271` claims include gross maker debits reconstructed from the signed order. BUY orders debit six-decimal `evm-137:0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb` (the canonical pUSD contract, not a ticker alias); SELL orders debit the exact CTF ERC1155 token's share units. The claim validates the owner, chain, negative-risk exchange selection, amounts and side against the saved signing preimage before asking Bloom to sign. Multiple orders in an exact-review batch consume the sum of their debits. Automatic BUY remains single-order/single-payload.
+Orders use complete ERC-7739 `TypedDataSign` EIP-712 data through the generic
+`bloom.message.review` v1 format. Every signed field, including metadata and
+builder, is included. The Petal verifies that the generic typed data produces
+the exact protocol digest and verifies the returned signature against the owner.
 
-Bloom may execute covered BUY orders under an owner-activated Trader or Degen grant. Selecting a persona alone does not activate a grant. An independent raw-unit pUSD allowance covers BUY orders; SELL shares, builder fees, onboarding, funding and withdrawals retain their existing separate approval behavior. Session accounting reserves gross signed order exposure, including orders that remain open or whose submission result is unknown. Cancellation, expiry at the venue or revoking future signing does not automatically refund the sealed budget or cancel existing signed orders.
+BUY declares its six-decimal pUSD principal debit on Polygon using the exact
+contract `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb`. SELL leaves spend
+unspecified and requires exact review. Onboarding approvals, funding,
+withdrawals and other continuing permissions also retain exact review.
+Operator trading fees remain bounded and disclosed in the local draft and
+receipt; the signed order does not contain or enforce those fees.
 
-Claims carry the generic versioned economic-effects contract with an explicit Polygon network for every payload. Machine binds the actual selected account; Broker validates that context and retains mandatory signed-order BUY verification. Order claims declare no continuing permissions and no wallet-paid signing fees; credential and non-order signing requests require separate approval. Broker owns raw-unit reservations and per-action/rolling limits. Trader allows 100 pUSD per BUY and 1,000 per rolling 24 hours; Degen allows 1,000 per BUY and 10,000 per rolling seven days. Permissions persist until revoked and windows replenish as reservations age out. No oracle or assumed $1 peg is used. Unlisted token/share scopes retain individual owner review. This reference integration does not restrict the generic EVM/SVM Petal system to Polymarket.
+A ClobAuth login explicitly declares `Spend::None`. With installer-certified
+zero-spend provenance and an active Trader or Degen grant, it uses that grant's
+rate cap and no token budget. Institutional requires exact review. Each refreshed
+server timestamp is a distinct durable signing operation; retrying the same
+payload keeps its operation identity.
+
+Broker trusts the pinned, installer-signed package's declared effects. It binds
+account, network, payload and grant, checks token policy and limits, and reserves
+usage, without a Polymarket-specific verifier. A persona choice alone does not
+activate a grant. Signed principal volume remains reserved after cancellation,
+venue expiry or an unknown submission outcome; rearm preserves prior usage.
 
 ## Layout
 
@@ -50,15 +69,10 @@ selected account directory and stored in the Petal's own state. They are advisor
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
 
-CLOB login uses `polymarket.clob_auth.v1`, a one-signature permission distinct
-from exact wallet approvals. The matching Broker verifies the actual EIP-712
-domain, selected owner, fixed wallet attestation, nonce zero and fresh timestamp
-at signing. Polymarket's server timestamp can refresh after the owner approves.
-An old pending login approval is replaced because the permission profile changed.
-Install this package with the matching clear-signing Broker/Machine release;
-older services cannot enforce this profile. API credentials can authorize
-account API actions and are kept in the Petal's secret store. Orders and
-deposit-wallet batches still need their own exact approvals.
+CLOB login uses the `polymarket.clob_auth.v1` class declared as zero spend in
+this package's signing policy. The timestamp is refreshed by the Petal and the
+complete payload is signed again. The host uses the same generic prepared-action
+and grant rules as other packages. API credentials remain in the secret store.
 
 The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
@@ -133,36 +147,17 @@ Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
 Retain deposit-wallet onboarding identity, credentials, funding and relayer receipts, and trade records from the installed build until pending funds and positions have been reconciled. Externally funded deposit wallets and venue orders survive local route upgrades; use the old build to inspect their identity and recovery state.
 
-### Broker-owned persona accounting
-
-This source combines order-debit accounting with the versioned clear-signing
-login/review contract. With a matching persona-enabled Machine/Broker, an
-owner-reviewed reusable Petal approval can cover fee-free BUY orders. Broker
-reconstructs each signing preimage and verifies its gross pUSD maker debit;
-Signer retains its existing signature counters and custody checks. SELL shares,
-login, wallet setup, fees, funding and withdrawals do not inherit the BUY scope.
-Without a matching session, orders retain exact owner review. A published,
-installer-certified package identity is required before default onboarding can
-use this candidate; a local build is not a released default package.
-
 ### Prepared signing
 
-Order signing persists a version 1 typed `PreparedOrder` before requesting
-signature. Its complete signed order, owner, funder, chain, market kind, draft
-and review-intent binding are checked again on every retry. The stored alloy
-integer representation is hexadecimal; the Broker compatibility witness still
-uses the prior decimal-string fields, so its signed-byte and debit format is
-unchanged. Metadata and builder attribution must be zero. BUY declares the
-maker amount of pUSD; SELL declares the maker amount of conditional tokens.
+Order signing persists a typed `PreparedOrder` before requesting a signature.
+Its complete order, owner, funder, chain, market kind, draft and local
+review-intent binding are checked again on every retry. The generic review
+contains the full ERC-7739 `TypedDataSign` typed data; no protocol-specific
+Broker witness is sent. Metadata and builder attribution must be zero.
 
-The Petal constructs the order, witness and debit and owns venue submission and
-reconciliation. It calls `petal::signing::sign` with a prepared action and a
-stable domain operation key. The SDK owns action encoding; Machine owns claims,
-approval continuation, durable operation identity and signature validation.
-Status routes use the separate read-only signing-status capability. Declaration
-alone does not establish eligibility or prove economic effects: the existing
-Broker verifier still checks the BUY order's signed bytes and collateral debit.
-Other operations retain their existing exact or recognized one-use login scopes. Existing pre-migration
-prepared records and approval hints are not converted: reconcile them with the
-original package. A draft whose signing operation is frozen cannot be
-revalidated into a different order; create a new draft after reconciliation.
+The Petal owns venue submission and reconciliation. Stable operation keys
+preserve signing retries; read-only status uses the separate signing-status
+capability. This unreleased contract makes a clean break from prepared witness
+records: use a new candidate package and fresh candidate state. A frozen draft
+cannot be revalidated into a different order; reconcile it before creating a
+replacement.

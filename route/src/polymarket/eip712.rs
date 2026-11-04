@@ -1,9 +1,9 @@
 //! EIP-712 typed data (CLOB auth + relayer batch) and contract addresses.
 //!
 //! All EIP-712 machinery is sourced from the **`alloy` umbrella** modules
-//! (`alloy::sol`, `alloy::sol_types::SolStruct`, `alloy::dyn_abi::Eip712Domain`)
-//! — never the standalone `alloy-dyn-abi 1.5` dep — so there is exactly one
-//! `Eip712Domain` type in play. Byte-exact reference: the Polymarket CLOB SDK
+//! (`alloy::sol`, `alloy::sol_types::SolStruct`, `alloy::dyn_abi::Eip712Domain`).
+//! Dynamic typed-data hashing uses the exact matching alloy-dyn-abi 1.6.0
+//! revision, so there is exactly one `Eip712Domain` type in play. Byte-exact reference: the Polymarket CLOB SDK
 //! `src/auth.rs` (`ClobAuth`) and the Polymarket deposit-wallet docs.
 
 use std::borrow::Cow;
@@ -252,6 +252,35 @@ const fn hex_nibble(c: u8) -> u8 {
         b'A'..=b'F' => c - b'A' + 10,
         _ => panic!("invalid hex nibble in address literal"),
     }
+}
+
+/// Complete standard EIP-712 data for owner authentication.
+pub fn clob_auth_typed_data(
+    address: Address,
+    timestamp: u64,
+    nonce: u32,
+    chain_id: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "types": {
+            "EIP712Domain": [ {"name":"name","type":"string"}, {"name":"version","type":"string"}, {"name":"chainId","type":"uint256"} ],
+            "ClobAuth": [ {"name":"address","type":"address"}, {"name":"timestamp","type":"string"}, {"name":"nonce","type":"uint256"}, {"name":"message","type":"string"} ]
+        },
+        "primaryType":"ClobAuth", "domain": {"name":"ClobAuthDomain","version":"1","chainId":chain_id},
+        "message": {"address":address,"timestamp":timestamp.to_string(),"nonce":nonce.to_string(),"message":CLOB_AUTH_MESSAGE}
+    })
+}
+
+pub fn batch_typed_data(batch: &Batch, chain_id: u64, deposit: Address) -> serde_json::Value {
+    serde_json::json!({
+        "types": {
+            "EIP712Domain": [ {"name":"name","type":"string"}, {"name":"version","type":"string"}, {"name":"chainId","type":"uint256"}, {"name":"verifyingContract","type":"address"} ],
+            "Call": [ {"name":"target","type":"address"}, {"name":"value","type":"uint256"}, {"name":"data","type":"bytes"} ],
+            "Batch": [ {"name":"wallet","type":"address"}, {"name":"nonce","type":"uint256"}, {"name":"deadline","type":"uint256"}, {"name":"calls","type":"Call[]"} ]
+        },
+        "primaryType":"Batch", "domain":{"name":"DepositWallet","version":"1","chainId":chain_id,"verifyingContract":deposit},
+        "message": {"wallet":batch.wallet,"nonce":batch.nonce.to_string(),"deadline":batch.deadline.to_string(),"calls":batch.calls.iter().map(super::relayer_batch::BatchCall::from).collect::<Vec<_>>()}
+    })
 }
 
 #[cfg(test)]

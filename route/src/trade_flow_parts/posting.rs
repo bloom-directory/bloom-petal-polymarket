@@ -277,11 +277,10 @@ pub fn post_trade_draft(
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
-    let inner_sig =
-        match crate::approval::verified_signature(&prepared_order_signing(&record), &inner_sig) {
-            Ok(signature) => signature,
-            Err(resp) => return resp,
-        };
+    let inner_sig = match crate::approval::verified_signature(owner, digest, &inner_sig) {
+        Ok(signature) => signature,
+        Err(resp) => return resp,
+    };
     let signature =
         match wrap_poly1271_signature(order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
             Ok(signature) => signature,
@@ -484,22 +483,6 @@ pub fn post_trade_draft(
             )
         }
     }
-}
-
-/// Broker's existing closed review witness, derived from the exact typed order.
-pub fn prepared_order_signing(record: &PreparedOrder) -> PreparedSigning {
-    PreparedSigning::new(
-        "order",
-        "polymarket.order.poly1271",
-        record.owner,
-        crate::polymarket::order::poly1271_signing_preimage(
-            &record.order,
-            record.chain_id,
-            record.neg_risk,
-        ),
-        poly1271_digest(&record.order, record.chain_id, record.neg_risk),
-        record.review_witness(),
-    )
 }
 
 /// `post_attempt.json` once the CLOB has answered the post of `receipt`'s
