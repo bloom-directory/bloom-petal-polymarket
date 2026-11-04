@@ -16,8 +16,9 @@ pub use flow::run_onboard_stages;
 pub fn approval_key(wallet: &str) -> String {
     format!("onboard/{wallet}/approval.json")
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct LoginAttempt {
+    signed: bool,
     completed: bool,
     timestamp: u64,
 }
@@ -47,14 +48,20 @@ fn load_login_attempt(wallet: &str) -> Result<Option<LoginAttempt>, DispatchResp
     }
 }
 
-/// Durable payload identity is the server timestamp, never an arbitrary retry nonce.
-fn current_login_attempt(wallet: &str) -> Result<LoginAttempt, DispatchResponse> {
-    Ok(load_login_attempt(wallet)?
-        .filter(|attempt| !attempt.completed)
+/// Pending exact approvals always retain their payload. Only an explicit
+/// refresh of a signed attempt (or a completed login) starts a new timestamp.
+fn select_login_attempt(existing: Option<LoginAttempt>, refresh: bool) -> LoginAttempt {
+    existing
+        .filter(|attempt| !attempt.completed && !(refresh && attempt.signed))
         .unwrap_or(LoginAttempt {
+            signed: false,
             completed: false,
             timestamp: 0,
-        }))
+        })
+}
+
+fn current_login_attempt(wallet: &str, refresh: bool) -> Result<LoginAttempt, DispatchResponse> {
+    Ok(select_login_attempt(load_login_attempt(wallet)?, refresh))
 }
 
 fn complete_login_attempt(wallet: &str, mut attempt: LoginAttempt) -> Result<(), DispatchResponse> {
@@ -97,7 +104,7 @@ fn login_failed_after_signing(response: DispatchResponse) -> DispatchResponse {
     error(
         -4,
         format!(
-            "CLOB login failed after signing ({detail}); retry begin to refresh the login payload"
+            "CLOB login failed after signing ({detail}); write begin with {{\"refresh\":true}} to refresh the login payload"
         ),
     )
 }
@@ -154,15 +161,19 @@ pub fn begin_onboarding(
         }
         return DispatchResponse::Write;
     }
-    let mut attempt = match current_login_attempt(wallet) {
+    let mut attempt = match current_login_attempt(wallet, refresh) {
         Ok(attempt) => attempt,
         Err(resp) => return resp,
     };
     // A refreshed server timestamp is a new exact payload, and therefore a new
     // durable operation. Retries of that timestamp retain the same identity.
-    let timestamp = match clob_server_time() {
-        Ok(timestamp) => timestamp,
-        Err(resp) => return resp,
+    let timestamp = if attempt.timestamp != 0 {
+        attempt.timestamp
+    } else {
+        match clob_server_time() {
+            Ok(timestamp) => timestamp,
+            Err(resp) => return resp,
+        }
     };
     let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, chain_id);
     let review = serde_json::json!({
@@ -222,6 +233,12 @@ pub fn begin_onboarding(
         }
         Err(resp) => return resp,
     };
+    attempt.signed = true;
+    if let DispatchResponse::Error { code, message } =
+        store_put_json(&login_attempt_key(wallet), &attempt, false)
+    {
+        return error(code, message);
+    }
     let headers = [
         (POLY_ADDRESS, format!("{owner:#x}")),
         (POLY_NONCE, CLOB_AUTH_NONCE.to_string()),
@@ -304,8 +321,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exact_login_approval_retries_keep_the_frozen_payload_until_signed() {
+        let pending = LoginAttempt {
+            signed: false,
+            completed: false,
+            timestamp: 100,
+        };
+        let reloaded = parse_login_attempt(&serde_json::to_vec(&pending).unwrap()).unwrap();
+        assert_eq!(select_login_attempt(Some(reloaded.clone()), false), pending);
+        // Retrying the same explicit-refresh write must also resume the approval.
+        assert_eq!(select_login_attempt(Some(reloaded), true), pending);
+        let signed = LoginAttempt {
+            signed: true,
+            ..pending.clone()
+        };
+        assert_eq!(select_login_attempt(Some(signed.clone()), false), signed);
+        assert_eq!(select_login_attempt(Some(signed), true).timestamp, 0);
+        let complete = LoginAttempt {
+            signed: true,
+            completed: true,
+            ..pending
+        };
+        assert_eq!(select_login_attempt(Some(complete), true).timestamp, 0);
+    }
+
+    #[test]
     fn login_attempt_identity_binds_refresh_and_survives_reload() {
         let first = LoginAttempt {
+            signed: false,
             completed: false,
             timestamp: 100,
         };
@@ -343,6 +386,7 @@ mod tests {
             login_signing_attempt(&fresh)
         );
         let same_payload = LoginAttempt {
+            signed: true,
             completed: true,
             timestamp: first.timestamp,
         };
@@ -354,8 +398,13 @@ mod tests {
 
     #[test]
     fn login_attempt_rejects_invalid_timestamp() {
-        assert!(parse_login_attempt(br#"{"timestamp":0,"completed":false}"#).is_err());
-        assert!(parse_login_attempt(br#"{"timestamp":"bad","completed":false}"#).is_err());
+        assert!(
+            parse_login_attempt(br#"{"timestamp":0,"completed":false,"signed":false}"#).is_err()
+        );
+        assert!(
+            parse_login_attempt(br#"{"timestamp":"bad","completed":false,"signed":false}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -367,6 +416,6 @@ mod tests {
         };
         assert_eq!(code, -4, "Bloom keeps the message of -4, not -2");
         assert!(message.contains("clob refused"));
-        assert!(message.contains("retry begin"));
+        assert!(message.contains("refresh"));
     }
 }

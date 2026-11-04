@@ -29,8 +29,9 @@ receipt; the signed order does not contain or enforce those fees.
 A ClobAuth login explicitly declares `Spend::None`. With installer-certified
 zero-spend provenance and an active Trader or Degen grant, it uses that grant's
 rate cap and no token budget. Institutional requires exact review. Each refreshed
-server timestamp is a distinct durable signing operation; retrying the same
-payload keeps its operation identity.
+server timestamp is a distinct durable signing operation. Pending approval
+retries keep the original timestamp and operation identity. Explicit refresh
+advances the timestamp only after the previous attempt signed or completed.
 
 Broker trusts the pinned, installer-signed package's declared effects. It binds
 account, network, payload and grant, checks token policy and limits, and reserves
