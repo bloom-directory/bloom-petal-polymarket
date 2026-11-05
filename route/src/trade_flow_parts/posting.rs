@@ -1,12 +1,13 @@
 use crate::prelude::*;
 
 use crate::polymarket::order::{
-    LimitQuote, Order, OrderBody, OrderParams, OrderType, SIG_TYPE_POLY_1271, build_order,
-    poly1271_digest, poly1271_signing_preimage, wrap_poly1271_signature,
+    LimitQuote, OrderBody, OrderParams, OrderType, PreparedOrder, SIG_TYPE_POLY_1271, build_order,
+    poly1271_digest, wrap_poly1271_signature,
 };
 use crate::polymarket::{Result, validate_wallet_name};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
+use petal::signing::{Attempt, AttemptState, CtxHost, sign_or_resume};
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
     wallet: &str,
@@ -14,7 +15,7 @@ pub fn post_trade_draft(
     id: &str,
     body: &[u8],
 ) -> DispatchResponse {
-    let (chain, chain_id) = match crate::runtime_config::chain() {
+    let (_chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -127,13 +128,6 @@ pub fn post_trade_draft(
             format!("{message}; write revalidate again before posting"),
         );
     }
-    // Validation only. A draft whose fee bound cannot be computed must not
-    // post, but the bound itself no longer travels in the prepared record:
-    // Broker rebuilds that record against a closed key allow-list and refuses
-    // an unknown field, so fee data lives on the draft and the receipt.
-    if let Err(e) = draft.fee_cap_micro() {
-        return polymarket_error(e);
-    }
     let Some(review_object) = review_intent.as_object_mut() else {
         return error(-4, "final review intent is not an object");
     };
@@ -161,72 +155,86 @@ pub fn post_trade_draft(
         Ok(token_id) => token_id,
         Err(e) => return error(-4, format!("token id parse: {e}")),
     };
-    let prepared_key = format!("{base}/prepared_signing.json");
-    let approval_key = format!("{base}/approval.json");
-    let (order, prepared) = match load_prepared_signing(&prepared_key) {
-        Ok(Some(prepared)) => {
-            if prepared.operation != "order" || prepared.owner != owner.to_checksum(None) {
-                return error(-4, "prepared order does not match wallet");
-            }
-            let order = match order_from_prepared(&prepared.preimage) {
-                Ok(order) => order,
-                Err(resp) => return resp,
-            };
-            (order, prepared)
-        }
-        Ok(None) => {
-            let timestamp_ms = match petal::sdk::try_now_ms() {
-                Ok(timestamp_ms) => timestamp_ms,
-                Err(err) => return sdk_error_with_context("read order timestamp", err),
-            };
-            let order = build_order(
-                &OrderParams {
-                    token_id,
-                    maker: funder,
-                    quote: LimitQuote {
-                        side: draft.side,
-                        price_micro: draft.limit_price_micro,
-                        size_micro: draft.size_micro,
-                        maker_micro: draft.maker_micro,
-                        taker_micro: draft.taker_micro,
-                    },
-                    builder_code: None,
-                    signature_type: SIG_TYPE_POLY_1271,
+    let mut host = CtxHost(ctx);
+    let build = || -> std::result::Result<_, DispatchResponse> {
+        let timestamp_ms = match petal::sdk::try_now_ms() {
+            Ok(value) => value,
+            Err(err) => return Err(sdk_error_with_context("read order timestamp", err)),
+        };
+        let order = build_order(
+            &OrderParams {
+                token_id,
+                maker: funder,
+                quote: LimitQuote {
+                    side: draft.side,
+                    price_micro: draft.limit_price_micro,
+                    size_micro: draft.size_micro,
+                    maker_micro: draft.maker_micro,
+                    taker_micro: draft.taker_micro,
                 },
-                timestamp_ms,
-            );
-            let prepared = prepared_order_signing(
-                &draft,
-                &order,
-                owner,
-                funder,
-                chain_id,
-                &review_intent_hash,
-                req.acknowledge_warnings,
-            );
-            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
-                return resp;
-            }
-            (order, prepared)
-        }
-        Err(resp) => return resp,
+                builder_code: None,
+                signature_type: SIG_TYPE_POLY_1271,
+            },
+            timestamp_ms,
+        );
+        let record = PreparedOrder {
+            version: 1,
+            order,
+            owner,
+            funder,
+            chain_id,
+            neg_risk: draft.neg_risk,
+            draft_id: id.into(),
+            review_intent_hash: review_intent_hash.clone(),
+            policy_warnings_acknowledged: req.acknowledge_warnings,
+        };
+        let action = prepared_order_action(&draft, &record, owner, funder, chain_id)?;
+        Ok((action, record))
     };
-    if prepared
-        .preimage
-        .get("review_intent_hash")
-        .and_then(serde_json::Value::as_str)
-        != Some(review_intent_hash.as_str())
+    let mut attempt = match Attempt::load(&mut host, &format!("{base}/attempt")) {
+        Ok(attempt) => attempt,
+        Err(e) => return e.into(),
+    };
+    let replace = match attempt
+        .as_ref()
+        .map(|a: &Attempt<PreparedOrder>| a.state(&mut host, wallet))
+        .transpose()
+    {
+        Ok(Some(AttemptState::Expired | AttemptState::Cancelled)) => true,
+        Err(e) => return e.into(),
+        _ => false,
+    };
+    if attempt.is_none() || replace {
+        let (action, record) = match build() {
+            Ok(value) => value,
+            Err(resp) => return resp,
+        };
+        attempt = Some(match attempt {
+            Some(a) => match a.renew(&mut host, wallet, |_| Ok((action, record))) {
+                Ok(a) => a,
+                Err(e) => return e.into(),
+            },
+            None => match Attempt::open(&mut host, &format!("{base}/attempt"), || {
+                Ok((action, record))
+            }) {
+                Ok(a) => a,
+                Err(e) => return e.into(),
+            },
+        });
+    }
+    let attempt = attempt.expect("attempt opened");
+    let record = attempt.context();
+    if let Err(err) = record.validate(owner, funder, chain_id) {
+        return polymarket_error(err);
+    }
+    if record.draft_id != id
+        || record.neg_risk != draft.neg_risk
+        || record.review_intent_hash != review_intent_hash
+        || record.policy_warnings_acknowledged != req.acknowledge_warnings
     {
         return error(-4, "prepared order does not match final review intent");
     }
-    if prepared
-        .preimage
-        .get("chain_id")
-        .and_then(serde_json::Value::as_u64)
-        != Some(chain_id)
-    {
-        return error(-4, "prepared order does not match configured chain");
-    }
+    let order = &record.order;
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,
         Err(_) => return error(-4, "order salt does not fit in u64"),
@@ -234,7 +242,7 @@ pub fn post_trade_draft(
     draft.salt = Some(salt);
     draft.status = "signing_prepared".into();
     draft.last_error = None;
-    let digest = poly1271_digest(&order, chain_id, draft.neg_risk);
+    let digest = poly1271_digest(order, chain_id, draft.neg_risk);
     let digest_hash = blake3_hex(digest.as_slice());
     if let DispatchResponse::Error { .. } =
         store_put_json(&format!("{base}/order.json"), &draft, false)
@@ -259,18 +267,6 @@ pub fn post_trade_draft(
     ) {
         return error(-4, "failed to store signing-prepared post attempt");
     }
-    // The claim's effects come from `order` and the fee schedule the final
-    // review pinned (its hash is in the prepared record), so `order` must be
-    // the order whose digest is being signed.
-    match prepared.hash() {
-        Ok(hash) if hash == digest => {}
-        Ok(_) => return error(-4, "prepared order does not match its signing hash"),
-        Err(resp) => return resp,
-    }
-    let effects = match draft.order_effects(&chain, &order) {
-        Ok(effects) => effects,
-        Err(e) => return polymarket_error(e),
-    };
     let unposted = match StoreTradeReceipt::for_draft(
         &draft,
         funder.to_checksum(None),
@@ -280,17 +276,20 @@ pub fn post_trade_draft(
         Ok(receipt) => receipt,
         Err(e) => return polymarket_error(e),
     };
-    let inner_sig = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
+    let inner_sig = match sign_or_resume(&mut host, wallet, &attempt) {
+        Ok(signature) => signature,
+        Err(halt) => return halt.into(),
+    };
+    let inner_sig = match crate::approval::verified_signature(owner, digest, &inner_sig) {
         Ok(signature) => signature,
         Err(resp) => return resp,
     };
     let signature =
-        match wrap_poly1271_signature(&order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
+        match wrap_poly1271_signature(order, &inner_sig.as_bytes(), chain_id, draft.neg_risk) {
             Ok(signature) => signature,
             Err(e) => return polymarket_error(e),
         };
-    let order_body = match OrderBody::from_signed(&order, &signature, &creds.key, draft.order_type)
-    {
+    let order_body = match OrderBody::from_signed(order, &signature, &creds.key, draft.order_type) {
         Ok(body) => body,
         Err(e) => return polymarket_error(e),
     };
@@ -343,8 +342,6 @@ pub fn post_trade_draft(
             if let DispatchResponse::Error { .. } = store_trade_receipt(wallet, id, &receipt) {
                 return error(-4, "failed to store receipt");
             }
-            let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&approval_key);
             let outcome =
                 if clob_status_excluded_from_daily_cap(status.as_str(), Some(draft.order_type)) {
                     "rejected"
@@ -394,8 +391,6 @@ pub fn post_trade_draft(
             {
                 return error(-4, "failed to persist rejected order state");
             }
-            let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&approval_key);
             // The rejected receipt and draft are already written; this record
             // is best effort so the caller still learns the CLOB refused.
             let _ = store_put_json(&format!("{base}/post_attempt.json"), &attempt, false);
@@ -491,47 +486,6 @@ pub fn post_trade_draft(
     }
 }
 
-/// The prepared record for signing `order`, built for `draft` and paid from
-/// `funder`. Bloom presents it as the approval's action, so it carries the fee
-/// Carries only the order fields `order_from_prepared` rebuilds the order
-/// from, plus the review-intent hash and the warning acknowledgement. Broker
-/// rebuilds this record and gates its keys against a closed allow-list, so no
-/// fee field may appear here; the fee bound lives on the draft and the
-/// receipt.
-pub fn prepared_order_signing(
-    draft: &StoreTradeDraft,
-    order: &Order,
-    owner: Address,
-    funder: Address,
-    chain_id: u64,
-    review_intent_hash: &str,
-    policy_warnings_acknowledged: bool,
-) -> PreparedSigning {
-    PreparedSigning::new(
-        "order",
-        "polymarket.order.poly1271",
-        owner,
-        poly1271_signing_preimage(order, chain_id, draft.neg_risk),
-        poly1271_digest(order, chain_id, draft.neg_risk),
-        serde_json::json!({
-            "draft_id": draft.id,
-            "owner": owner.to_checksum(None),
-            "funder": funder.to_checksum(None),
-            "token_id": order.tokenId.to_string(),
-            "salt": order.salt.to_string(),
-            "maker_amount": order.makerAmount.to_string(),
-            "taker_amount": order.takerAmount.to_string(),
-            "side": order.side,
-            "signature_type": order.signatureType,
-            "timestamp_ms": order.timestamp.to_string(),
-            "neg_risk": draft.neg_risk,
-            "chain_id": chain_id,
-            "review_intent_hash": review_intent_hash,
-            "policy_warnings_acknowledged": policy_warnings_acknowledged,
-        }),
-    )
-}
-
 /// `post_attempt.json` once the CLOB has answered the post of `receipt`'s
 /// order, replacing the `signed` record: who signed it, the order body's
 /// hash, and the outcome `receipt` records, as the reconcile path writes one.
@@ -561,44 +515,6 @@ pub fn answered_post_attempt(
         attempt["error"] = reason.into();
     }
     attempt
-}
-
-fn order_from_prepared(value: &serde_json::Value) -> Result<Order, DispatchResponse> {
-    let string = |name: &str| {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| error(-4, format!("prepared order is missing {name}")))
-    };
-    let parse_u256 = |name: &str| {
-        string(name)?
-            .parse::<U256>()
-            .map_err(|err| error(-4, format!("prepared order {name} is invalid: {err}")))
-    };
-    let funder = string("funder")?
-        .parse::<Address>()
-        .map_err(|err| error(-4, format!("prepared order funder is invalid: {err}")))?;
-    Ok(Order {
-        salt: parse_u256("salt")?,
-        maker: funder,
-        signer: funder,
-        tokenId: parse_u256("token_id")?,
-        makerAmount: parse_u256("maker_amount")?,
-        takerAmount: parse_u256("taker_amount")?,
-        side: value
-            .get("side")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|side| u8::try_from(side).ok())
-            .ok_or_else(|| error(-4, "prepared order side is invalid"))?,
-        signatureType: value
-            .get("signature_type")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|kind| u8::try_from(kind).ok())
-            .ok_or_else(|| error(-4, "prepared order signature type is invalid"))?,
-        timestamp: parse_u256("timestamp_ms")?,
-        metadata: B256::ZERO,
-        builder: B256::ZERO,
-    })
 }
 
 pub fn cancel_trade_receipt(
@@ -797,4 +713,17 @@ pub fn cancel_discovered_order(
         "discovered_order_cancelled",
         serde_json::json!({"clob_order_id": order_id}),
     )
+}
+
+/// Assemble the signing action from the final draft, including its validated
+/// market-fee cap. Keep this at the posting boundary so no fee is discarded.
+pub(crate) fn prepared_order_action(
+    draft: &StoreTradeDraft,
+    record: &PreparedOrder,
+    owner: Address,
+    funder: Address,
+    chain_id: u64,
+) -> std::result::Result<petal::signing::PreparedAction, DispatchResponse> {
+    let fee_cap_micro = draft.fee_cap_micro().map_err(polymarket_error)?;
+    record.action(owner, funder, chain_id, fee_cap_micro)
 }

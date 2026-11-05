@@ -1,29 +1,14 @@
-use crate::polymarket::claim::{BatchCall, PreparedBatch};
-use crate::polymarket::eip712::{Batch, FACTORY, batch_signing_hash, batch_signing_preimage};
+use crate::polymarket::eip712::FACTORY;
+use crate::polymarket::relayer_batch::{BatchCall, PreparedBatch};
 use crate::polymarket::wallet::approval_calls;
 use crate::polymarket::{BuilderCredentials, Credentials, Result};
 use crate::prelude::*;
-use alloy::primitives::{Address, Signature, U256};
+use alloy::primitives::Address;
+#[cfg(test)]
+use alloy::primitives::Signature;
 use petal::sdk::{DispatchResponse, HttpRequest};
-use serde::{Deserialize, Serialize};
+use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PreparedRelayerSignature {
-    prepared_digest: String,
-    signature_hex: String,
-}
-
-pub(crate) fn prepared_relayer_batch_expired(
-    prepared: &PreparedSigning,
-    now_secs: u64,
-) -> Result<bool, DispatchResponse> {
-    let deadline = prepared
-        .preimage
-        .get("deadline")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| error(-4, "prepared onboarding batch is missing deadline"))?;
-    Ok(now_secs >= deadline)
-}
 pub struct LocalRelayerTx {
     pub id: String,
     pub state: String,
@@ -248,21 +233,19 @@ pub fn relayer_batch_body(
     deposit: Address,
     nonce: u64,
     deadline: u64,
-    approval_key: &str,
 ) -> Result<serde_json::Value, DispatchResponse> {
-    let prepared = prepare_relayer_batch(wallet, owner, deposit, nonce, deadline)?;
-    if prepared_relayer_batch_expired(&prepared, now_secs())? {
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
-        let _ = petal::sdk::store_del(&format!(
-            "creds/onboard/{wallet}/prepared_relayer_signature.json"
-        ));
+    let mut host = CtxHost(ctx);
+    let prepared = prepare_relayer_batch(&mut host, wallet, owner, deposit, nonce, deadline)?;
+    let batch = prepared.context();
+    if now_secs() >= batch.deadline {
         return Err(error(
-            -2,
-            "prepared onboarding approval signature expired; retry onboarding to prepare and approve a fresh bounded batch",
+            -3,
+            "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt",
         ));
     }
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
-    let signature = relayer_batch_signature(ctx, wallet, &prepared, approval_key)?;
+    let bytes = sign_or_resume(&mut host, wallet, &prepared).map_err(DispatchResponse::from)?;
+    let signature =
+        crate::approval::verified_signature(owner, batch.signing_hash(), &bytes)?.to_string();
     Ok(serde_json::json!({
         "type": "WALLET",
         "from": owner.to_checksum(None),
@@ -277,132 +260,63 @@ pub fn relayer_batch_body(
     }))
 }
 
-pub fn prepare_relayer_batch(
+fn prepare_relayer_batch(
+    host: &mut CtxHost<'_>,
     wallet: &str,
     owner: Address,
     deposit: Address,
     nonce: u64,
     deadline: u64,
-) -> Result<PreparedSigning, DispatchResponse> {
+) -> Result<Attempt<PreparedBatch>, DispatchResponse> {
     let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let prepared_key = format!("onboard/{wallet}/prepared_relayer_batch.json");
-    let review_key = format!("onboard/{wallet}/review_relayer_intent.json");
-    let existing = match load_prepared_signing(&prepared_key)? {
-        Some(prepared) if prepared_relayer_batch_expired(&prepared, now_secs())? => {
-            let _ = petal::sdk::store_del(&prepared_key);
-            let _ = petal::sdk::store_del(&format!(
-                "creds/onboard/{wallet}/prepared_relayer_signature.json"
-            ));
-            let _ = petal::sdk::store_del(&review_key);
-            None
-        }
-        other => other,
-    };
-    let prepared = match existing {
-        Some(prepared) => prepared,
-        None => {
-            let calls = approval_calls();
-            let batch = Batch {
-                wallet: deposit,
-                nonce: U256::from(nonce),
-                deadline: U256::from(deadline),
-                calls: calls.clone(),
-            };
-            let hash = batch_signing_hash(&batch, chain_id, deposit);
-            let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
-            let review = serde_json::json!({
-                "operation": "onboard_approvals",
-                "owner": owner.to_checksum(None),
-                "deposit_wallet": deposit.to_checksum(None),
-                "chain_id": chain_id,
-                "nonce": nonce,
-                "deadline": deadline,
-                "calls": batch_calls,
-                "signing_hash": format!("{hash:#x}"),
-            });
-            let review_hash = store_review_intent(&review_key, &review)?;
-            let preimage = PreparedBatch {
-                deposit_wallet: deposit,
-                chain_id,
-                nonce,
-                deadline,
-                calls: batch_calls,
-                review_intent_hash: review_hash,
+    let base = format!("onboard/{wallet}");
+    let scope = crate::polymarket::relayer_batch::begin_scope(host, &base, nonce)?;
+    let nonce = scope
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| error(-4, "invalid batch scope"))?;
+    let review_key = format!("{base}/review_relayer_intent.json");
+    let build = || -> Result<_, petal::signing::SigningError> {
+        let calls = approval_calls();
+        let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
+        let review = serde_json::json!({"operation":"onboard_approvals", "owner":owner.to_checksum(None),
+            "deposit_wallet":deposit.to_checksum(None), "chain_id":chain_id,"nonce":nonce,"deadline":deadline,"calls":batch_calls});
+        let review_hash = store_review_intent(&review_key, &review).map_err(|r| {
+            petal::signing::SigningError {
+                code: petal::signing::ErrorCode::Backend,
+                message: dispatch_error_message(&r),
             }
-            .to_preimage()
-            .map_err(polymarket_error)?;
-            let prepared = PreparedSigning::new(
-                "onboard_approvals",
-                "polymarket.onboard",
-                owner,
-                batch_signing_preimage(&batch, chain_id, deposit),
-                hash,
-                preimage,
-            );
-            store_prepared_signing(&prepared_key, &prepared)?;
-            prepared
-        }
+        })?;
+        let batch = PreparedBatch {
+            deposit_wallet: deposit,
+            chain_id,
+            nonce,
+            deadline,
+            calls: batch_calls,
+            review_intent_hash: review_hash,
+        };
+        Ok((
+            eip712_action("polymarket.onboard", &batch.typed_data())?,
+            batch,
+        ))
     };
-    if prepared.operation != "onboard_approvals" || prepared.owner != owner.to_checksum(None) {
+    let attempt = Attempt::open(host, &scope, build).map_err(DispatchResponse::from)?;
+    let attempt = match attempt
+        .state(host, wallet)
+        .map_err(DispatchResponse::from)?
+    {
+        AttemptState::Expired | AttemptState::Cancelled => attempt
+            .renew(host, wallet, |_| build())
+            .map_err(DispatchResponse::from)?,
+        _ => attempt,
+    };
+    let batch = attempt.context();
+    if batch.chain_id != chain_id || batch.deposit_wallet != deposit {
         return Err(error(-4, "prepared onboarding batch identity mismatch"));
     }
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
-    if batch.chain_id != chain_id {
-        return Err(error(
-            -4,
-            "prepared onboarding batch does not match configured chain",
-        ));
-    }
     verify_review_intent(&review_key, &batch.review_intent_hash)?;
-    Ok(prepared)
-}
-
-/// Return the owner signature for a prepared deposit-wallet approval batch.
-/// The batch carries a long deadline, so its approval stays bound to the exact
-/// reviewed bytes; the signature is stored so later stages reuse it.
-pub fn relayer_batch_signature(
-    ctx: &petal::Ctx,
-    wallet: &str,
-    prepared: &PreparedSigning,
-    approval_key: &str,
-) -> Result<String, DispatchResponse> {
-    let signature_key = format!("creds/onboard/{wallet}/prepared_relayer_signature.json");
-    match petal::sdk::store_get(&signature_key, MAX_STORE_BYTES) {
-        Ok(bytes) => {
-            // A stored signature that no longer matches the prepared batch (or
-            // no longer parses) is useless; retire it and sign the current
-            // batch instead of failing on every retry.
-            let usable = serde_json::from_slice::<PreparedRelayerSignature>(&bytes)
-                .ok()
-                .filter(|stored| Some(&stored.prepared_digest) == prepared.digest().ok().as_ref())
-                .and_then(|stored| stored.signature_hex.parse::<Signature>().ok())
-                .map(|signature| signature.to_string());
-            match usable {
-                Some(signature) => return Ok(signature),
-                None => match petal::sdk::store_del(&signature_key) {
-                    Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                    Err(err) => return Err(sdk_error(err)),
-                },
-            }
-        }
-        Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-        Err(err) => return Err(sdk_error(err)),
-    }
-    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let batch = PreparedBatch::from_preimage(&prepared.preimage).map_err(polymarket_error)?;
-    let effects =
-        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, prepared.hash()?)
-            .map_err(polymarket_error)?;
-    // alloy's `Signature` renders v as 27/28, the form the relayer expects.
-    let signature = sign_prepared(ctx, wallet, prepared, &effects, approval_key)?.to_string();
-    let value = PreparedRelayerSignature {
-        prepared_digest: prepared.digest()?,
-        signature_hex: signature.clone(),
-    };
-    match store_put_json(&signature_key, &value, true) {
-        DispatchResponse::Write => Ok(signature),
-        response => Err(response),
-    }
+    Ok(attempt)
 }
 
 pub fn builder_headers(

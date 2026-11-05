@@ -1,13 +1,13 @@
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
-use crate::polymarket::claim::{BatchCall, PreparedBatch};
 use crate::polymarket::eip712::{Call, FACTORY, PUSD};
-use crate::polymarket::signing::wallet_batch_action_and_hash;
+use crate::polymarket::relayer_batch::{BatchCall, PreparedBatch};
 use crate::polymarket::wallet::{redeem_positions_call, revoke_calls, transfer_amount_call};
 use crate::polymarket::{Market, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::DispatchResponse;
+use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
 
 #[derive(Debug, Clone, Copy)]
 enum RelayerAction<'a> {
@@ -137,7 +137,7 @@ fn execute(
     if let Err(resp) = require_deposit_wallet_trading() {
         return resp;
     }
-    let (chain, chain_id) = match crate::runtime_config::chain() {
+    let (_chain, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
     };
@@ -156,85 +156,116 @@ fn execute(
         Err(resp) => return resp,
     };
     let base = action.base(wallet);
-    let prepared_key = format!("{base}/prepared_signing.json");
+    let _lock = match acquire_trade_lock(wallet, action.operation()) {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
     let review_key = format!("{base}/review_intent.json");
-    let approval_key = format!("{base}/approval.json");
     let progress_key = format!("{base}/progress.json");
     let receipt_key = format!("{base}/receipt.json");
-
-    let prepared = match load_prepared_signing(&prepared_key) {
-        Ok(Some(prepared)) => prepared,
+    let mut host = CtxHost(ctx);
+    let scope = match crate::polymarket::relayer_batch::current_scope(&mut host, &base) {
+        Ok(Some(scope)) => scope,
         Ok(None) => {
-            let calls = match calls_for(action, owner, deposit, body) {
-                Ok(calls) => calls,
-                Err(resp) => return resp,
-            };
             let nonce = match relayer_wallet_nonce(owner) {
                 Ok(nonce) => nonce,
                 Err(resp) => return resp,
             };
+            match crate::polymarket::relayer_batch::begin_scope(&mut host, &base, nonce) {
+                Ok(scope) => scope,
+                Err(resp) => return resp,
+            }
+        }
+        Err(resp) => return resp,
+    };
+    let existing: Option<Attempt<PreparedBatch>> = match Attempt::load(&mut host, &scope) {
+        Ok(a) => a,
+        Err(e) => return e.into(),
+    };
+    let replace = match existing
+        .as_ref()
+        .map(|a| a.state(&mut host, wallet))
+        .transpose()
+    {
+        Ok(Some(AttemptState::Expired | AttemptState::Cancelled)) => true,
+        Err(e) => return e.into(),
+        _ => false,
+    };
+    let prepared = match existing {
+        Some(attempt) if !replace => attempt,
+        existing => {
+            let calls = match calls_for(action, owner, deposit, body) {
+                Ok(calls) => calls,
+                Err(resp) => return resp,
+            };
+            let nonce = match scope.rsplit('-').next().and_then(|n| n.parse().ok()) {
+                Some(n) => n,
+                None => return error(-4, "invalid batch scope"),
+            };
             let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
-            let built = wallet_batch_action_and_hash(deposit, chain_id, nonce, deadline, &calls);
             let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
-            let review = serde_json::json!({
-                "operation": action.operation(),
-                "owner": owner.to_checksum(None),
-                "deposit_wallet": deposit.to_checksum(None),
-                "chain_id": chain_id,
-                "nonce": nonce,
-                "deadline": deadline,
-                "calls": batch_calls,
-                "signing_hash": format!("{:#x}", built.signing_hash),
-            });
+            let review = serde_json::json!({"operation": action.operation(), "owner":owner.to_checksum(None),
+            "deposit_wallet":deposit.to_checksum(None), "chain_id":chain_id,"nonce":nonce,"deadline":deadline,"calls":batch_calls});
             let review_hash = match store_review_intent(&review_key, &review) {
                 Ok(hash) => hash,
                 Err(resp) => return resp,
             };
-            let preimage = PreparedBatch {
+            let batch = PreparedBatch {
                 deposit_wallet: deposit,
                 chain_id,
                 nonce,
                 deadline,
                 calls: batch_calls,
                 review_intent_hash: review_hash,
-            }
-            .to_preimage();
-            let preimage = match preimage {
-                Ok(preimage) => preimage,
-                Err(e) => return polymarket_error(e),
             };
-            let prepared = PreparedSigning::new(
-                action.operation(),
-                "polymarket.relayer_batch",
-                owner,
-                built.signing_preimage,
-                built.signing_hash,
-                preimage,
-            );
-            if let Err(resp) = store_prepared_signing(&prepared_key, &prepared) {
-                return resp;
+            let signing = match eip712_action("polymarket.relayer_batch", &batch.typed_data()) {
+                Ok(a) => a,
+                Err(e) => return e.into(),
+            };
+            match existing {
+                Some(a) => match a.renew(&mut host, wallet, |_| Ok((signing, batch))) {
+                    Ok(a) => a,
+                    Err(e) => return e.into(),
+                },
+                None => {
+                    if let Err(e) = Attempt::open(&mut host, &scope, || Ok((signing, batch))) {
+                        return e.into();
+                    }
+                    return DispatchResponse::Write;
+                }
             }
-            return DispatchResponse::Write;
         }
-        Err(resp) => return resp,
     };
-    let batch = match PreparedBatch::from_preimage(&prepared.preimage) {
-        Ok(batch) => batch,
-        Err(e) => return polymarket_error(e),
-    };
+    let batch = prepared.context();
     if batch.chain_id != chain_id {
         return error(
             -4,
             "prepared relayer action does not match configured chain",
         );
     }
-    if let Err(resp) = verify_review_intent(&review_key, &batch.review_intent_hash) {
-        return resp;
-    }
-    let digest = match serde_json::to_vec(&prepared) {
+    let digest = match serde_json::to_vec(batch) {
         Ok(bytes) => blake3_hex(&bytes),
         Err(err) => return error(-4, format!("prepared batch JSON: {err}")),
     };
+    if let Some(bytes) = store_get(&receipt_key) {
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(receipt) if receipt["prepared_digest"] == digest => {
+                for key in [&progress_key, &format!("{base}/current_batch_nonce.json")] {
+                    if let Err(e) = petal::sdk::store_del(key)
+                        && !matches!(e, petal::SdkError::Host(petal::HostStatus::NotFound))
+                    {
+                        return sdk_error(e);
+                    }
+                }
+                return DispatchResponse::Write;
+            }
+            Ok(_) => {}
+            Err(e) => return error(-4, format!("invalid relayer receipt: {e}")),
+        }
+    }
+    if let Err(resp) = verify_review_intent(&review_key, &batch.review_intent_hash) {
+        return resp;
+    }
     if let Some(bytes) = store_get(&progress_key) {
         let progress: RelayerProgress = match serde_json::from_slice(&bytes) {
             Ok(progress) => progress,
@@ -275,7 +306,11 @@ fn execute(
                 {
                     return error(-4, "failed to persist relayer action receipt");
                 }
-                for key in [&prepared_key, &review_key, &approval_key, &progress_key] {
+                for key in [
+                    &review_key,
+                    &progress_key,
+                    &format!("{base}/current_batch_nonce.json"),
+                ] {
                     match petal::sdk::store_del(key) {
                         Ok(())
                         | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
@@ -299,17 +334,14 @@ fn execute(
         }
     }
 
-    let effects = match prepared.hash().and_then(|hash| {
-        crate::polymarket::claim::prepared_batch_effects(&chain, &batch, hash)
-            .map_err(polymarket_error)
-    }) {
-        Ok(effects) => effects,
-        Err(resp) => return resp,
-    };
     // alloy's `Signature` renders v as 27/28, the form the relayer expects.
-    let signature = match sign_prepared(ctx, wallet, &prepared, &effects, &approval_key) {
-        Ok(signature) => signature.to_string(),
-        Err(resp) => return resp,
+    let signature = match sign_or_resume(&mut host, wallet, &prepared) {
+        Ok(bytes) => match crate::approval::verified_signature(owner, batch.signing_hash(), &bytes)
+        {
+            Ok(s) => s.to_string(),
+            Err(resp) => return resp,
+        },
+        Err(e) => return e.into(),
     };
     let progress = RelayerProgress {
         prepared_digest: digest.clone(),

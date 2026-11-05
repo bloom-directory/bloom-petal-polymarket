@@ -4,6 +4,7 @@ use crate::polymarket::signer::{POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_T
 use crate::polymarket::signing::clob_auth_action_and_hash;
 use crate::polymarket::{Credentials, validate_wallet_name};
 use petal::sdk::DispatchResponse;
+use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
 
 mod flow;
 mod persistence;
@@ -11,26 +12,101 @@ mod status;
 
 pub use flow::run_onboard_stages;
 
-/// Store key of the owner-visible approval artifact shared by the onboarding
-/// signatures; only one of them is ever pending at a time.
-pub fn approval_key(wallet: &str) -> String {
-    format!("onboard/{wallet}/approval.json")
+trait LoginHost: petal::signing::SigningHost {
+    fn set_login_cycle(
+        &mut self,
+        wallet: &str,
+        cycle: u32,
+    ) -> Result<(), petal::signing::SigningError>;
 }
-/// Store key holding when a CLOB login whose post-signing step failed may be
-/// retried. Machine keeps the spent single-use grant for APPROVAL_TTL_MS.
-fn login_retry_key(wallet: &str) -> String {
-    format!("onboard/{wallet}/login_retry_after.json")
+impl LoginHost for CtxHost<'_> {
+    fn set_login_cycle(
+        &mut self,
+        wallet: &str,
+        cycle: u32,
+    ) -> Result<(), petal::signing::SigningError> {
+        petal::sdk::store_put(
+            &format!("onboard/{wallet}/login_cycle.json"),
+            cycle.to_string().as_bytes(),
+            false,
+        )
+        .map_err(|e| login_storage_error(e.message()))
+    }
 }
-const LOGIN_RETRY_WAIT_MS: u64 = 5 * 60 * 1000;
+fn login_storage_error(message: impl Into<String>) -> petal::signing::SigningError {
+    petal::signing::SigningError {
+        code: petal::signing::ErrorCode::Backend,
+        message: message.into(),
+    }
+}
+fn login_cycle(
+    host: &mut impl petal::signing::SigningHost,
+    wallet: &str,
+) -> Result<u32, petal::signing::SigningError> {
+    host.store_get(&format!("onboard/{wallet}/login_cycle.json"))?
+        .map(|bytes| {
+            serde_json::from_slice(&bytes)
+                .map_err(|e| login_storage_error(format!("invalid login cycle: {e}")))
+        })
+        .transpose()
+        .map(|cycle| cycle.unwrap_or(0))
+}
+fn cycle_scope(wallet: &str, cycle: u32) -> String {
+    if cycle == 0 {
+        format!("onboard/{wallet}/login")
+    } else {
+        format!("onboard/{wallet}/login-{cycle}")
+    }
+}
+pub fn login_scope(
+    host: &mut impl petal::signing::SigningHost,
+    wallet: &str,
+) -> Result<String, petal::signing::SigningError> {
+    Ok(cycle_scope(wallet, login_cycle(host, wallet)?))
+}
 
-/// When a CLOB login may be retried, if a failed attempt is still waiting.
-pub fn login_retry_after_ms(wallet: &str) -> Option<u64> {
-    store_get(&login_retry_key(wallet))
-        .and_then(|bytes| serde_json::from_slice::<u64>(&bytes).ok())
-        .filter(|after| *after > now_millis() as u64)
+/// Called under the onboarding lock. Rollover retains every old attempt and
+/// publishes the new scope only after its frozen record exists.
+fn login_attempt(
+    host: &mut impl LoginHost,
+    wallet: &str,
+    refresh: bool,
+    build: impl Fn() -> Result<(petal::signing::PreparedAction, u64), petal::signing::SigningError>,
+) -> Result<Attempt<u64>, petal::signing::SignHalt> {
+    let cycle = login_cycle(host, wallet)?;
+    let attempt = Attempt::open(host, &cycle_scope(wallet, cycle), &build)?;
+    let renew = match attempt.state(host, wallet)? {
+        AttemptState::Expired | AttemptState::Cancelled => true,
+        AttemptState::Signed | AttemptState::PackageChanged => refresh,
+        _ => false,
+    };
+    if !renew {
+        return Ok(attempt);
+    }
+    if attempt.generation() != 31 {
+        return attempt.renew(host, wallet, |_| build());
+    }
+    if attempt.action().spend != petal::signing::Spend::None {
+        return Err(login_storage_error("only a zero-spend login can roll over").into());
+    }
+    let next = cycle
+        .checked_add(1)
+        .ok_or_else(|| login_storage_error("login cycle overflow"))?;
+    let successor = Attempt::open(host, &cycle_scope(wallet, next), || {
+        let (action, timestamp) = build()?;
+        if action.spend != petal::signing::Spend::None {
+            return Err(login_storage_error("login rollover must remain zero-spend"));
+        }
+        Ok((action, timestamp))
+    })?;
+    if successor.action().spend != petal::signing::Spend::None {
+        return Err(login_storage_error("stored login rollover is not zero-spend").into());
+    }
+    host.set_login_cycle(wallet, next)?;
+    Ok(successor)
 }
 
-fn login_failed_after_signing(response: DispatchResponse, retry_after_ms: u64) -> DispatchResponse {
+fn login_failed_after_signing(response: DispatchResponse) -> DispatchResponse {
     let detail = match response {
         DispatchResponse::Error { message, .. } => message,
         other => format!("{other:?}"),
@@ -38,7 +114,7 @@ fn login_failed_after_signing(response: DispatchResponse, retry_after_ms: u64) -
     error(
         -4,
         format!(
-            "CLOB login failed after the owner approved it ({detail}); that single-use approval is spent, so wait until {retry_after_ms} ms (status.json retry_after_ms), then write begin again"
+            "CLOB login failed after signing ({detail}); write begin with {{\"refresh\":true}} to refresh the login payload"
         ),
     )
 }
@@ -55,10 +131,15 @@ pub fn begin_onboarding(
     ctx: &petal::Ctx,
     wallet: &str,
     account: &petal::WalletAccount,
+    refresh: bool,
 ) -> DispatchResponse {
     if let Err(e) = validate_wallet_name(wallet) {
         return error(-3, e.to_string());
     }
+    let _lock = match acquire_trade_lock(wallet, "onboarding-login") {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
     let (_, chain_id) = match crate::runtime_config::chain() {
         Ok(chain) => chain,
         Err(err) => return error(-4, err),
@@ -67,7 +148,6 @@ pub fn begin_onboarding(
         Ok(address) => address,
         Err(resp) => return resp,
     };
-    let approval_key = approval_key(wallet);
     let review_key = format!("onboard/{wallet}/review_intent.json");
     let existing_creds: Option<Credentials> =
         match petal::sdk::store_get(&format!("creds/{wallet}/clob.json"), MAX_STORE_BYTES) {
@@ -78,57 +158,49 @@ pub fn begin_onboarding(
             Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => None,
             Err(err) => return sdk_error(err),
         };
-    if existing_creds.is_some() {
+    if existing_creds.is_some() && !refresh {
         return DispatchResponse::Write;
     }
-    // CLOB L1 auth carries Polymarket's server timestamp, which goes stale
-    // faster than an owner ceremony completes. Build it fresh on every attempt
-    // and sign it under a single-use approval that is not bound to the bytes.
-    // The deposit-wallet approval batch is prepared and approved later, in the
-    // funded stage, so its one-hour deadline starts when it can be submitted.
-    let timestamp = match clob_server_time() {
-        Ok(timestamp) => timestamp,
-        Err(resp) => return resp,
+    let mut host = CtxHost(ctx);
+    let build = || -> Result<_, petal::signing::SigningError> {
+        let timestamp = clob_server_time().map_err(|r| petal::signing::SigningError {
+            code: petal::signing::ErrorCode::Backend,
+            message: dispatch_error_message(&r),
+        })?;
+        Ok((
+            eip712_action(
+                "polymarket.clob_auth.v1",
+                &crate::polymarket::eip712::clob_auth_typed_data(
+                    owner,
+                    timestamp,
+                    CLOB_AUTH_NONCE,
+                    chain_id,
+                ),
+            )?
+            .with_spend(petal::signing::Spend::None),
+            timestamp,
+        ))
     };
+    let attempt = match login_attempt(&mut host, wallet, refresh, build) {
+        Ok(a) => a,
+        Err(e) => return e.into(),
+    };
+    let timestamp = *attempt.context();
     let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, chain_id);
-    let review = serde_json::json!({
-        "operation": "clob_auth",
-        "owner": owner.to_checksum(None),
-        "chain_id": chain_id,
-        "timestamp": action.timestamp,
-        "nonce": action.nonce,
-        "message": action.message,
-        "signing_hash": format!("{:#x}", action.signing_hash),
-    });
-    let review_hash = match store_review_intent(&review_key, &review) {
-        Ok(hash) => hash,
-        Err(resp) => return resp,
-    };
-    let prepared = PreparedSigning::new(
-        "clob_auth",
-        "polymarket.clob_auth.v1",
-        owner,
-        action.signing_preimage,
-        action.signing_hash,
-        serde_json::json!({
-            "timestamp": action.timestamp,
-            "nonce": action.nonce,
-            "chain_id": chain_id,
-            "review_intent_hash": review_hash,
-        }),
-    );
-    // CLOB L1 auth proves control of the owner address to mint API
-    // credentials. It moves no value and authorizes no spender.
-    let signature = match sign_prepared_reusable(
-        ctx,
-        wallet,
-        &prepared,
-        &petal::ClaimEffects::moves_nothing(),
-        &approval_key,
-    ) {
-        // v is rendered as 27/28, the form Polymarket's own clients send.
-        Ok(signature) => signature.to_string(),
-        Err(resp) => return resp,
+    let review = serde_json::json!({"operation":"clob_auth", "owner":owner.to_checksum(None),
+        "chain_id":chain_id,"timestamp":timestamp,"nonce":CLOB_AUTH_NONCE,"message":action.message,
+        "signing_hash":format!("{:#x}",action.signing_hash)});
+    if let Err(resp) = store_review_intent(&review_key, &review) {
+        return resp;
+    }
+    let signature = match sign_or_resume(&mut host, wallet, &attempt) {
+        Ok(bytes) => {
+            match crate::approval::verified_signature(owner, action.signing_hash, &bytes) {
+                Ok(signature) => signature.to_string(),
+                Err(resp) => return resp,
+            }
+        }
+        Err(halt) => return halt.into(),
     };
     let headers = [
         (POLY_ADDRESS, format!("{owner:#x}")),
@@ -149,11 +221,8 @@ pub fn begin_onboarding(
         }
     });
     if let Err(response) = stored {
-        let retry_after_ms = now_millis() as u64 + LOGIN_RETRY_WAIT_MS;
-        let _ = store_put_json(&login_retry_key(wallet), &retry_after_ms, false);
-        return login_failed_after_signing(response, retry_after_ms);
+        return login_failed_after_signing(response);
     }
-    let _ = petal::sdk::store_del(&approval_key);
     DispatchResponse::Write
 }
 
@@ -165,6 +234,10 @@ pub fn continue_onboarding(
     if let Err(error) = validate_wallet_name(wallet) {
         return crate::prelude::error(-3, error.to_string());
     }
+    let _lock = match acquire_trade_lock(wallet, "onboarding-batch") {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
     let owner = match wallet_address(account) {
         Ok(owner) => owner,
         Err(response) => return response,
@@ -180,21 +253,6 @@ pub fn continue_onboarding(
             }
             Err(error) => return sdk_error(error),
         };
-    // Retire only a stale CLOB approval. An exact deposit-wallet approval must
-    // survive retries of this continuation.
-    let key = approval_key(wallet);
-    let stale = match pending_approval_selector(&key) {
-        Ok(selector) => matches!(selector.as_deref(), Some(kind) if kind != "exact"),
-        Err(response) => return response,
-    };
-    if stale {
-        for key in [key, format!("onboard/{wallet}/review_intent.json")] {
-            match petal::sdk::store_del(&key) {
-                Ok(()) | Err(petal::sdk::SdkError::Host(petal::sdk::HostStatus::NotFound)) => {}
-                Err(error) => return sdk_error(error),
-            }
-        }
-    }
     let config = match crate::relayer_config::load_relayer_config() {
         Ok(config) => config,
         Err(response) => return response,
@@ -223,18 +281,244 @@ pub fn continue_onboarding(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
+    #[derive(Default)]
+    pub(crate) struct Host {
+        pub(crate) store: std::collections::HashMap<String, Vec<u8>>,
+        outcome: Option<Result<petal::signing::SigningOutcome, petal::signing::SigningError>>,
+        fail_cycle_write: bool,
+    }
+    impl LoginHost for Host {
+        fn set_login_cycle(
+            &mut self,
+            wallet: &str,
+            cycle: u32,
+        ) -> Result<(), petal::signing::SigningError> {
+            if self.fail_cycle_write {
+                return Err(login_storage_error("injected pointer write failure"));
+            }
+            self.store.insert(
+                format!("onboard/{wallet}/login_cycle.json"),
+                cycle.to_string().into_bytes(),
+            );
+            Ok(())
+        }
+    }
+    impl petal::signing::SigningHost for Host {
+        fn package_hash(&self) -> &str {
+            "package"
+        }
+        fn store_get(
+            &mut self,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, petal::signing::SigningError> {
+            Ok(self.store.get(key).cloned())
+        }
+        fn store_put_new(
+            &mut self,
+            key: &str,
+            bytes: &[u8],
+        ) -> Result<bool, petal::signing::SigningError> {
+            if self.store.contains_key(key) {
+                return Ok(false);
+            }
+            self.store.insert(key.into(), bytes.to_vec());
+            Ok(true)
+        }
+        fn sign(
+            &mut self,
+            _: &str,
+            _: &petal::signing::PreparedAction,
+            _: &str,
+        ) -> Result<petal::signing::SigningOutcome, petal::signing::SigningError> {
+            self.outcome.clone().unwrap()
+        }
+        fn status(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<petal::signing::SigningOutcome, petal::signing::SigningError> {
+            self.outcome
+                .clone()
+                .unwrap_or(Err(petal::signing::SigningError {
+                    code: petal::signing::ErrorCode::NotFound,
+                    message: "missing".into(),
+                }))
+        }
+        fn now_ms(&mut self) -> Result<u64, petal::signing::SigningError> {
+            Ok(100)
+        }
+    }
+    fn login(
+        timestamp: u64,
+    ) -> Result<(petal::signing::PreparedAction, u64), petal::signing::SigningError> {
+        let owner = alloy::primitives::Address::repeat_byte(1);
+        let action = eip712_action(
+            "polymarket.clob_auth.v1",
+            &crate::polymarket::eip712::clob_auth_typed_data(
+                owner,
+                timestamp,
+                CLOB_AUTH_NONCE,
+                137,
+            ),
+        )?
+        .with_spend(petal::signing::Spend::None);
+        assert_eq!(
+            action.payload.hash.as_slice(),
+            clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, 137)
+                .signing_hash
+                .as_slice()
+        );
+        Ok((action, timestamp))
+    }
     #[test]
-    fn login_failure_after_signing_explains_the_wait() {
+    fn login_refresh_preserves_pending_and_ambiguous_but_renews_signed() {
+        use petal::signing::SigningOutcome;
+        let mut host = Host::default();
+        let first = login_attempt(&mut host, "test", false, || login(100)).unwrap();
+        for outcome in [
+            SigningOutcome::ApprovalPending {
+                action_id: "a".into(),
+                expires_ms: 999,
+            },
+            SigningOutcome::RecoveryRequired {
+                status: "ambiguous".into(),
+            },
+            SigningOutcome::RecoveryRequired {
+                status: "approved_retry".into(),
+            },
+        ] {
+            host.outcome = Some(Ok(outcome));
+            let retry = login_attempt(&mut host, "test", true, || login(200)).unwrap();
+            assert_eq!(retry.operation_key(), first.operation_key());
+            assert_eq!(*retry.context(), 100);
+            assert_eq!(host.store.len(), 1);
+        }
+        host.outcome = Some(Ok(SigningOutcome::Signed {
+            signature: vec![1; 65],
+        }));
+        assert_eq!(
+            login_attempt(&mut host, "test", false, || login(200))
+                .unwrap()
+                .operation_key(),
+            first.operation_key()
+        );
+        let refresh = login_attempt(&mut host, "test", true, || login(200)).unwrap();
+        assert_ne!(refresh.operation_key(), first.operation_key());
+        assert_eq!(*refresh.context(), 200);
+        assert_eq!(host.store.len(), 2);
+    }
+
+    fn last_login_generation() -> Host {
+        let mut host = Host::default();
+        login_attempt(&mut host, "test", false, || login(100)).unwrap();
+        host.outcome = Some(Ok(petal::signing::SigningOutcome::Signed {
+            signature: vec![1; 65],
+        }));
+        for timestamp in 101..132 {
+            login_attempt(&mut host, "test", true, || login(timestamp)).unwrap();
+        }
+        assert_eq!(
+            Attempt::<u64>::load(&mut host, "onboard/test/login")
+                .unwrap()
+                .unwrap()
+                .generation(),
+            31
+        );
+        host
+    }
+    #[test]
+    fn login_can_refresh_beyond_one_scope_without_replacing_pending_or_ambiguous() {
+        use petal::signing::SigningOutcome;
+        let mut host = last_login_generation();
+        let original = host.store.clone();
+        for outcome in [
+            SigningOutcome::ApprovalPending {
+                action_id: "pending".into(),
+                expires_ms: 999,
+            },
+            SigningOutcome::RecoveryRequired {
+                status: "ambiguous".into(),
+            },
+        ] {
+            host.outcome = Some(Ok(outcome));
+            let frozen = login_attempt(&mut host, "test", true, || login(999)).unwrap();
+            assert_eq!(frozen.generation(), 31);
+            assert_eq!(host.store, original);
+        }
+        host.outcome = Some(Ok(SigningOutcome::Signed {
+            signature: vec![1; 65],
+        }));
+        for timestamp in 132..171 {
+            login_attempt(&mut host, "test", true, || login(timestamp)).unwrap();
+        }
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login-2"
+        );
+        assert!(host.store.contains_key("onboard/test/login.31.json"));
+    }
+    #[test]
+    fn login_rollover_retries_pointer_failure_without_rebuilding_the_successor() {
+        let mut host = last_login_generation();
+        host.fail_cycle_write = true;
+        assert!(login_attempt(&mut host, "test", true, || login(200)).is_err());
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login"
+        );
+        let successor = host.store["onboard/test/login-1.0.json"].clone();
+        host.fail_cycle_write = false;
+        let retry = login_attempt(&mut host, "test", true, || login(999)).unwrap();
+        assert_eq!(*retry.context(), 200);
+        assert_eq!(host.store["onboard/test/login-1.0.json"], successor);
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login-1"
+        );
+    }
+    #[test]
+    fn login_rollover_cannot_introduce_spending() {
+        let mut host = last_login_generation();
+        let original = host.store.clone();
+        assert!(
+            login_attempt(&mut host, "test", true, || {
+                let (mut action, timestamp) = login(200)?;
+                action.spend = petal::signing::Spend::Unspecified;
+                Ok((action, timestamp))
+            })
+            .is_err()
+        );
+        assert_eq!(host.store, original);
+        let key = "onboard/test/login.31.json";
+        let mut record: serde_json::Value = serde_json::from_slice(&host.store[key]).unwrap();
+        record["action"]["spend"] =
+            serde_json::to_value(petal::signing::Spend::Unspecified).unwrap();
+        host.store
+            .insert(key.into(), serde_json::to_vec(&record).unwrap());
+        host.outcome = Some(Err(petal::signing::SigningError {
+            code: petal::signing::ErrorCode::Expired,
+            message: "expired".into(),
+        }));
+        let before = host.store.clone();
+        assert!(login_attempt(&mut host, "test", true, || login(300)).is_err());
+        assert_eq!(
+            host.store, before,
+            "terminal spending attempts cannot roll over"
+        );
+    }
+
+    #[test]
+    fn login_failure_after_signing_allows_immediate_refresh() {
         let DispatchResponse::Error { code, message } =
-            login_failed_after_signing(error(-2, "clob refused"), 42)
+            login_failed_after_signing(error(-2, "clob refused"))
         else {
             panic!("must be an error");
         };
         assert_eq!(code, -4, "Bloom keeps the message of -4, not -2");
         assert!(message.contains("clob refused"));
-        assert!(message.contains("wait until 42 ms"));
+        assert!(message.contains("refresh"));
     }
 }

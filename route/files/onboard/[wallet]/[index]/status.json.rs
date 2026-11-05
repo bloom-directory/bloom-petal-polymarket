@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:store", "bloom:chain", "bloom:vfs.read"]), read: |ctx: &petal::Ctx| {
+petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:store", "bloom:chain", "bloom:vfs.read", "bloom:sign.status"]), read: |ctx: &petal::Ctx| {
     let account = match petal::wallet_account(ctx) { Ok(value) => value, Err(resp) => return resp };
     let wallet = match petal::wallet_param(ctx) {
         Ok(value) => value,
@@ -21,10 +21,13 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         }),
     };
     status["approvals"]["preview_path"] = serde_json::json!(format!("onboard/{wallet}/{}/approvals.json", account.number()));
-    let approval_pending = match crate::approval::pending_approval_selector(&crate::onboarding::approval_key(wallet)) {
-        Ok(selector) => selector.is_some(),
-        Err(response) => return response,
+    let login = match crate::onboarding::login_scope(&mut petal::signing::CtxHost(ctx), wallet) { Ok(s) => s, Err(e) => return e.into() };
+    let batch = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("onboard/{wallet}")) { Ok(s) => s, Err(r) => return r };
+    let approval_pending = match petal::signing::approval_read(ctx, wallet, &[&login, batch.as_deref().unwrap_or("onboard/no-batch")]) {
+        petal::DispatchResponse::Read(_) => true,
+        petal::DispatchResponse::Error { code: -3, .. } => false,
+        other => return other,
     };
-    crate::onboarding::project_next_action(&mut status, wallet, account.number(), approval_pending, crate::onboarding::login_retry_after_ms(wallet));
+    crate::onboarding::project_next_action(&mut status, wallet, account.number(), approval_pending);
     petal::read_json_value(&status)
 });

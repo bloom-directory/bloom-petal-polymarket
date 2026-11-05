@@ -7,9 +7,37 @@ holds no pUSD it stops at stage `fund`. Fund it with
 `fund/<wallet>/<index>/new`, then write `continue` again to approve.
 `status.json` names the next action at every stage. With existing
 credentials, `begin` acknowledges without another authentication signature.
+Write `{"refresh":true}` to `begin` to explicitly refresh those credentials.
 
 This package implements the Polymarket Petal at `petals/polymarket/...` using the
 `bloom:route@0.1.0` component ABI.
+
+## Persona session accounting
+
+Orders use complete ERC-7739 `TypedDataSign` EIP-712 data through the generic
+`bloom.message.review` v1 format. Every signed field, including metadata and
+builder, is included. The Petal verifies that the generic typed data produces
+the exact protocol digest and verifies the returned signature against the owner.
+
+BUY declares its six-decimal pUSD principal plus the validated operator-fee cap
+on Polygon using the exact contract `0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb`. SELL leaves spend
+unspecified and requires exact review. Onboarding approvals, funding,
+withdrawals and other continuing permissions also retain exact review.
+Operator trading fees remain bounded and disclosed in the local draft and
+receipt; the signed order does not contain or enforce those fees.
+
+A ClobAuth login explicitly declares `Spend::None`. With installer-certified
+zero-spend provenance and an active Trader or Degen grant, it uses that grant's
+rate cap and no token budget. Institutional requires exact review. Each refreshed
+server timestamp is a distinct durable signing operation. Pending approval
+retries keep the original timestamp and operation identity. Explicit refresh
+advances the timestamp only after the previous attempt signed or completed.
+
+Broker trusts the pinned, installer-signed package's declared effects. It binds
+account, network, payload and grant, checks token policy and limits, and reserves
+usage, without a Polymarket-specific verifier. A persona choice alone does not
+activate a grant. The declared principal plus fee cap remains reserved after
+cancellation, venue expiry or an unknown submission outcome; rearm preserves prior usage.
 
 ## Layout
 
@@ -42,15 +70,10 @@ selected account directory and stored in the Petal's own state. They are advisor
 does not read or replace Broker/Signer-authoritative wallet policy, approval
 budgets, or signing limits.
 
-CLOB login uses `polymarket.clob_auth.v1`, a one-signature permission distinct
-from exact wallet approvals. The matching Broker verifies the actual EIP-712
-domain, selected owner, fixed wallet attestation, nonce zero and fresh timestamp
-at signing. Polymarket's server timestamp can refresh after the owner approves.
-An old pending login approval is replaced because the permission profile changed.
-Install this package with the matching clear-signing Broker/Machine release;
-older services cannot enforce this profile. API credentials can authorize
-account API actions and are kept in the Petal's secret store. Orders and
-deposit-wallet batches still need their own exact approvals.
+CLOB login uses the `polymarket.clob_auth.v1` class declared as zero spend in
+this package's signing policy. The timestamp is refreshed by the Petal and the
+complete payload is signed again. The host uses the same generic prepared-action
+and grant rules as other packages. API credentials remain in the secret store.
 
 The Petal is wallet-scoped and supports **numbered accounts**. `[wallet]` route
 parameters are Bloom wallet ids, and the owner EOA is read from
@@ -124,3 +147,18 @@ Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.
 Retain deposit-wallet onboarding identity, credentials, funding and relayer receipts, and trade records from the installed build until pending funds and positions have been reconciled. Externally funded deposit wallets and venue orders survive local route upgrades; use the old build to inspect their identity and recovery state.
+
+### Prepared signing
+
+Order signing persists a typed `PreparedOrder` before requesting a signature.
+Its complete order, owner, funder, chain, market kind, draft and local
+review-intent binding are checked again on every retry. The generic review
+contains the full ERC-7739 `TypedDataSign` typed data; no protocol-specific
+Broker witness is sent. Metadata and builder attribution must be zero.
+
+The Petal owns venue submission and reconciliation. Stable operation keys
+preserve signing retries; read-only status uses the separate signing-status
+capability. This unreleased contract makes a clean break from prepared witness
+records: use a new candidate package and fresh candidate state. A frozen draft
+cannot be revalidated into a different order; reconcile it before creating a
+replacement.

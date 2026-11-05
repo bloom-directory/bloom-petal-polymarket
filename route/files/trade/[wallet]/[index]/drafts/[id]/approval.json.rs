@@ -1,5 +1,4 @@
-petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
-    let wallet = match petal::wallet_param(ctx) { Ok(value) => value, Err(resp) => return resp };
-    let id = match petal::param(ctx, "id") { Ok(value) => value, Err(resp) => return resp };
-    petal::read_store(&format!("trade/{wallet}/drafts/{id}/approval.json"), 1_048_576)
+petal::route_file!(spec: petal::store_read_spec().caps(&["bloom:sign.status"]), read: |ctx: &petal::Ctx| {
+    let (wallet, id) = match (petal::wallet_param(ctx), petal::param(ctx, "id")) { (Ok(w), Ok(i)) => (w, i), (Err(r), _) | (_, Err(r)) => return r };
+    petal::signing::approval_read(ctx, wallet, &[&format!("trade/{wallet}/drafts/{id}/attempt")])
 });
