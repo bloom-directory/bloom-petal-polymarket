@@ -113,10 +113,11 @@ impl PreparedOrder {
     ) -> std::result::Result<petal::signing::PreparedAction, petal::sdk::DispatchResponse> {
         self.validate(owner, funder, chain_id)
             .map_err(crate::prelude::polymarket_error)?;
-        let action = crate::approval::typed_action(
+        let action = petal::signing::eip712_action(
             "polymarket.order.poly1271",
             &poly1271_typed_data(&self.order, self.chain_id, self.neg_risk),
-        )?;
+        )
+        .map_err(petal::DispatchResponse::from)?;
         if action.payload.preimage
             != poly1271_signing_preimage(&self.order, self.chain_id, self.neg_risk)
         {
@@ -131,12 +132,8 @@ impl PreparedOrder {
                 .makerAmount
                 .checked_add(U256::from(fee_cap_micro))
                 .ok_or_else(|| crate::prelude::error(-4, "BUY principal plus fee cap overflows"))?;
-            let spend = petal::signing::Spend::erc20(
-                "evm-137",
-                format!("{:#x}", crate::polymarket::eip712::PUSD),
-                debit.to_string(),
-            )
-            .map_err(|e| crate::prelude::error(-4, e.to_string()))?;
+            let spend = petal::signing::erc20_spend(137, crate::polymarket::eip712::PUSD, debit)
+                .map_err(|e| crate::prelude::error(-4, e.to_string()))?;
             Ok(action.with_spend(spend))
         } else {
             // A SELL deliberately leaves spend unspecified, so it requires exact review.

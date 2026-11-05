@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::polymarket::eip712::{FACTORY, PUSD};
 use crate::polymarket::{Credentials, Result};
 use alloy::primitives::Address;
-use petal::sdk::{DispatchResponse, HostStatus};
+use petal::sdk::DispatchResponse;
 
 pub fn run_onboard_stages(
     ctx: &petal::Ctx,
@@ -129,15 +129,8 @@ pub fn run_onboard_stages(
                 // (for example after an explicit revoke). Retire it so a new
                 // nonce-bound approval batch can be prepared.
                 approve_tx_id = None;
-                for key in [
-                    format!("onboard/{wallet}/prepared_relayer_batch.json"),
-                    format!("creds/onboard/{wallet}/prepared_relayer_signature.json"),
-                ] {
-                    match petal::sdk::store_del(&key) {
-                        Ok(()) | Err(petal::sdk::SdkError::Host(HostStatus::NotFound)) => {}
-                        Err(err) => return Err(sdk_error(err)),
-                    }
-                }
+                petal::sdk::store_del(&format!("onboard/{wallet}/current_batch_nonce.json"))
+                    .map_err(sdk_error)?;
             }
         }
         let tx = if let Some(id) = approve_tx_id.as_deref() {
@@ -149,15 +142,7 @@ pub fn run_onboard_stages(
                 wallet,
                 owner,
                 creds,
-                relayer_batch_body(
-                    ctx,
-                    wallet,
-                    owner,
-                    deposit,
-                    nonce,
-                    deadline,
-                    &super::approval_key(wallet),
-                )?,
+                relayer_batch_body(ctx, wallet, owner, deposit, nonce, deadline)?,
             )?;
             approve_tx_id = Some(tx.id.clone());
             persist_onboard_status(
@@ -198,10 +183,7 @@ pub fn run_onboard_stages(
             }
         };
         approve_tx_id = Some(confirmed.id);
-        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/prepared_relayer_batch.json"));
-        let _ = petal::sdk::store_del(&format!(
-            "creds/onboard/{wallet}/prepared_relayer_signature.json"
-        ));
+        let _ = petal::sdk::store_del(&format!("onboard/{wallet}/current_batch_nonce.json"));
         if !read_chain_approvals(deposit)? {
             let msg = "approvals confirmed but on-chain allowances are still missing".to_string();
             persist_onboard_status(

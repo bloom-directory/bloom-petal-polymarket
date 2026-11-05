@@ -6,6 +6,7 @@ use crate::polymarket::{Result, Side, validate_wallet_name};
 use alloy::primitives::Address;
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
 pub fn revalidate_trade_draft(
+    ctx: &petal::Ctx,
     wallet: &str,
     account: &petal::WalletAccount,
     id: &str,
@@ -33,16 +34,31 @@ pub fn revalidate_trade_draft(
         Ok(draft) => draft,
         Err(resp) => return resp,
     };
-    if draft.status == "signing_prepared" {
-        return error(
-            -3,
-            "this draft has a frozen signing operation; reconcile it before creating a new draft",
-        );
-    } else if draft.status != "review" && draft.status != "revalidated" {
+    if !matches!(
+        draft.status.as_str(),
+        "review" | "revalidated" | "signing_prepared"
+    ) {
         return error(
             -3,
             format!("draft {id} is '{}' and cannot be revalidated", draft.status),
         );
+    }
+    let mut host = petal::signing::CtxHost(ctx);
+    match petal::signing::Attempt::<serde_json::Value>::load(&mut host, &format!("{base}/attempt"))
+    {
+        Ok(Some(attempt)) => match attempt.state(&mut host, wallet) {
+            Ok(petal::signing::AttemptState::Expired | petal::signing::AttemptState::Cancelled) => {
+            }
+            Ok(_) => {
+                return error(
+                    -3,
+                    "this draft has a frozen signing operation; reconcile it or create a new draft",
+                );
+            }
+            Err(e) => return e.into(),
+        },
+        Err(e) => return e.into(),
+        Ok(None) => {}
     }
     if draft.order_type == OrderType::GTD {
         return error(-3, "posting GTD orders is pending expiry parity");

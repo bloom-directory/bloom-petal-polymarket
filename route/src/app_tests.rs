@@ -479,25 +479,6 @@ max_daily_usd = "100"
         }));
     }
 
-    #[test]
-    fn prepared_onboarding_batch_expires_at_its_sealed_deadline() {
-        let prepared = PreparedSigning::new(
-            "onboard_approvals",
-            "polymarket.onboard",
-            Address::ZERO,
-            Vec::new(),
-            alloy::primitives::B256::ZERO,
-            serde_json::json!({"deadline": 500}),
-            serde_json::Value::Null,
-        );
-        assert!(
-            !crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 499).unwrap()
-        );
-        assert!(
-            crate::infra_parts::relayer::prepared_relayer_batch_expired(&prepared, 500).unwrap()
-        );
-    }
-
     /// `crypto_fees_v2`: rate 0.07, exponent 1, takers only.
     fn crypto_fee() -> MarketFee {
         MarketFee::Enabled {

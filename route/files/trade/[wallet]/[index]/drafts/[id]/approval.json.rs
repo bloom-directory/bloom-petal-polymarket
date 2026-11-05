@@ -1,10 +1,4 @@
 petal::route_file!(spec: petal::store_read_spec().caps(&["bloom:sign.status"]), read: |ctx: &petal::Ctx| {
-    let wallet = match petal::wallet_param(ctx) { Ok(value) => value, Err(resp) => return resp };
-    let id = match petal::param(ctx, "id") { Ok(value) => value, Err(resp) => return resp };
-    let operations = vec![crate::approval::operation_identity(&format!("trade/{wallet}/drafts/{id}/approval.json"), "polymarket.order.poly1271", None)];
-    match crate::approval::approval_projection(ctx, wallet, &format!("trade/{wallet}/drafts/{id}/approval.json"), &operations) {
-        Ok(Some(value)) => petal::read_json_value(&value),
-        Ok(None) => petal::error(-3, "no pending signing approval"),
-        Err(resp) => resp,
-    }
+    let (wallet, id) = match (petal::wallet_param(ctx), petal::param(ctx, "id")) { (Ok(w), Ok(i)) => (w, i), (Err(r), _) | (_, Err(r)) => return r };
+    petal::signing::approval_read(ctx, wallet, &[&format!("trade/{wallet}/drafts/{id}/attempt")])
 });

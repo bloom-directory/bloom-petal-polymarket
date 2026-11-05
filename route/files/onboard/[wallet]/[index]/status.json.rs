@@ -21,10 +21,11 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         }),
     };
     status["approvals"]["preview_path"] = serde_json::json!(format!("onboard/{wallet}/{}/approvals.json", account.number()));
-    let operations = match crate::onboarding::approval_operations(wallet) { Ok(value) => value, Err(resp) => return resp };
-    let approval_pending = match crate::approval::approval_projection(ctx, wallet, &crate::onboarding::approval_key(wallet), &operations) {
-        Ok(value) => value.is_some(),
-        Err(response) => return response,
+    let batch = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("onboard/{wallet}")) { Ok(s) => s, Err(r) => return r };
+    let approval_pending = match petal::signing::approval_read(ctx, wallet, &[&format!("onboard/{wallet}/login"), batch.as_deref().unwrap_or("onboard/no-batch")]) {
+        petal::DispatchResponse::Read(_) => true,
+        petal::DispatchResponse::Error { code: -3, .. } => false,
+        other => return other,
     };
     crate::onboarding::project_next_action(&mut status, wallet, account.number(), approval_pending);
     petal::read_json_value(&status)

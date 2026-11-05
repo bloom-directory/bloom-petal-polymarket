@@ -1,9 +1,5 @@
 petal::route_file!(spec: petal::store_read_spec().caps(&["bloom:store", "bloom:sign.status"]), read: |ctx: &petal::Ctx| {
-    let wallet = match petal::wallet_param(ctx) { Ok(value) => value, Err(resp) => return resp };
-    let operations = match crate::approval::relayer_operation(&format!("actions/{wallet}/withdraw-pusd/approval.json"), &format!("actions/{wallet}/withdraw-pusd/prepared_signing.json")) { Ok(value) => value, Err(resp) => return resp };
-    match crate::approval::approval_projection(ctx, wallet, &format!("actions/{wallet}/withdraw-pusd/approval.json"), &operations) {
-        Ok(Some(value)) => petal::read_json_value(&value),
-        Ok(None) => petal::error(-3, "no pending signing approval"),
-        Err(resp) => resp,
-    }
+    let wallet = match petal::wallet_param(ctx) { Ok(w) => w, Err(r) => return r };
+    let scope = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("actions/{wallet}/withdraw-pusd")) { Ok(Some(s)) => s, Ok(None) => return petal::error(-3, "no pending signing approval"), Err(r) => return r };
+    petal::signing::approval_read(ctx, wallet, &[&scope])
 });

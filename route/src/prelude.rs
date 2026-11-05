@@ -7,10 +7,7 @@ pub use crate::app_types::{
     TradeCancelRequest, TradeNewRequest, TradePostRequest, TradeRevalidateRequest, TradeSnapshot,
     default_slippage_bps, default_true,
 };
-pub use crate::approval::{
-    PreparedSigning, load_prepared_signing, sign_prepared, store_prepared_signing,
-    store_review_intent, verify_review_intent,
-};
+pub use crate::approval::{store_review_intent, verify_review_intent};
 pub use crate::constants::{
     BATCH_DEADLINE_SECS, CLOB, CLOB_AUTH_NONCE, DATA, GAMMA, MARKETS_LIST_LIMIT,
     MAX_CHAIN_METHOD_BYTES, MAX_CHAIN_READ_BYTES, MAX_HTTP_BYTES, MAX_LIST_BYTES, MAX_POLICY_BYTES,
@@ -35,10 +32,9 @@ pub use crate::infra_parts::reconcile::{
 pub use crate::infra_parts::relayer::{
     LocalRelayerTx, RelayerHttpError, builder_headers, builder_hmac_signature,
     dispatch_error_message, onboard_in_flight_deadline_ms, parse_json_u64,
-    parse_relayer_submit_response, parse_relayer_transaction_response, prepare_relayer_batch,
-    relayer_batch_body, relayer_batch_signature, relayer_get_json, relayer_http_error,
-    relayer_poll_confirmed, relayer_submit, relayer_submit_configured, relayer_transaction,
-    relayer_tx_id_matches, relayer_wallet_nonce,
+    parse_relayer_submit_response, parse_relayer_transaction_response, relayer_batch_body,
+    relayer_get_json, relayer_http_error, relayer_poll_confirmed, relayer_submit,
+    relayer_submit_configured, relayer_transaction, relayer_tx_id_matches, relayer_wallet_nonce,
 };
 pub use crate::infra_parts::store::{
     StoreTradeLock, acquire_trade_lock, append_trade_audit, read_store, store_get, store_put_json,

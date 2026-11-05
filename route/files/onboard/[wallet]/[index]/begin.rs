@@ -1,4 +1,4 @@
-petal::route_file!(spec: petal::signing_write_spec("polymarket.clob_auth.v1").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:vfs.read"]), read:
+petal::route_file!(spec: petal::signing_write_spec("polymarket.clob_auth.v1").caps(&["bloom:http", "bloom:store", "bloom:sign", "bloom:sign.status", "bloom:vfs.read"]), read:
     |_ctx: &petal::Ctx| {
         petal::DispatchResponse::Read(b"write here for CLOB credentials; then write continue for deposit-wallet onboarding. Read status.json for the next action. Write {\"refresh\":true} to refresh existing credentials.\n".to_vec())
     },
