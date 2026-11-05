@@ -12,20 +12,98 @@ mod status;
 
 pub use flow::run_onboard_stages;
 
-fn login_attempt(
+trait LoginHost: petal::signing::SigningHost {
+    fn set_login_cycle(
+        &mut self,
+        wallet: &str,
+        cycle: u32,
+    ) -> Result<(), petal::signing::SigningError>;
+}
+impl LoginHost for CtxHost<'_> {
+    fn set_login_cycle(
+        &mut self,
+        wallet: &str,
+        cycle: u32,
+    ) -> Result<(), petal::signing::SigningError> {
+        petal::sdk::store_put(
+            &format!("onboard/{wallet}/login_cycle.json"),
+            cycle.to_string().as_bytes(),
+            false,
+        )
+        .map_err(|e| login_storage_error(e.message()))
+    }
+}
+fn login_storage_error(message: impl Into<String>) -> petal::signing::SigningError {
+    petal::signing::SigningError {
+        code: petal::signing::ErrorCode::Backend,
+        message: message.into(),
+    }
+}
+fn login_cycle(
     host: &mut impl petal::signing::SigningHost,
+    wallet: &str,
+) -> Result<u32, petal::signing::SigningError> {
+    host.store_get(&format!("onboard/{wallet}/login_cycle.json"))?
+        .map(|bytes| {
+            serde_json::from_slice(&bytes)
+                .map_err(|e| login_storage_error(format!("invalid login cycle: {e}")))
+        })
+        .transpose()
+        .map(|cycle| cycle.unwrap_or(0))
+}
+fn cycle_scope(wallet: &str, cycle: u32) -> String {
+    if cycle == 0 {
+        format!("onboard/{wallet}/login")
+    } else {
+        format!("onboard/{wallet}/login-{cycle}")
+    }
+}
+pub fn login_scope(
+    host: &mut impl petal::signing::SigningHost,
+    wallet: &str,
+) -> Result<String, petal::signing::SigningError> {
+    Ok(cycle_scope(wallet, login_cycle(host, wallet)?))
+}
+
+/// Called under the onboarding lock. Rollover retains every old attempt and
+/// publishes the new scope only after its frozen record exists.
+fn login_attempt(
+    host: &mut impl LoginHost,
     wallet: &str,
     refresh: bool,
     build: impl Fn() -> Result<(petal::signing::PreparedAction, u64), petal::signing::SigningError>,
 ) -> Result<Attempt<u64>, petal::signing::SignHalt> {
-    let attempt = Attempt::open(host, &format!("onboard/{wallet}/login"), &build)?;
-    match attempt.state(host, wallet)? {
-        AttemptState::Expired | AttemptState::Cancelled => attempt.renew(host, wallet, |_| build()),
-        AttemptState::Signed | AttemptState::PackageChanged if refresh => {
-            attempt.renew(host, wallet, |_| build())
-        }
-        _ => Ok(attempt),
+    let cycle = login_cycle(host, wallet)?;
+    let attempt = Attempt::open(host, &cycle_scope(wallet, cycle), &build)?;
+    let renew = match attempt.state(host, wallet)? {
+        AttemptState::Expired | AttemptState::Cancelled => true,
+        AttemptState::Signed | AttemptState::PackageChanged => refresh,
+        _ => false,
+    };
+    if !renew {
+        return Ok(attempt);
     }
+    if attempt.generation() != 31 {
+        return attempt.renew(host, wallet, |_| build());
+    }
+    if attempt.action().spend != petal::signing::Spend::None {
+        return Err(login_storage_error("only a zero-spend login can roll over").into());
+    }
+    let next = cycle
+        .checked_add(1)
+        .ok_or_else(|| login_storage_error("login cycle overflow"))?;
+    let successor = Attempt::open(host, &cycle_scope(wallet, next), || {
+        let (action, timestamp) = build()?;
+        if action.spend != petal::signing::Spend::None {
+            return Err(login_storage_error("login rollover must remain zero-spend"));
+        }
+        Ok((action, timestamp))
+    })?;
+    if successor.action().spend != petal::signing::Spend::None {
+        return Err(login_storage_error("stored login rollover is not zero-spend").into());
+    }
+    host.set_login_cycle(wallet, next)?;
+    Ok(successor)
 }
 
 fn login_failed_after_signing(response: DispatchResponse) -> DispatchResponse {
@@ -210,6 +288,23 @@ pub(crate) mod tests {
     pub(crate) struct Host {
         pub(crate) store: std::collections::HashMap<String, Vec<u8>>,
         outcome: Option<Result<petal::signing::SigningOutcome, petal::signing::SigningError>>,
+        fail_cycle_write: bool,
+    }
+    impl LoginHost for Host {
+        fn set_login_cycle(
+            &mut self,
+            wallet: &str,
+            cycle: u32,
+        ) -> Result<(), petal::signing::SigningError> {
+            if self.fail_cycle_write {
+                return Err(login_storage_error("injected pointer write failure"));
+            }
+            self.store.insert(
+                format!("onboard/{wallet}/login_cycle.json"),
+                cycle.to_string().into_bytes(),
+            );
+            Ok(())
+        }
     }
     impl petal::signing::SigningHost for Host {
         fn package_hash(&self) -> &str {
@@ -314,6 +409,105 @@ pub(crate) mod tests {
         assert_ne!(refresh.operation_key(), first.operation_key());
         assert_eq!(*refresh.context(), 200);
         assert_eq!(host.store.len(), 2);
+    }
+
+    fn last_login_generation() -> Host {
+        let mut host = Host::default();
+        login_attempt(&mut host, "test", false, || login(100)).unwrap();
+        host.outcome = Some(Ok(petal::signing::SigningOutcome::Signed {
+            signature: vec![1; 65],
+        }));
+        for timestamp in 101..132 {
+            login_attempt(&mut host, "test", true, || login(timestamp)).unwrap();
+        }
+        assert_eq!(
+            Attempt::<u64>::load(&mut host, "onboard/test/login")
+                .unwrap()
+                .unwrap()
+                .generation(),
+            31
+        );
+        host
+    }
+    #[test]
+    fn login_can_refresh_beyond_one_scope_without_replacing_pending_or_ambiguous() {
+        use petal::signing::SigningOutcome;
+        let mut host = last_login_generation();
+        let original = host.store.clone();
+        for outcome in [
+            SigningOutcome::ApprovalPending {
+                action_id: "pending".into(),
+                expires_ms: 999,
+            },
+            SigningOutcome::RecoveryRequired {
+                status: "ambiguous".into(),
+            },
+        ] {
+            host.outcome = Some(Ok(outcome));
+            let frozen = login_attempt(&mut host, "test", true, || login(999)).unwrap();
+            assert_eq!(frozen.generation(), 31);
+            assert_eq!(host.store, original);
+        }
+        host.outcome = Some(Ok(SigningOutcome::Signed {
+            signature: vec![1; 65],
+        }));
+        for timestamp in 132..171 {
+            login_attempt(&mut host, "test", true, || login(timestamp)).unwrap();
+        }
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login-2"
+        );
+        assert!(host.store.contains_key("onboard/test/login.31.json"));
+    }
+    #[test]
+    fn login_rollover_retries_pointer_failure_without_rebuilding_the_successor() {
+        let mut host = last_login_generation();
+        host.fail_cycle_write = true;
+        assert!(login_attempt(&mut host, "test", true, || login(200)).is_err());
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login"
+        );
+        let successor = host.store["onboard/test/login-1.0.json"].clone();
+        host.fail_cycle_write = false;
+        let retry = login_attempt(&mut host, "test", true, || login(999)).unwrap();
+        assert_eq!(*retry.context(), 200);
+        assert_eq!(host.store["onboard/test/login-1.0.json"], successor);
+        assert_eq!(
+            login_scope(&mut host, "test").unwrap(),
+            "onboard/test/login-1"
+        );
+    }
+    #[test]
+    fn login_rollover_cannot_introduce_spending() {
+        let mut host = last_login_generation();
+        let original = host.store.clone();
+        assert!(
+            login_attempt(&mut host, "test", true, || {
+                let (mut action, timestamp) = login(200)?;
+                action.spend = petal::signing::Spend::Unspecified;
+                Ok((action, timestamp))
+            })
+            .is_err()
+        );
+        assert_eq!(host.store, original);
+        let key = "onboard/test/login.31.json";
+        let mut record: serde_json::Value = serde_json::from_slice(&host.store[key]).unwrap();
+        record["action"]["spend"] =
+            serde_json::to_value(petal::signing::Spend::Unspecified).unwrap();
+        host.store
+            .insert(key.into(), serde_json::to_vec(&record).unwrap());
+        host.outcome = Some(Err(petal::signing::SigningError {
+            code: petal::signing::ErrorCode::Expired,
+            message: "expired".into(),
+        }));
+        let before = host.store.clone();
+        assert!(login_attempt(&mut host, "test", true, || login(300)).is_err());
+        assert_eq!(
+            host.store, before,
+            "terminal spending attempts cannot roll over"
+        );
     }
 
     #[test]

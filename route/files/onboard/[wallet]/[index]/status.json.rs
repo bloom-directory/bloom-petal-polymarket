@@ -21,8 +21,9 @@ petal::route_file!(spec: petal::chain_read_spec().caps(&["bloom:http", "bloom:st
         }),
     };
     status["approvals"]["preview_path"] = serde_json::json!(format!("onboard/{wallet}/{}/approvals.json", account.number()));
+    let login = match crate::onboarding::login_scope(&mut petal::signing::CtxHost(ctx), wallet) { Ok(s) => s, Err(e) => return e.into() };
     let batch = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("onboard/{wallet}")) { Ok(s) => s, Err(r) => return r };
-    let approval_pending = match petal::signing::approval_read(ctx, wallet, &[&format!("onboard/{wallet}/login"), batch.as_deref().unwrap_or("onboard/no-batch")]) {
+    let approval_pending = match petal::signing::approval_read(ctx, wallet, &[&login, batch.as_deref().unwrap_or("onboard/no-batch")]) {
         petal::DispatchResponse::Read(_) => true,
         petal::DispatchResponse::Error { code: -3, .. } => false,
         other => return other,
