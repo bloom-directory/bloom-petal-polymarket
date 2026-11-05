@@ -204,3 +204,48 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
     }
     DispatchResponse::Write
 }
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+
+    const HELP: &str = include_str!("../../files/trade/[wallet]/[index]/new.rs");
+
+    #[test]
+    fn help_example_satisfies_the_request_parser() {
+        let line = HELP
+            .lines()
+            .find(|l| l.starts_with('{'))
+            .expect("help example");
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        let known = [
+            "slug",
+            "outcome",
+            "amount",
+            "side",
+            "max_price",
+            "min_price",
+            "limit_price",
+            "order_type",
+        ];
+        for key in value.as_object().unwrap().keys() {
+            assert!(
+                known.contains(&key.as_str()),
+                "help example has unknown field {key}"
+            );
+        }
+        let req: TradeNewRequest = serde_json::from_str(line).unwrap();
+        assert!(parse_micro(&req.amount).unwrap() > 0);
+        assert!(parse_micro(req.limit_price.as_deref().unwrap()).unwrap() > 0);
+        let order_type: OrderType = req.order_type.as_deref().unwrap().parse().unwrap();
+        assert!(!matches!(order_type, OrderType::GTD));
+    }
+
+    #[test]
+    fn help_names_the_collateral_the_order_spends() {
+        assert!(HELP.contains("pUSD of shares to buy, before fees"));
+        // A buy pulls amount plus the fee bound, so help must say fees add on.
+        assert!(HELP.contains("fee_cap"));
+        assert!(!HELP.contains("to spend"));
+    }
+}
