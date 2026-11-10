@@ -1,6 +1,6 @@
-petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
-    match petal::wallet_param(ctx) {
-        Ok(wallet) => petal::read_store(&format!("onboard/{wallet}/approval.json"), 1_048_576),
-        Err(resp) => resp,
-    }
+petal::route_file!(spec: petal::store_read_spec().caps(&["bloom:store", "bloom:sign.status"]), read: |ctx: &petal::Ctx| {
+    let wallet = match petal::wallet_param(ctx) { Ok(w) => w, Err(r) => return r };
+    let login = match crate::onboarding::login_scope(&mut petal::signing::CtxHost(ctx), wallet) { Ok(s) => s, Err(e) => return e.into() };
+    let batch = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("onboard/{wallet}")) { Ok(s) => s, Err(r) => return r };
+    petal::signing::approval_read(ctx, wallet, &[&login, batch.as_deref().unwrap_or("onboard/no-batch")])
 });
