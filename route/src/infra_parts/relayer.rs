@@ -7,7 +7,7 @@ use alloy::primitives::Address;
 #[cfg(test)]
 use alloy::primitives::Signature;
 use petal::sdk::{DispatchResponse, HttpRequest};
-use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
+use petal::signing::{Attempt, CtxHost, PrepareMode, eip712_action};
 
 pub struct LocalRelayerTx {
     pub id: String,
@@ -235,15 +235,8 @@ pub fn relayer_batch_body(
     deadline: u64,
 ) -> Result<serde_json::Value, DispatchResponse> {
     let mut host = CtxHost(ctx);
-    let prepared = prepare_relayer_batch(&mut host, wallet, owner, deposit, nonce, deadline)?;
+    let (prepared, bytes) = sign_relayer_batch(&mut host, wallet, owner, deposit, nonce, deadline)?;
     let batch = prepared.context();
-    if now_secs() >= batch.deadline {
-        return Err(error(
-            -3,
-            "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt",
-        ));
-    }
-    let bytes = sign_or_resume(&mut host, wallet, &prepared).map_err(DispatchResponse::from)?;
     let signature =
         crate::approval::verified_signature(owner, batch.signing_hash(), &bytes)?.to_string();
     Ok(serde_json::json!({
@@ -260,14 +253,14 @@ pub fn relayer_batch_body(
     }))
 }
 
-fn prepare_relayer_batch(
+fn sign_relayer_batch(
     host: &mut CtxHost<'_>,
     wallet: &str,
     owner: Address,
     deposit: Address,
     nonce: u64,
     deadline: u64,
-) -> Result<Attempt<PreparedBatch>, DispatchResponse> {
+) -> Result<(Attempt<PreparedBatch>, Vec<u8>), DispatchResponse> {
     let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
     let base = format!("onboard/{wallet}");
     let scope = crate::polymarket::relayer_batch::begin_scope(host, &base, nonce)?;
@@ -301,22 +294,22 @@ fn prepare_relayer_batch(
             batch,
         ))
     };
-    let attempt = Attempt::open(host, &scope, build).map_err(DispatchResponse::from)?;
-    let attempt = match attempt
-        .state(host, wallet)
-        .map_err(DispatchResponse::from)?
-    {
-        AttemptState::Expired | AttemptState::Cancelled => attempt
-            .renew(host, wallet, |_| build())
-            .map_err(DispatchResponse::from)?,
-        _ => attempt,
-    };
-    let batch = attempt.context();
-    if batch.chain_id != chain_id || batch.deposit_wallet != deposit {
-        return Err(error(-4, "prepared onboarding batch identity mismatch"));
-    }
-    verify_review_intent(&review_key, &batch.review_intent_hash)?;
-    Ok(attempt)
+    petal::prepared_sign!(
+        host: host, wallet: wallet, scope: &scope, mode: PrepareMode::RenewTerminal,
+        build: build,
+        validate: |attempt: &Attempt<PreparedBatch>| {
+            let batch = attempt.context();
+            if batch.chain_id != chain_id || batch.deposit_wallet != deposit {
+                return Err(crate::approval::signing_backend("prepared onboarding batch identity mismatch"));
+            }
+            attempt.check_action(&eip712_action("polymarket.onboard", &batch.typed_data())?)?;
+            verify_review_intent(&review_key, &batch.review_intent_hash).map_err(crate::approval::signing_error)?;
+            if now_secs() >= batch.deadline {
+                return Err(crate::approval::signing_error(error(-3, "prepared onboarding batch expired; reconcile the existing operation before creating a new attempt")));
+            }
+            Ok(())
+        },
+    ).map_err(DispatchResponse::from)
 }
 
 pub fn builder_headers(

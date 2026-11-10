@@ -11,7 +11,7 @@ alias = "polymarket_route"
 [sdk]
 package = "bloom-petal-sdk"
 git = "https://github.com/bloom-directory/petal"
-rev = "465d6f2464a6a87910128f5448d1543ccb2aeb2a"
+rev = "66ac2b675aac7ea4f67ccf3b45c1d346b1f0ef37"
 
 [dependencies]
 alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "serde", "sol-types", "std"] }

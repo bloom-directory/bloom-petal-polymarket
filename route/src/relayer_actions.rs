@@ -7,7 +7,7 @@ use crate::polymarket::wallet::{redeem_positions_call, revoke_calls, transfer_am
 use crate::polymarket::{Market, validate_wallet_name};
 use crate::prelude::*;
 use petal::sdk::DispatchResponse;
-use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
+use petal::signing::{Attempt, CtxHost, PrepareMode, eip712_action, prepare, sign_or_resume};
 
 #[derive(Debug, Clone, Copy)]
 enum RelayerAction<'a> {
@@ -178,38 +178,27 @@ fn execute(
         }
         Err(resp) => return resp,
     };
-    let existing: Option<Attempt<PreparedBatch>> = match Attempt::load(&mut host, &scope) {
-        Ok(a) => a,
-        Err(e) => return e.into(),
-    };
-    let replace = match existing
-        .as_ref()
-        .map(|a| a.state(&mut host, wallet))
-        .transpose()
-    {
-        Ok(Some(AttemptState::Expired | AttemptState::Cancelled)) => true,
-        Err(e) => return e.into(),
-        _ => false,
-    };
-    let prepared = match existing {
-        Some(attempt) if !replace => attempt,
-        existing => {
-            let calls = match calls_for(action, owner, deposit, body) {
-                Ok(calls) => calls,
-                Err(resp) => return resp,
-            };
-            let nonce = match scope.rsplit('-').next().and_then(|n| n.parse().ok()) {
-                Some(n) => n,
-                None => return error(-4, "invalid batch scope"),
-            };
+    let mut created = false;
+    let prepared = match prepare(
+        &mut host,
+        wallet,
+        &scope,
+        PrepareMode::RenewTerminal,
+        || {
+            created = true;
+            let calls =
+                calls_for(action, owner, deposit, body).map_err(crate::approval::signing_error)?;
+            let nonce = scope
+                .rsplit('-')
+                .next()
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| crate::approval::signing_backend("invalid batch scope"))?;
             let deadline = now_secs().saturating_add(BATCH_DEADLINE_SECS);
             let batch_calls: Vec<BatchCall> = calls.iter().map(BatchCall::from).collect();
             let review = serde_json::json!({"operation": action.operation(), "owner":owner.to_checksum(None),
-            "deposit_wallet":deposit.to_checksum(None), "chain_id":chain_id,"nonce":nonce,"deadline":deadline,"calls":batch_calls});
-            let review_hash = match store_review_intent(&review_key, &review) {
-                Ok(hash) => hash,
-                Err(resp) => return resp,
-            };
+                "deposit_wallet":deposit.to_checksum(None), "chain_id":chain_id,"nonce":nonce,"deadline":deadline,"calls":batch_calls});
+            let review_hash = store_review_intent(&review_key, &review)
+                .map_err(crate::approval::signing_error)?;
             let batch = PreparedBatch {
                 deposit_wallet: deposit,
                 chain_id,
@@ -218,31 +207,31 @@ fn execute(
                 calls: batch_calls,
                 review_intent_hash: review_hash,
             };
-            let signing = match eip712_action("polymarket.relayer_batch", &batch.typed_data()) {
-                Ok(a) => a,
-                Err(e) => return e.into(),
-            };
-            match existing {
-                Some(a) => match a.renew(&mut host, wallet, |_| Ok((signing, batch))) {
-                    Ok(a) => a,
-                    Err(e) => return e.into(),
-                },
-                None => {
-                    if let Err(e) = Attempt::open(&mut host, &scope, || Ok((signing, batch))) {
-                        return e.into();
-                    }
-                    return DispatchResponse::Write;
-                }
+            Ok((
+                eip712_action("polymarket.relayer_batch", &batch.typed_data())?,
+                batch,
+            ))
+        },
+        |attempt: &Attempt<PreparedBatch>| {
+            let batch = attempt.context();
+            if batch.chain_id != chain_id || batch.deposit_wallet != deposit {
+                return Err(crate::approval::signing_backend(
+                    "prepared relayer action identity mismatch",
+                ));
             }
-        }
+            let expected = eip712_action("polymarket.relayer_batch", &batch.typed_data())?;
+            attempt.check_action(&expected)?;
+            Ok(())
+        },
+    ) {
+        Ok(attempt) => attempt,
+        Err(halt) => return halt.into(),
     };
-    let batch = prepared.context();
-    if batch.chain_id != chain_id {
-        return error(
-            -4,
-            "prepared relayer action does not match configured chain",
-        );
+    // Preserve the review-only first write before any venue submission.
+    if created && prepared.generation() == 0 {
+        return DispatchResponse::Write;
     }
+    let batch = prepared.context();
     let digest = match serde_json::to_vec(batch) {
         Ok(bytes) => blake3_hex(&bytes),
         Err(err) => return error(-4, format!("prepared batch JSON: {err}")),

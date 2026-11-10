@@ -1,10 +1,10 @@
 use crate::prelude::*;
 
 use crate::polymarket::signer::{POLY_ADDRESS, POLY_NONCE, POLY_SIGNATURE, POLY_TIMESTAMP};
-use crate::polymarket::signing::clob_auth_action_and_hash;
+use crate::polymarket::signing::{clob_auth_action_and_hash, clob_auth_prepared_action};
 use crate::polymarket::{Credentials, validate_wallet_name};
 use petal::sdk::DispatchResponse;
-use petal::signing::{Attempt, AttemptState, CtxHost, eip712_action, sign_or_resume};
+use petal::signing::{Attempt, AttemptState, CtxHost, PrepareMode, prepare, sign_or_resume};
 
 mod flow;
 mod persistence;
@@ -74,7 +74,16 @@ fn login_attempt(
     build: impl Fn() -> Result<(petal::signing::PreparedAction, u64), petal::signing::SigningError>,
 ) -> Result<Attempt<u64>, petal::signing::SignHalt> {
     let cycle = login_cycle(host, wallet)?;
-    let attempt = Attempt::open(host, &cycle_scope(wallet, cycle), &build)?;
+    let mode = if refresh {
+        PrepareMode::RefreshZeroSpend
+    } else {
+        PrepareMode::RenewTerminal
+    };
+    let scope = cycle_scope(wallet, cycle);
+    let attempt = Attempt::open(host, &scope, &build)?;
+    if attempt.generation() != 31 {
+        return prepare(host, wallet, &scope, mode, build, |_| Ok(()));
+    }
     let renew = match attempt.state(host, wallet)? {
         AttemptState::Expired | AttemptState::Cancelled => true,
         AttemptState::Signed | AttemptState::PackageChanged => refresh,
@@ -82,9 +91,6 @@ fn login_attempt(
     };
     if !renew {
         return Ok(attempt);
-    }
-    if attempt.generation() != 31 {
-        return attempt.renew(host, wallet, |_| build());
     }
     if attempt.action().spend != petal::signing::Spend::None {
         return Err(login_storage_error("only a zero-spend login can roll over").into());
@@ -168,16 +174,7 @@ pub fn begin_onboarding(
             message: dispatch_error_message(&r),
         })?;
         Ok((
-            eip712_action(
-                "polymarket.clob_auth.v1",
-                &crate::polymarket::eip712::clob_auth_typed_data(
-                    owner,
-                    timestamp,
-                    CLOB_AUTH_NONCE,
-                    chain_id,
-                ),
-            )?
-            .with_spend(petal::signing::Spend::None),
+            clob_auth_prepared_action(owner, timestamp, CLOB_AUTH_NONCE, chain_id)?,
             timestamp,
         ))
     };
@@ -187,6 +184,13 @@ pub fn begin_onboarding(
     };
     let timestamp = *attempt.context();
     let action = clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, chain_id);
+    let expected = match clob_auth_prepared_action(owner, timestamp, CLOB_AUTH_NONCE, chain_id) {
+        Ok(action) => action,
+        Err(err) => return err.into(),
+    };
+    if let Err(err) = attempt.check_action(&expected) {
+        return err.into();
+    }
     let review = serde_json::json!({"operation":"clob_auth", "owner":owner.to_checksum(None),
         "chain_id":chain_id,"timestamp":timestamp,"nonce":CLOB_AUTH_NONCE,"message":action.message,
         "signing_hash":format!("{:#x}",action.signing_hash)});
@@ -355,16 +359,7 @@ pub(crate) mod tests {
         timestamp: u64,
     ) -> Result<(petal::signing::PreparedAction, u64), petal::signing::SigningError> {
         let owner = alloy::primitives::Address::repeat_byte(1);
-        let action = eip712_action(
-            "polymarket.clob_auth.v1",
-            &crate::polymarket::eip712::clob_auth_typed_data(
-                owner,
-                timestamp,
-                CLOB_AUTH_NONCE,
-                137,
-            ),
-        )?
-        .with_spend(petal::signing::Spend::None);
+        let action = clob_auth_prepared_action(owner, timestamp, CLOB_AUTH_NONCE, 137)?;
         assert_eq!(
             action.payload.hash.as_slice(),
             clob_auth_action_and_hash(owner, timestamp, CLOB_AUTH_NONCE, 137)
@@ -391,7 +386,10 @@ pub(crate) mod tests {
             },
         ] {
             host.outcome = Some(Ok(outcome));
-            let retry = login_attempt(&mut host, "test", true, || login(200)).unwrap();
+            let retry = login_attempt(&mut host, "test", true, || {
+                panic!("pending login must not rebuild")
+            })
+            .unwrap();
             assert_eq!(retry.operation_key(), first.operation_key());
             assert_eq!(*retry.context(), 100);
             assert_eq!(host.store.len(), 1);
@@ -409,6 +407,45 @@ pub(crate) mod tests {
         assert_ne!(refresh.operation_key(), first.operation_key());
         assert_eq!(*refresh.context(), 200);
         assert_eq!(host.store.len(), 2);
+    }
+
+    #[test]
+    fn login_status_failure_does_not_rebuild_or_rotate() {
+        let mut host = Host::default();
+        let first = login_attempt(&mut host, "test", false, || login(100)).unwrap();
+        host.outcome = Some(Err(login_storage_error("status unavailable")));
+        assert!(
+            login_attempt(&mut host, "test", true, || panic!(
+                "failed status must not rebuild"
+            ))
+            .is_err()
+        );
+        let frozen = Attempt::<u64>::load(&mut host, "onboard/test/login")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.operation_key(), frozen.operation_key());
+        assert_eq!(host.store.len(), 1);
+    }
+
+    #[test]
+    fn frozen_login_context_mismatch_cannot_sign() {
+        let mut host = Host::default();
+        let first = login_attempt(&mut host, "test", false, || login(100)).unwrap();
+        let candidate = login(200).unwrap().0;
+        // Host::sign panics without an outcome: validation must stop before signing.
+        let result = petal::prepared_sign!(host: &mut host, wallet: "test",
+            scope: "onboard/test/login", mode: PrepareMode::ExistingOnly,
+            build: || panic!("existing login must not rebuild"),
+            validate: |attempt: &Attempt<u64>| attempt.check_action(&candidate));
+        assert!(result.is_err());
+        assert_eq!(
+            first.operation_key(),
+            Attempt::<u64>::load(&mut host, "onboard/test/login")
+                .unwrap()
+                .unwrap()
+                .operation_key()
+        );
+        assert_eq!(host.store.len(), 1);
     }
 
     fn last_login_generation() -> Host {

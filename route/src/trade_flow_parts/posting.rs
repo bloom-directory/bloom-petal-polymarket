@@ -7,7 +7,7 @@ use crate::polymarket::order::{
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SdkError};
-use petal::signing::{Attempt, AttemptState, CtxHost, sign_or_resume};
+use petal::signing::{CtxHost, PrepareMode, prepare, sign_or_resume};
 pub fn post_trade_draft(
     ctx: &petal::Ctx,
     wallet: &str,
@@ -191,49 +191,32 @@ pub fn post_trade_draft(
         let action = prepared_order_action(&draft, &record, owner, funder, chain_id)?;
         Ok((action, record))
     };
-    let mut attempt = match Attempt::load(&mut host, &format!("{base}/attempt")) {
+    let attempt = match prepare(
+        &mut host,
+        wallet,
+        &format!("{base}/attempt"),
+        PrepareMode::RenewTerminal,
+        || build().map_err(crate::approval::signing_error),
+        |attempt: &petal::signing::Attempt<PreparedOrder>| {
+            let record = attempt.context();
+            if record.draft_id != id
+                || record.neg_risk != draft.neg_risk
+                || record.review_intent_hash != review_intent_hash
+                || record.policy_warnings_acknowledged != req.acknowledge_warnings
+            {
+                return Err(crate::approval::signing_backend(
+                    "prepared order does not match final review intent",
+                ));
+            }
+            let expected = prepared_order_action(&draft, record, owner, funder, chain_id)
+                .map_err(crate::approval::signing_error)?;
+            attempt.check_action(&expected)
+        },
+    ) {
         Ok(attempt) => attempt,
-        Err(e) => return e.into(),
+        Err(halt) => return halt.into(),
     };
-    let replace = match attempt
-        .as_ref()
-        .map(|a: &Attempt<PreparedOrder>| a.state(&mut host, wallet))
-        .transpose()
-    {
-        Ok(Some(AttemptState::Expired | AttemptState::Cancelled)) => true,
-        Err(e) => return e.into(),
-        _ => false,
-    };
-    if attempt.is_none() || replace {
-        let (action, record) = match build() {
-            Ok(value) => value,
-            Err(resp) => return resp,
-        };
-        attempt = Some(match attempt {
-            Some(a) => match a.renew(&mut host, wallet, |_| Ok((action, record))) {
-                Ok(a) => a,
-                Err(e) => return e.into(),
-            },
-            None => match Attempt::open(&mut host, &format!("{base}/attempt"), || {
-                Ok((action, record))
-            }) {
-                Ok(a) => a,
-                Err(e) => return e.into(),
-            },
-        });
-    }
-    let attempt = attempt.expect("attempt opened");
     let record = attempt.context();
-    if let Err(err) = record.validate(owner, funder, chain_id) {
-        return polymarket_error(err);
-    }
-    if record.draft_id != id
-        || record.neg_risk != draft.neg_risk
-        || record.review_intent_hash != review_intent_hash
-        || record.policy_warnings_acknowledged != req.acknowledge_warnings
-    {
-        return error(-4, "prepared order does not match final review intent");
-    }
     let order = &record.order;
     let salt = match u64::try_from(order.salt) {
         Ok(salt) => salt,

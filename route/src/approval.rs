@@ -42,9 +42,36 @@ pub fn verified_signature(
     Ok(signature)
 }
 
+/// Preserve domain diagnostics when preparing through the shared signing API.
+pub(crate) fn signing_error(response: DispatchResponse) -> petal::signing::SigningError {
+    let mut error = signing_backend(dispatch_error_message(&response));
+    error.code = match response {
+        DispatchResponse::Error { code: -2, .. } => petal::signing::ErrorCode::Denied,
+        DispatchResponse::Error { code: -3, .. } => petal::signing::ErrorCode::Invalid,
+        _ => petal::signing::ErrorCode::Backend,
+    };
+    error
+}
+
+pub(crate) fn signing_backend(message: impl Into<String>) -> petal::signing::SigningError {
+    petal::signing::SigningError {
+        code: petal::signing::ErrorCode::Backend,
+        message: message.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_preserves_domain_error_codes() {
+        for code in [-2, -3, -4] {
+            let response: DispatchResponse = signing_error(error(code, "domain failure")).into();
+            assert!(
+                matches!(response, DispatchResponse::Error { code: actual, .. } if actual == code)
+            );
+        }
+    }
     #[test]
     fn checks_owner_and_normalizes_signature() {
         use alloy::signers::{SignerSync, local::PrivateKeySigner};
