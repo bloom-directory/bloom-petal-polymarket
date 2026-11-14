@@ -140,6 +140,10 @@ pub const DEPOSIT_WALLET_IMPLEMENTATION_AMOY: Address =
 pub const PUSD: Address = Address::new(hex_addr(b"C011a7E12a19f7B1f670d46F03B03f3342E82DFB"));
 /// USDC.e — the bridge token only (no longer the CLOB collateral).
 pub const USDC_E: Address = Address::new(hex_addr(b"2791Bca1f2de4661ED88A30C99A7a9449Aa84174"));
+/// Collateral Onramp: `wrap(USDC.e, to, amount)` mints pUSD 1:1 to `to`.
+/// https://docs.polymarket.com/resources/contracts
+pub const COLLATERAL_ONRAMP: Address =
+    Address::new(hex_addr(b"93070a847efEf7F70739046A929D47a521F5B8ee"));
 /// Conditional Tokens Framework (ERC-1155).
 pub const CTF: Address = Address::new(hex_addr(b"4D97DCd97eC945f40cF65F87097ACe5EA0476045"));
 /// CTF Exchange (pUSD-collateralized, EIP-1271). POLY_1271 verifying contract.
