@@ -330,19 +330,17 @@ fn prepare_funding(
     }
     // pUSD and USDC.e both have 6 decimals and convert 1:1.
     let max_spend = parse_decimal_units(&session.max_spend, 6)?;
-    let source = match FundingSource::parse(&session.from_token)? {
-        FundingSource::Auto if read_chain_erc20_balance(PUSD, owner)? >= missing => {
-            FundingSource::Pusd
-        }
-        FundingSource::Auto => FundingSource::UsdcE,
-        source => source,
+    let (source, balance) = match FundingSource::parse(&session.from_token)? {
+        FundingSource::Auto => match read_chain_erc20_balance(PUSD, owner)? {
+            pusd if pusd >= missing => (FundingSource::Pusd, pusd),
+            _ => (
+                FundingSource::UsdcE,
+                read_chain_erc20_balance(USDC_E, owner)?,
+            ),
+        },
+        source => (source, read_chain_erc20_balance(source.token(), owner)?),
     };
-    validate_funding(
-        source,
-        missing,
-        max_spend,
-        read_chain_erc20_balance(source.token(), owner)?,
-    )?;
+    validate_funding(source, missing, max_spend, balance)?;
     let transactions = match source {
         FundingSource::UsdcE => wrap_transactions(
             deposit,
