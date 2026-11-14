@@ -30,9 +30,7 @@ pub fn create_fund_request(
         Ok(req) => req,
         Err(e) => return error(-3, format!("fund request JSON: {e}")),
     };
-    if req.slippage_bps > 1000 {
-        return error(-3, "slippage_bps too high (max 1000)");
-    }
+    forget_enso_settings();
     if parse_micro(req.target_pusd.trim()).unwrap_or(0) == 0 {
         return error(-3, "target_pusd must be > 0");
     }
@@ -50,7 +48,6 @@ pub fn create_fund_request(
         target_pusd: req.target_pusd,
         max_spend: req.max_spend,
         from_token,
-        slippage_bps: req.slippage_bps,
         deposit_wallet: deposit.to_checksum(None),
         deposit_wallet_source: "live_factory_resolved".into(),
         status: "draft".into(),
@@ -477,6 +474,14 @@ fn acquire_fund_lock(wallet: &str, id: &str) -> Result<FundLock, DispatchRespons
     ))
 }
 
+/// Delete the Enso API key and router an earlier version stored. Nothing
+/// reads them now, and no route can change or remove them otherwise.
+fn forget_enso_settings() {
+    for key in ["creds/enso-api-key", "settings/enso-router"] {
+        let _ = petal::sdk::store_del(key);
+    }
+}
+
 fn validate_funding(
     source: FundingSource,
     missing: U256,
@@ -492,7 +497,7 @@ fn validate_funding(
             format!(
                 "owner {} balance is below the {} needed",
                 source.name(),
-                missing
+                crate::polymarket::order::format_micro(missing.saturating_to())
             ),
         ));
     }
@@ -574,12 +579,27 @@ mod tests {
         assert_eq!((decoded.to, decoded.amount), (recipient, U256::from(7u8)));
     }
 
+    /// `forget_enso_settings` reaches the package-wide Enso settings from an
+    /// account route only while they stay declared shared.
+    #[test]
+    fn legacy_enso_settings_stay_declared_shared() {
+        let manifest = include_str!("../../petal.toml");
+        assert!(manifest.contains(
+            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router"]"#
+        ));
+    }
+
     #[test]
     fn funding_enforces_spend_cap_and_balance() {
         let missing = U256::from(10_000_000u64);
         for source in [FundingSource::Pusd, FundingSource::UsdcE] {
             assert!(validate_funding(source, missing, U256::from(1_000_000u64), missing).is_err());
-            assert!(validate_funding(source, missing, missing, U256::from(9_000_000u64)).is_err());
+            let Err(petal::DispatchResponse::Error { message, .. }) =
+                validate_funding(source, missing, missing, U256::from(9_000_000u64))
+            else {
+                panic!("a short balance must be refused");
+            };
+            assert!(message.ends_with("below the 10 needed"), "{message}");
             assert!(validate_funding(source, missing, missing, missing).is_ok());
         }
     }

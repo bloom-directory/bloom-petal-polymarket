@@ -5,7 +5,7 @@ pub use crate::app_types::{
     LocalPolymarketOrderCtx, PolymarketVenueConfig, PreparedEvmTransaction, PreparedFunding,
     StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
     TradeCancelRequest, TradeNewRequest, TradePostRequest, TradeRevalidateRequest, TradeSnapshot,
-    default_slippage_bps, default_true,
+    default_true,
 };
 pub use crate::approval::{
     PreparedSigning, load_prepared_signing, pending_approval_selector, sign_prepared,

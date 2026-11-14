@@ -79,3 +79,6 @@ allowed_intents = [
 [store]
 namespaces = ["state"]
 secret_namespaces = ["secrets"]
+# Enso settings from before funding dropped Enso, declared only so
+# `forget_enso_settings` can delete them. Remove in a later release.
+shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router"]
