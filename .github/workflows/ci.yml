@@ -88,7 +88,6 @@ jobs:
           "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json > "$contract"
           for required in \
             'bloom.polymarket.petal-route-contract.v1' \
-            'settings/enso-api-key' \
             'fund/<wallet>/<index>/<id>/confirm' \
             'trade/<wallet>/<index>/orders/<clob-order-id>/cancel' \
             'redeem/<wallet>/<index>/<slug>/confirm' \
@@ -143,4 +142,4 @@ jobs:
             sleep 1
           done
           "$RUNNER_TEMP/bloom" --home "$smoke_home" petal install "$source_url" --ref "$source_ref"
-          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'settings/enso-api-key'
+          "$RUNNER_TEMP/bloom" --home "$smoke_home" vfs cat /petals/polymarket/meta/route-contract.json | grep -Fq 'fund/<wallet>/<index>/<id>/confirm'

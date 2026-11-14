@@ -1,12 +1,12 @@
 use crate::prelude::*;
 
-use crate::polymarket::eip712::PUSD;
+use crate::polymarket::eip712::{COLLATERAL_ONRAMP, PUSD, USDC_E};
 use crate::polymarket::order::parse_micro;
-use crate::polymarket::wallet::{approveCall, transferCall};
+use crate::polymarket::wallet::{approveCall, transferCall, wrapCall};
 use crate::polymarket::{Result, validate_wallet_name};
 use alloy::primitives::{Address, U256};
 use alloy::sol_types::SolCall;
-use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, HttpRequest, SdkError};
+use petal::sdk::{DispatchResponse, EvmTransaction, HostStatus, SdkError};
 pub fn create_fund_request(
     wallet: &str,
     account: &petal::WalletAccount,
@@ -39,13 +39,17 @@ pub fn create_fund_request(
     if !positive_decimal_input(req.max_spend.trim()) {
         return error(-3, "max_spend must be > 0");
     }
+    let from_token = match FundingSource::parse(req.from_token.as_deref().unwrap_or("auto")) {
+        Ok(source) => source.name().to_string(),
+        Err(resp) => return resp,
+    };
     let id = next_id(&format!("fund/{wallet}/requests/"), ".json");
     let session = StoreFundSession {
         id: id.clone(),
         wallet: wallet.into(),
         target_pusd: req.target_pusd,
         max_spend: req.max_spend,
-        from_token: req.from_token.unwrap_or_else(|| "native".into()),
+        from_token,
         slippage_bps: req.slippage_bps,
         deposit_wallet: deposit.to_checksum(None),
         deposit_wallet_source: "live_factory_resolved".into(),
@@ -255,6 +259,56 @@ pub fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
     }
 }
 
+/// Where the pUSD comes from. Polymarket mints pUSD 1:1 from USDC.e through
+/// its Collateral Onramp, so no swap or quote is needed. Any other token has
+/// to become USDC.e first, for example through the Enso Petal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FundingSource {
+    /// pUSD if the owner holds enough, otherwise USDC.e.
+    Auto,
+    Pusd,
+    UsdcE,
+}
+
+impl FundingSource {
+    fn parse(value: &str) -> Result<Self, DispatchResponse> {
+        let value = value.trim();
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => return Ok(Self::Auto),
+            "pusd" => return Ok(Self::Pusd),
+            "usdc.e" | "usdce" => return Ok(Self::UsdcE),
+            _ => {}
+        }
+        match value.parse::<Address>() {
+            Ok(address) if address == PUSD => Ok(Self::Pusd),
+            Ok(address) if address == USDC_E => Ok(Self::UsdcE),
+            _ => Err(error(
+                -3,
+                format!(
+                    "from_token must be pUSD or USDC.e; Polymarket mints pUSD 1:1 from USDC.e. \
+                     Swap other tokens to USDC.e ({}) on Polygon first, for example with the Enso Petal",
+                    USDC_E.to_checksum(None)
+                ),
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Pusd => "pUSD",
+            Self::UsdcE => "USDC.e",
+        }
+    }
+
+    fn token(self) -> Address {
+        match self {
+            Self::UsdcE => USDC_E,
+            Self::Auto | Self::Pusd => PUSD,
+        }
+    }
+}
+
 fn prepare_funding(
     wallet: &str,
     account: &petal::WalletAccount,
@@ -274,301 +328,79 @@ fn prepare_funding(
     if missing.is_zero() {
         return Err(error(-3, "deposit wallet already meets the pUSD target"));
     }
-    if session.from_token.eq_ignore_ascii_case("pusd") {
-        let max_spend = parse_decimal_units(&session.max_spend, 6)?;
-        validate_direct_pusd_funding(missing, max_spend, read_chain_erc20_balance(PUSD, owner)?)?;
-        return Ok(direct_pusd(wallet, session, &chain, deposit, missing));
-    }
-    prepare_enso(wallet, session, owner, deposit, missing)
-}
-
-fn direct_pusd(
-    wallet: &str,
-    session: &StoreFundSession,
-    chain: &str,
-    deposit: Address,
-    missing: U256,
-) -> PreparedFunding {
-    let transaction = PreparedEvmTransaction {
-        purpose: "direct_pusd_transfer".into(),
-        to: PUSD.to_checksum(None),
-        value_wei: "0".into(),
-        data_hex: erc20_transfer_calldata(deposit, missing),
+    // pUSD and USDC.e both have 6 decimals and convert 1:1.
+    let max_spend = parse_decimal_units(&session.max_spend, 6)?;
+    let source = match FundingSource::parse(&session.from_token)? {
+        FundingSource::Auto if read_chain_erc20_balance(PUSD, owner)? >= missing => {
+            FundingSource::Pusd
+        }
+        FundingSource::Auto => FundingSource::UsdcE,
+        source => source,
     };
-    PreparedFunding {
-        review_intent: serde_json::json!({
-            "operation": "polymarket_fund",
-            "wallet": wallet,
-            "chain": chain,
-            "from_token": "pUSD",
-            "recipient": deposit.to_checksum(None),
-            "amount_pusd_micro": missing.to_string(),
-            "max_spend": session.max_spend,
-            "slippage_bps": session.slippage_bps,
-            "transactions": [transaction.clone()],
-        }),
-        transactions: vec![transaction],
-    }
-}
-
-fn prepare_enso(
-    wallet: &str,
-    session: &StoreFundSession,
-    owner: Address,
-    deposit: Address,
-    missing: U256,
-) -> Result<PreparedFunding, DispatchResponse> {
-    let (_, chain_id) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let api_key = crate::account_views::load_enso_api_key()?;
-    let trusted_router = crate::account_views::load_enso_router()?;
-    let native = matches!(
-        session.from_token.to_ascii_lowercase().as_str(),
-        "native" | "pol" | "matic"
-    );
-    let token_in = if native {
-        alloy::primitives::address!("EeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE")
-    } else {
-        session.from_token.parse::<Address>().map_err(|err| {
-            error(
-                -3,
-                format!("from_token must be native or an address: {err}"),
-            )
-        })?
-    };
-    let decimals = if native {
-        18
-    } else {
-        read_chain_erc20_decimals(token_in)?
-    };
-    let max_spend = parse_decimal_units(&session.max_spend, decimals)?;
-    if max_spend.is_zero() {
-        return Err(error(-3, "max_spend must be greater than zero"));
-    }
-    let input_balance = if native {
-        read_chain_native_balance(owner)?
-    } else {
-        read_chain_erc20_balance(token_in, owner)?
-    };
-    if input_balance < max_spend {
-        return Err(error(-3, "input balance is below max_spend"));
-    }
-    let common = vec![
-        ("fromAddress".into(), owner.to_checksum(None)),
-        ("chainId".into(), chain_id.to_string()),
-        ("tokenIn".into(), token_in.to_checksum(None)),
-        ("tokenOut".into(), PUSD.to_checksum(None)),
-        ("slippage".into(), session.slippage_bps.to_string()),
-        ("routingStrategy".into(), "router".into()),
-        ("receiver".into(), deposit.to_checksum(None)),
-    ];
-    let mut quote_params = common.clone();
-    quote_params.push(("amountIn".into(), max_spend.to_string()));
-    let quote = enso_get("/api/v1/shortcuts/quote", &quote_params, &api_key)?;
-    let output_at_max = json_u256(
-        quote
-            .get("amountOut")
-            .ok_or_else(|| error(-4, "Enso quote missing amountOut"))?,
+    validate_funding(
+        source,
+        missing,
+        max_spend,
+        read_chain_erc20_balance(source.token(), owner)?,
     )?;
-    if output_at_max < missing {
-        return Err(error(-3, "max_spend cannot buy the missing pUSD amount"));
-    }
-    let required_input = funding_required_input(max_spend, missing, output_at_max);
-    let mut route_params = common;
-    route_params.push(("amountIn".into(), required_input.to_string()));
-    let route = enso_get("/api/v1/shortcuts/route", &route_params, &api_key)?;
-    let output = json_u256(
-        route
-            .get("amountOut")
-            .ok_or_else(|| error(-4, "Enso route missing amountOut"))?,
-    )?;
-    if output < missing {
-        return Err(error(-3, "Enso route output is below missing pUSD"));
-    }
-    if route
-        .get("route")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|hop| hop.get("destinationChainId"))
-        .filter_map(|value| json_u256(value).ok())
-        .any(|chain| chain != U256::from(chain_id))
-    {
-        return Err(error(-3, "cross-chain Enso routes are forbidden"));
-    }
-    let tx = route
-        .get("tx")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| error(-4, "Enso route missing tx"))?;
-    let to = tx
-        .get("to")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| error(-4, "Enso route missing tx.to"))?
-        .parse::<Address>()
-        .map_err(|err| error(-4, format!("Enso router address: {err}")))?;
-    let from = tx
-        .get("from")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| error(-4, "Enso route missing tx.from"))?
-        .parse::<Address>()
-        .map_err(|err| error(-4, format!("Enso sender address: {err}")))?;
-    if to != trusted_router || from != owner {
-        return Err(error(-3, "Enso route sender or router is invalid"));
-    }
-    let data = tx
-        .get("data")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| error(-4, "Enso route missing calldata"))?
-        .to_ascii_lowercase();
-    let decoded = hex::decode(
-        data.strip_prefix("0x")
-            .ok_or_else(|| error(-4, "Enso calldata is not hex"))?,
-    )
-    .map_err(|err| error(-4, format!("Enso calldata: {err}")))?;
-    if !decoded
-        .windows(20)
-        .any(|window| window == deposit.as_slice())
-    {
-        return Err(error(-3, "Enso calldata does not bind the deposit wallet"));
-    }
-    let value = tx
-        .get("value")
-        .map(json_u256)
-        .transpose()?
-        .unwrap_or_default();
-    if (native && value != required_input) || (!native && !value.is_zero()) {
-        return Err(error(
-            -3,
-            "Enso route native value does not match its input",
-        ));
-    }
-    let mut transactions = Vec::new();
-    if !native && read_chain_erc20_allowance(token_in, owner, to)? < required_input {
-        transactions.push(PreparedEvmTransaction {
-            purpose: "erc20_exact_approval".into(),
-            to: token_in.to_checksum(None),
+    let transactions = match source {
+        FundingSource::UsdcE => wrap_transactions(
+            deposit,
+            missing,
+            read_chain_erc20_allowance(USDC_E, owner, COLLATERAL_ONRAMP)?,
+        ),
+        _ => vec![PreparedEvmTransaction {
+            purpose: "direct_pusd_transfer".into(),
+            to: PUSD.to_checksum(None),
             value_wei: "0".into(),
-            data_hex: erc20_approve_calldata(to, required_input),
-        });
-    }
-    transactions.push(PreparedEvmTransaction {
-        purpose: "enso_swap".into(),
-        to: to.to_checksum(None),
-        value_wei: value.to_string(),
-        data_hex: data,
-    });
-    let quote_digest = blake3_hex(
-        &serde_json::to_vec(&quote).map_err(|err| error(-4, format!("Enso quote JSON: {err}")))?,
-    );
-    let route_digest = blake3_hex(
-        &serde_json::to_vec(&route).map_err(|err| error(-4, format!("Enso route JSON: {err}")))?,
-    );
+            data_hex: erc20_transfer_calldata(deposit, missing),
+        }],
+    };
     Ok(PreparedFunding {
         review_intent: serde_json::json!({
             "operation": "polymarket_fund",
             "wallet": wallet,
-            "owner": owner.to_checksum(None),
-            "deposit_wallet": deposit.to_checksum(None),
-            "input_token": token_in.to_checksum(None),
-            "input_decimals": decimals,
-            "input_balance": input_balance.to_string(),
-            "max_spend": max_spend.to_string(),
-            "required_input": required_input.to_string(),
-            "missing_pusd_micro": missing.to_string(),
-            "route_output_pusd_micro": output.to_string(),
-            "slippage_bps": session.slippage_bps,
-            "quote_digest": quote_digest,
-            "route_digest": route_digest,
-            "router": to.to_checksum(None),
-            "transactions": transactions,
+            "chain": chain,
+            "from_token": source.name(),
+            "recipient": deposit.to_checksum(None),
+            "amount_pusd_micro": missing.to_string(),
+            "max_spend": session.max_spend,
+            "transactions": transactions.clone(),
         }),
         transactions,
     })
 }
 
-fn enso_get(
-    path: &str,
-    params: &[(String, String)],
-    api_key: &str,
-) -> Result<serde_json::Value, DispatchResponse> {
-    let borrowed: Vec<_> = params
-        .iter()
-        .map(|(key, value)| (key.as_str(), value.as_str()))
-        .collect();
-    let response = petal::sdk::http_fetch(
-        &HttpRequest {
-            method: "GET".into(),
-            url: url_with_query(&format!("https://api.enso.finance{path}"), &borrowed),
-            headers: vec![("authorization".into(), format!("Bearer {api_key}"))],
-            body: Vec::new(),
-        },
-        MAX_HTTP_BYTES,
-    )
-    .map_err(sdk_error)?;
-    if !(200..300).contains(&response.status) {
-        return Err(error(
-            -4,
-            format!(
-                "Enso request failed with status {} (body redacted, {} bytes)",
-                response.status,
-                response.body.len()
-            ),
-        ));
+/// An exact USDC.e approval for the onramp when the current allowance is too
+/// small, then `wrap`, which mints pUSD straight into the deposit wallet.
+fn wrap_transactions(
+    deposit: Address,
+    amount: U256,
+    allowance: U256,
+) -> Vec<PreparedEvmTransaction> {
+    let mut transactions = Vec::new();
+    if allowance < amount {
+        transactions.push(PreparedEvmTransaction {
+            purpose: "usdce_exact_approval".into(),
+            to: USDC_E.to_checksum(None),
+            value_wei: "0".into(),
+            data_hex: erc20_approve_calldata(COLLATERAL_ONRAMP, amount),
+        });
     }
-    serde_json::from_slice(&response.body)
-        .map_err(|err| error(-4, format!("Enso response JSON: {err}")))
-}
-
-fn funding_required_input(max_spend: U256, missing: U256, output_at_max: U256) -> U256 {
-    if output_at_max.is_zero() {
-        return max_spend;
-    }
-    max_spend
-        .saturating_mul(missing)
-        .checked_div(output_at_max)
-        .unwrap_or(max_spend)
-        .saturating_mul(U256::from(102u8))
-        .checked_div(U256::from(100u8))
-        .unwrap_or(max_spend)
-        .min(max_spend)
-}
-
-fn read_chain_native_balance(holder: Address) -> Result<U256, DispatchResponse> {
-    let (chain, _) = crate::runtime_config::chain().map_err(|err| error(-4, err))?;
-    let result = petal::sdk::chain_read(
-        &chain,
-        "eth_getBalance",
-        &serde_json::json!([holder.to_checksum(None), "latest"]).to_string(),
-    )
-    .map_err(sdk_error)?;
-    parse_chain_quantity(&result, "native balance")
-}
-
-alloy::sol! {
-    interface Erc20Metadata {
-        function decimals() external view returns (uint8);
-    }
-}
-
-/// The validating decoder refuses a return word above 255 rather than
-/// truncating it: decimals scale the funding spend cap.
-fn read_chain_erc20_decimals(token: Address) -> Result<u8, DispatchResponse> {
-    let output = read_chain_eth_call(
-        token,
-        &Erc20Metadata::decimalsCall {}.abi_encode(),
-        "ERC20 decimals",
-    )?;
-    Erc20Metadata::decimalsCall::abi_decode_returns_validate(&output)
-        .map_err(|err| error(-4, format!("ERC20 decimals decode: {err}")))
-}
-
-fn parse_chain_quantity(result_json: &str, field: &str) -> Result<U256, DispatchResponse> {
-    let result: String = serde_json::from_str(result_json)
-        .map_err(|err| error(-4, format!("{field} JSON: {err}")))?;
-    let hex = result
-        .strip_prefix("0x")
-        .ok_or_else(|| error(-4, format!("{field} is not hex")))?;
-    U256::from_str_radix(if hex.is_empty() { "0" } else { hex }, 16)
-        .map_err(|err| error(-4, format!("{field}: {err}")))
+    transactions.push(PreparedEvmTransaction {
+        purpose: "usdce_wrap_to_pusd".into(),
+        to: COLLATERAL_ONRAMP.to_checksum(None),
+        value_wei: "0".into(),
+        data_hex: alloy::primitives::hex::encode_prefixed(
+            wrapCall {
+                _asset: USDC_E,
+                _to: deposit,
+                _amount: amount,
+            }
+            .abi_encode(),
+        ),
+    });
+    transactions
 }
 
 fn erc20_approve_calldata(spender: Address, amount: U256) -> String {
@@ -647,7 +479,8 @@ fn acquire_fund_lock(wallet: &str, id: &str) -> Result<FundLock, DispatchRespons
     ))
 }
 
-fn validate_direct_pusd_funding(
+fn validate_funding(
+    source: FundingSource,
     missing: U256,
     max_spend: U256,
     owner_balance: U256,
@@ -658,7 +491,11 @@ fn validate_direct_pusd_funding(
     if owner_balance < missing {
         return Err(error(
             -3,
-            "owner pUSD balance is below the required transfer",
+            format!(
+                "owner {} balance is below the {} needed",
+                source.name(),
+                missing
+            ),
         ));
     }
     Ok(())
@@ -711,20 +548,6 @@ fn positive_decimal_input(value: &str) -> bool {
     saw_digit && saw_nonzero && !value.starts_with('.') && !value.ends_with('.')
 }
 
-fn json_u256(value: &serde_json::Value) -> Result<U256, DispatchResponse> {
-    let raw = value
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| value.as_u64().map(|value| value.to_string()))
-        .ok_or_else(|| error(-4, "response integer is invalid"))?;
-    if let Some(hex) = raw.strip_prefix("0x") {
-        U256::from_str_radix(hex, 16).map_err(|err| error(-4, format!("hex integer: {err}")))
-    } else {
-        raw.parse::<U256>()
-            .map_err(|err| error(-4, format!("integer: {err}")))
-    }
-}
-
 pub fn load_fund_session(wallet: &str, id: &str) -> Result<StoreFundSession, DispatchResponse> {
     if let Err(e) = validate_wallet_name(wallet) {
         return Err(error(-3, e.to_string()));
@@ -754,11 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn direct_pusd_enforces_spend_cap_and_balance() {
+    fn funding_enforces_spend_cap_and_balance() {
         let missing = U256::from(10_000_000u64);
-        assert!(validate_direct_pusd_funding(missing, U256::from(1_000_000u64), missing).is_err());
-        assert!(validate_direct_pusd_funding(missing, missing, U256::from(9_000_000u64)).is_err());
-        assert!(validate_direct_pusd_funding(missing, missing, missing).is_ok());
+        for source in [FundingSource::Pusd, FundingSource::UsdcE] {
+            assert!(validate_funding(source, missing, U256::from(1_000_000u64), missing).is_err());
+            assert!(validate_funding(source, missing, missing, U256::from(9_000_000u64)).is_err());
+            assert!(validate_funding(source, missing, missing, missing).is_ok());
+        }
     }
 
     #[test]
@@ -777,30 +602,66 @@ mod tests {
     }
 
     #[test]
-    fn erc20_decimals_are_read_from_a_validated_uint8() {
+    fn funding_sources_are_pusd_or_usdce_only() {
+        let parse = |value: &str| FundingSource::parse(value).ok();
+        assert_eq!(parse("auto"), Some(FundingSource::Auto));
+        assert_eq!(parse("pUSD"), Some(FundingSource::Pusd));
+        assert_eq!(parse("USDC.e"), Some(FundingSource::UsdcE));
+        assert_eq!(parse("usdce"), Some(FundingSource::UsdcE));
+        assert_eq!(parse(&USDC_E.to_string()), Some(FundingSource::UsdcE));
         assert_eq!(
-            Erc20Metadata::decimalsCall::SELECTOR,
-            [0x31, 0x3c, 0xe5, 0x67]
+            parse(&PUSD.to_string().to_lowercase()),
+            Some(FundingSource::Pusd)
         );
-        let word = |value: u64| U256::from(value).to_be_bytes::<32>();
-        assert_eq!(
-            Erc20Metadata::decimalsCall::abi_decode_returns_validate(&word(6)).unwrap(),
-            6
-        );
-        assert!(Erc20Metadata::decimalsCall::abi_decode_returns_validate(&word(256)).is_err());
-        assert!(Erc20Metadata::decimalsCall::abi_decode_returns_validate(&[]).is_err());
+        // Stored names round-trip, so a saved request prepares the same way.
+        for source in [
+            FundingSource::Auto,
+            FundingSource::Pusd,
+            FundingSource::UsdcE,
+        ] {
+            assert_eq!(parse(source.name()), Some(source));
+        }
+        // Native POL, native USDC (paused on the onramp) and other tokens need
+        // a swap to USDC.e first.
+        for refused in [
+            "native",
+            "pol",
+            "usdc",
+            "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+            "",
+        ] {
+            assert_eq!(parse(refused), None, "{refused}");
+        }
     }
 
     #[test]
-    fn quote_sizing_is_capped_and_buffered() {
-        assert_eq!(
-            funding_required_input(U256::from(100u8), U256::from(50u8), U256::from(100u8)),
-            U256::from(51u8)
+    fn usdce_wraps_into_the_deposit_wallet_with_an_exact_approval() {
+        let deposit = Address::repeat_byte(0x33);
+        let amount = U256::from(5_000_000u64);
+        let wrap = format!(
+            "0x62355638{:0>64}{:0>64}{:0>64}",
+            hex::encode(USDC_E),
+            hex::encode(deposit),
+            format!("{amount:x}")
         );
+
+        let both = wrap_transactions(deposit, amount, amount - U256::from(1u8));
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].to, USDC_E.to_checksum(None));
         assert_eq!(
-            funding_required_input(U256::from(100u8), U256::from(200u8), U256::from(100u8)),
-            U256::from(100u8)
+            both[0].data_hex,
+            erc20_approve_calldata(COLLATERAL_ONRAMP, amount)
         );
+        assert_eq!(both[1].to, COLLATERAL_ONRAMP.to_checksum(None));
+        assert_eq!(
+            (both[1].value_wei.as_str(), both[1].data_hex.as_str()),
+            ("0", wrap.as_str())
+        );
+
+        // An existing allowance skips the approval.
+        let wrap_only = wrap_transactions(deposit, amount, amount);
+        assert_eq!(wrap_only.len(), 1);
+        assert_eq!(wrap_only[0].data_hex, wrap);
     }
 
     #[test]

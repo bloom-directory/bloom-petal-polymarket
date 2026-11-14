@@ -76,7 +76,6 @@ settings/[wallet]/$index.rs
 settings/[wallet]/[index]/$index.rs
 settings/[wallet]/[index]/relayer.json.rs
 settings/[wallet]/[index]/venue.toml.rs
-settings/enso-api-key.rs
 trade/$index.rs
 trade/[wallet]/$index.rs
 trade/[wallet]/[index]/$index.rs

@@ -63,11 +63,6 @@ methods = ["delete"]
 paths = ["/order", "/auth/builder-api-key"]
 
 [[net.allow]]
-host = "api.enso.finance"
-methods = ["get"]
-paths = ["/api/v1/shortcuts/quote", "/api/v1/shortcuts/route"]
-
-[[net.allow]]
 binding = "relayer"
 host = "relayer-v2.polymarket.com"
 methods = ["get", "post"]
@@ -84,4 +79,3 @@ allowed_intents = [
 [store]
 namespaces = ["state"]
 secret_namespaces = ["secrets"]
-shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router"]
