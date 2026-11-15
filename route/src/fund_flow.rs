@@ -30,7 +30,6 @@ pub fn create_fund_request(
         Ok(req) => req,
         Err(e) => return error(-3, format!("fund request JSON: {e}")),
     };
-    forget_enso_settings();
     if parse_micro(req.target_pusd.trim()).unwrap_or(0) == 0 {
         return error(-3, "target_pusd must be > 0");
     }
@@ -338,19 +337,9 @@ fn prepare_funding(
         source => (source, read_chain_erc20_balance(source.token(), owner)?),
     };
     validate_funding(source, missing, max_spend, balance)?;
-    let transactions = match source {
-        FundingSource::UsdcE => wrap_transactions(
-            deposit,
-            missing,
-            read_chain_erc20_allowance(USDC_E, owner, COLLATERAL_ONRAMP)?,
-        ),
-        _ => vec![PreparedEvmTransaction {
-            purpose: "direct_pusd_transfer".into(),
-            to: PUSD.to_checksum(None),
-            value_wei: "0".into(),
-            data_hex: erc20_transfer_calldata(deposit, missing),
-        }],
-    };
+    let transactions = funding_transactions(source, deposit, missing, || {
+        read_chain_erc20_allowance(USDC_E, owner, COLLATERAL_ONRAMP)
+    })?;
     Ok(PreparedFunding {
         review_intent: serde_json::json!({
             "operation": "polymarket_fund",
@@ -363,6 +352,25 @@ fn prepare_funding(
             "transactions": transactions.clone(),
         }),
         transactions,
+    })
+}
+
+/// The transactions that move `missing` pUSD into the deposit wallet, which
+/// is their only recipient. `usdce_allowance` is read only for USDC.e.
+fn funding_transactions(
+    source: FundingSource,
+    deposit: Address,
+    missing: U256,
+    usdce_allowance: impl FnOnce() -> Result<U256, DispatchResponse>,
+) -> Result<Vec<PreparedEvmTransaction>, DispatchResponse> {
+    Ok(match source {
+        FundingSource::UsdcE => wrap_transactions(deposit, missing, usdce_allowance()?),
+        _ => vec![PreparedEvmTransaction {
+            purpose: "direct_pusd_transfer".into(),
+            to: PUSD.to_checksum(None),
+            value_wei: "0".into(),
+            data_hex: erc20_transfer_calldata(deposit, missing),
+        }],
     })
 }
 
@@ -474,14 +482,6 @@ fn acquire_fund_lock(wallet: &str, id: &str) -> Result<FundLock, DispatchRespons
     ))
 }
 
-/// Delete the Enso API key and router an earlier version stored. Nothing
-/// reads them now, and no route can change or remove them otherwise.
-fn forget_enso_settings() {
-    for key in ["creds/enso-api-key", "settings/enso-router"] {
-        let _ = petal::sdk::store_del(key);
-    }
-}
-
 fn validate_funding(
     source: FundingSource,
     missing: U256,
@@ -579,16 +579,6 @@ mod tests {
         assert_eq!((decoded.to, decoded.amount), (recipient, U256::from(7u8)));
     }
 
-    /// `forget_enso_settings` reaches the package-wide Enso settings from an
-    /// account route only while they stay declared shared.
-    #[test]
-    fn legacy_enso_settings_stay_declared_shared() {
-        let manifest = include_str!("../../petal.toml");
-        assert!(manifest.contains(
-            r#"shared_keys = ["secrets/creds/enso-api-key", "state/settings/enso-router"]"#
-        ));
-    }
-
     #[test]
     fn funding_enforces_spend_cap_and_balance() {
         let missing = U256::from(10_000_000u64);
@@ -650,6 +640,29 @@ mod tests {
         ] {
             assert_eq!(parse(refused), None, "{refused}");
         }
+    }
+
+    /// Each source pays the deposit wallet, and only USDC.e reads the
+    /// onramp allowance.
+    #[test]
+    fn funding_pays_only_the_deposit_wallet() {
+        let deposit = Address::repeat_byte(0x33);
+        let missing = U256::from(5_000_000u64);
+        let direct = funding_transactions(FundingSource::Pusd, deposit, missing, || {
+            panic!("a pUSD transfer reads no allowance")
+        })
+        .unwrap();
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].to, PUSD.to_checksum(None));
+        let transfer =
+            transferCall::abi_decode(&hex::decode(&direct[0].data_hex[2..]).unwrap()).unwrap();
+        assert_eq!((transfer.to, transfer.amount), (deposit, missing));
+
+        let wrapped =
+            funding_transactions(FundingSource::UsdcE, deposit, missing, || Ok(missing)).unwrap();
+        assert_eq!(wrapped.len(), 1, "a sufficient allowance needs no approval");
+        let wrap = wrapCall::abi_decode(&hex::decode(&wrapped[0].data_hex[2..]).unwrap()).unwrap();
+        assert_eq!((wrap._to, wrap._amount), (deposit, missing));
     }
 
     #[test]
