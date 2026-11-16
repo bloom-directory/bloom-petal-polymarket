@@ -37,7 +37,7 @@ pub fn create_fund_request(
         return error(-3, "max_spend must be > 0");
     }
     let from_token = match FundingSource::parse(req.from_token.as_deref().unwrap_or("auto")) {
-        Ok(source) => source.name().to_string(),
+        Ok(source) => source.map_or("auto", FundingSource::name).to_string(),
         Err(resp) => return resp,
     };
     let id = next_id(&format!("fund/{wallet}/requests/"), ".json");
@@ -260,24 +260,23 @@ pub fn read_approval(wallet: &str, id: &str) -> DispatchResponse {
 /// to become USDC.e first, for example through the Enso Petal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FundingSource {
-    /// pUSD if the owner holds enough, otherwise USDC.e.
-    Auto,
     Pusd,
     UsdcE,
 }
 
 impl FundingSource {
-    fn parse(value: &str) -> Result<Self, DispatchResponse> {
+    /// `None` is `auto`: pUSD if the owner holds enough, otherwise USDC.e.
+    fn parse(value: &str) -> Result<Option<Self>, DispatchResponse> {
         let value = value.trim();
         match value.to_ascii_lowercase().as_str() {
-            "auto" => return Ok(Self::Auto),
-            "pusd" => return Ok(Self::Pusd),
-            "usdc.e" | "usdce" => return Ok(Self::UsdcE),
+            "auto" => return Ok(None),
+            "pusd" => return Ok(Some(Self::Pusd)),
+            "usdc.e" | "usdce" => return Ok(Some(Self::UsdcE)),
             _ => {}
         }
         match value.parse::<Address>() {
-            Ok(address) if address == PUSD => Ok(Self::Pusd),
-            Ok(address) if address == USDC_E => Ok(Self::UsdcE),
+            Ok(address) if address == PUSD => Ok(Some(Self::Pusd)),
+            Ok(address) if address == USDC_E => Ok(Some(Self::UsdcE)),
             _ => Err(error(
                 -3,
                 format!(
@@ -291,7 +290,6 @@ impl FundingSource {
 
     fn name(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Pusd => "pUSD",
             Self::UsdcE => "USDC.e",
         }
@@ -299,8 +297,8 @@ impl FundingSource {
 
     fn token(self) -> Address {
         match self {
+            Self::Pusd => PUSD,
             Self::UsdcE => USDC_E,
-            Self::Auto | Self::Pusd => PUSD,
         }
     }
 }
@@ -326,17 +324,13 @@ fn prepare_funding(
     }
     // pUSD and USDC.e both have 6 decimals and convert 1:1.
     let max_spend = parse_decimal_units(&session.max_spend, 6)?;
-    let (source, balance) = match FundingSource::parse(&session.from_token)? {
-        FundingSource::Auto => match read_chain_erc20_balance(PUSD, owner)? {
-            pusd if pusd >= missing => (FundingSource::Pusd, pusd),
-            _ => (
-                FundingSource::UsdcE,
-                read_chain_erc20_balance(USDC_E, owner)?,
-            ),
-        },
-        source => (source, read_chain_erc20_balance(source.token(), owner)?),
-    };
-    validate_funding(source, missing, max_spend, balance)?;
+    let source = choose_funding(
+        FundingSource::parse(&session.from_token)?,
+        missing,
+        max_spend,
+        |token| read_chain_erc20_balance(token, owner),
+        || read_chain_onramp_paused(USDC_E),
+    )?;
     let transactions = funding_transactions(source, deposit, missing, || {
         read_chain_erc20_allowance(USDC_E, owner, COLLATERAL_ONRAMP)
     })?;
@@ -365,7 +359,7 @@ fn funding_transactions(
 ) -> Result<Vec<PreparedEvmTransaction>, DispatchResponse> {
     Ok(match source {
         FundingSource::UsdcE => wrap_transactions(deposit, missing, usdce_allowance()?),
-        _ => vec![PreparedEvmTransaction {
+        FundingSource::Pusd => vec![PreparedEvmTransaction {
             purpose: "direct_pusd_transfer".into(),
             to: PUSD.to_checksum(None),
             value_wei: "0".into(),
@@ -482,26 +476,50 @@ fn acquire_fund_lock(wallet: &str, id: &str) -> Result<FundLock, DispatchRespons
     ))
 }
 
-fn validate_funding(
-    source: FundingSource,
+/// The source that pays `missing`, reading each owner balance at most once.
+/// A USDC.e wrap is refused while the onramp has paused USDC.e, before any
+/// approval is staged.
+fn choose_funding(
+    requested: Option<FundingSource>,
     missing: U256,
     max_spend: U256,
-    owner_balance: U256,
-) -> Result<(), DispatchResponse> {
+    mut owner_balance: impl FnMut(Address) -> Result<U256, DispatchResponse>,
+    usdce_paused: impl FnOnce() -> Result<bool, DispatchResponse>,
+) -> Result<FundingSource, DispatchResponse> {
     if missing > max_spend {
         return Err(error(-3, "missing pUSD exceeds max_spend"));
     }
-    if owner_balance < missing {
+    let needed = crate::polymarket::order::format_micro(missing.saturating_to());
+    let mut covers = |source: FundingSource| {
+        Ok::<_, DispatchResponse>(owner_balance(source.token())? >= missing)
+    };
+    let source = match requested {
+        Some(source) if covers(source)? => source,
+        Some(source) => {
+            return Err(error(
+                -3,
+                format!(
+                    "owner {} balance is below the {needed} needed",
+                    source.name()
+                ),
+            ));
+        }
+        None if covers(FundingSource::Pusd)? => FundingSource::Pusd,
+        None if covers(FundingSource::UsdcE)? => FundingSource::UsdcE,
+        None => {
+            return Err(error(
+                -3,
+                format!("neither the owner's pUSD nor USDC.e balance covers the {needed} needed"),
+            ));
+        }
+    };
+    if source == FundingSource::UsdcE && usdce_paused()? {
         return Err(error(
             -3,
-            format!(
-                "owner {} balance is below the {} needed",
-                source.name(),
-                crate::polymarket::order::format_micro(missing.saturating_to())
-            ),
+            "Polymarket's Collateral Onramp has paused USDC.e wraps; fund with pUSD instead",
         ));
     }
-    Ok(())
+    Ok(source)
 }
 
 fn parse_decimal_units(value: &str, decimals: u8) -> Result<U256, DispatchResponse> {
@@ -579,19 +597,83 @@ mod tests {
         assert_eq!((decoded.to, decoded.amount), (recipient, U256::from(7u8)));
     }
 
+    /// Choose with these owner balances and onramp state; return the choice
+    /// or the error message, and the tokens whose balance was read.
+    fn choose(
+        requested: Option<FundingSource>,
+        max_spend: u64,
+        pusd: u64,
+        usdce: u64,
+        paused: bool,
+    ) -> (Result<FundingSource, String>, Vec<Address>) {
+        let mut reads = Vec::new();
+        let chosen = choose_funding(
+            requested,
+            U256::from(10_000_000u64),
+            U256::from(max_spend),
+            |token| {
+                reads.push(token);
+                Ok(U256::from(if token == PUSD { pusd } else { usdce }))
+            },
+            || Ok(paused),
+        )
+        .map_err(|response| match response {
+            DispatchResponse::Error { message, .. } => message,
+            other => panic!("{other:?}"),
+        });
+        (chosen, reads)
+    }
+
     #[test]
     fn funding_enforces_spend_cap_and_balance() {
-        let missing = U256::from(10_000_000u64);
+        const TEN: u64 = 10_000_000;
+        let (chosen, reads) = choose(None, TEN - 1, TEN, TEN, false);
+        assert_eq!(chosen.unwrap_err(), "missing pUSD exceeds max_spend");
+        assert!(reads.is_empty(), "the spend cap needs no balance read");
         for source in [FundingSource::Pusd, FundingSource::UsdcE] {
-            assert!(validate_funding(source, missing, U256::from(1_000_000u64), missing).is_err());
-            let Err(petal::DispatchResponse::Error { message, .. }) =
-                validate_funding(source, missing, missing, U256::from(9_000_000u64))
-            else {
-                panic!("a short balance must be refused");
-            };
+            let (chosen, reads) = choose(Some(source), TEN, TEN - 1, TEN - 1, false);
+            let message = chosen.unwrap_err();
+            assert!(
+                message.starts_with(&format!("owner {} ", source.name())),
+                "{message}"
+            );
             assert!(message.ends_with("below the 10 needed"), "{message}");
-            assert!(validate_funding(source, missing, missing, missing).is_ok());
+            assert_eq!(reads, [source.token()]);
+            assert_eq!(choose(Some(source), TEN, TEN, TEN, false).0, Ok(source));
         }
+    }
+
+    #[test]
+    fn auto_prefers_pusd_and_says_when_neither_covers() {
+        const TEN: u64 = 10_000_000;
+        let (chosen, reads) = choose(None, TEN, TEN, 0, true);
+        assert_eq!(chosen, Ok(FundingSource::Pusd));
+        assert_eq!(
+            reads,
+            [PUSD],
+            "a sufficient pUSD balance reads nothing else"
+        );
+        let (chosen, reads) = choose(None, TEN, TEN - 1, TEN, false);
+        assert_eq!(chosen, Ok(FundingSource::UsdcE));
+        assert_eq!(reads, [PUSD, USDC_E]);
+        let message = choose(None, TEN, TEN - 1, TEN - 1, false).0.unwrap_err();
+        assert_eq!(
+            message,
+            "neither the owner's pUSD nor USDC.e balance covers the 10 needed"
+        );
+    }
+
+    #[test]
+    fn a_paused_onramp_refuses_usdce_before_staging() {
+        const TEN: u64 = 10_000_000;
+        for requested in [None, Some(FundingSource::UsdcE)] {
+            let message = choose(requested, TEN, 0, TEN, true).0.unwrap_err();
+            assert!(message.contains("paused USDC.e"), "{message}");
+        }
+        assert_eq!(
+            choose(Some(FundingSource::Pusd), TEN, TEN, 0, true).0,
+            Ok(FundingSource::Pusd)
+        );
     }
 
     #[test]
@@ -612,22 +694,18 @@ mod tests {
     #[test]
     fn funding_sources_are_pusd_or_usdce_only() {
         let parse = |value: &str| FundingSource::parse(value).ok();
-        assert_eq!(parse("auto"), Some(FundingSource::Auto));
-        assert_eq!(parse("pUSD"), Some(FundingSource::Pusd));
-        assert_eq!(parse("USDC.e"), Some(FundingSource::UsdcE));
-        assert_eq!(parse("usdce"), Some(FundingSource::UsdcE));
-        assert_eq!(parse(&USDC_E.to_string()), Some(FundingSource::UsdcE));
+        assert_eq!(parse("auto"), Some(None));
+        assert_eq!(parse("pUSD"), Some(Some(FundingSource::Pusd)));
+        assert_eq!(parse("USDC.e"), Some(Some(FundingSource::UsdcE)));
+        assert_eq!(parse("usdce"), Some(Some(FundingSource::UsdcE)));
+        assert_eq!(parse(&USDC_E.to_string()), Some(Some(FundingSource::UsdcE)));
         assert_eq!(
             parse(&PUSD.to_string().to_lowercase()),
-            Some(FundingSource::Pusd)
+            Some(Some(FundingSource::Pusd))
         );
         // Stored names round-trip, so a saved request prepares the same way.
-        for source in [
-            FundingSource::Auto,
-            FundingSource::Pusd,
-            FundingSource::UsdcE,
-        ] {
-            assert_eq!(parse(source.name()), Some(source));
+        for source in [FundingSource::Pusd, FundingSource::UsdcE] {
+            assert_eq!(parse(source.name()), Some(Some(source)));
         }
         // Native POL, native USDC (paused on the onramp) and other tokens need
         // a swap to USDC.e first.
