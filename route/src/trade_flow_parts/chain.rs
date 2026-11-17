@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::polymarket::eip712::{
-    CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, FACTORY, NEG_RISK_ADAPTER,
+    COLLATERAL_ONRAMP, CTF, CTF_COLLATERAL_ADAPTER, CTF_EXCHANGE, FACTORY, NEG_RISK_ADAPTER,
     NEG_RISK_CTF_COLLATERAL_ADAPTER, NEG_RISK_EXCHANGE, PUSD,
 };
 use crate::polymarket::{Credentials, Result};
@@ -26,6 +26,21 @@ sol! {
         function balanceOf(address holder, uint256 tokenId) external view returns (uint256);
         function isApprovedForAll(address owner, address operator) external view returns (bool);
     }
+
+    interface OnrampReads {
+        function paused(address asset) external view returns (bool);
+    }
+}
+
+/// Whether Polymarket's Collateral Onramp refuses to wrap `asset`.
+pub fn read_chain_onramp_paused(asset: Address) -> Result<bool, DispatchResponse> {
+    let output = read_chain_eth_call(
+        COLLATERAL_ONRAMP,
+        &OnrampReads::pausedCall { asset }.abi_encode(),
+        "chain onramp paused",
+    )?;
+    OnrampReads::pausedCall::abi_decode_returns(&output)
+        .map_err(|err| error(-4, format!("chain onramp paused decode: {err}")))
 }
 
 pub fn read_chain_ctf_balance(deposit: Address, token_id: &str) -> Result<u64, DispatchResponse> {

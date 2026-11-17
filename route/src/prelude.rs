@@ -5,7 +5,7 @@ pub use crate::app_types::{
     LocalPolymarketOrderCtx, PolymarketVenueConfig, PreparedEvmTransaction, PreparedFunding,
     StoreFundSession, StoreTradeDraft, StoreTradeReceipt, StoreTradeReceiptPolicy,
     TradeCancelRequest, TradeNewRequest, TradePostRequest, TradeRevalidateRequest, TradeSnapshot,
-    default_slippage_bps, default_true,
+    default_true,
 };
 pub use crate::approval::{
     PreparedSigning, load_prepared_signing, pending_approval_selector, sign_prepared,
@@ -61,7 +61,7 @@ pub use crate::trade_flow_parts::chain::{
     allowance_floor, approval_spenders, parse_json_u256, predict_deposit_wallet,
     read_chain_approvals, read_chain_ctf_approval, read_chain_ctf_balance,
     read_chain_deposit_wallet_deployed, read_chain_erc20_allowance, read_chain_erc20_balance,
-    read_chain_eth_call, read_clob_collateral_sync,
+    read_chain_eth_call, read_chain_onramp_paused, read_clob_collateral_sync,
 };
 pub use crate::trade_flow_parts::draft::create_trade_draft;
 pub use crate::trade_flow_parts::policy::{

@@ -20,6 +20,7 @@ sol! {
     function transfer(address to, uint256 amount) external returns (bool);
     function setApprovalForAll(address operator, bool approved) external;
     function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets) external;
+    function wrap(address _asset, address _to, uint256 _amount) external;
 }
 
 pub const REDEEM_POSITIONS_SELECTOR: [u8; 4] = [0x01, 0xb7, 0x03, 0x7c];

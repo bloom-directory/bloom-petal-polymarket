@@ -33,9 +33,10 @@ This petal owns the Polymarket behavior. It performs Polymarket HTTP calls
 directly through the HTTP import, persists petal-owned state through the
 private store import, uses signing intents for CLOB and relayer signatures,
 reads mediated wallet/chain state through generic Bloom interfaces, and stages
-funding through the generic EVM outbox. Enso credentials are provisioned
-through the write-only `settings/enso-api-key` route and remain in the Petal
-package-global secret store. The trusted Enso router value is also shared across accounts.
+funding through the generic EVM outbox. Funding sends the owner's pUSD to the
+deposit wallet, or wraps the owner's USDC.e into pUSD there through Polymarket's
+Collateral Onramp (1:1, no swap). Other tokens must be swapped to USDC.e first,
+for example with the Enso Petal.
 
 Per-account venue preferences are read at `settings/venue.toml` below the
 selected account directory and stored in the Petal's own state. They are advisory application configuration only. The Petal
@@ -119,7 +120,7 @@ for packaging-only corrections.
 
 Wallet features keep their root subtrees: `/petals/polymarket/{onboard,settings,account,positions,fund,trade,builder-keys,redeem,withdraw,revoke-approvals}/<wallet>/<index>/`. Obligations use `/petals/polymarket/obligations/<wallet>/<index>/status.json`.
 
-`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store for account state. The manifest shares only the Enso API key and router through the package-global store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
+`[wallet]` and adjacent `[index]` are explicit route captures. Bloom resolves them against the live core wallet projection and supplies trusted `bloom.wallet` and `bloom.account` context. Every numbered account, including 0, has a separate private store for account state. Nothing is shared between accounts through the package-global store. Legacy unnumbered settings and sessions are not carried into account 0. The core wallet tree remains `/wallets/<wallet>/<index>/`.
 
 
 Before upgrading from routes without `[index]`, finish and reconcile pending operations using the installed build. Retain its package and private records until recovery is complete; do not delete them. A new route/package cannot inspect outbox entries staged by the old route/package. Core wallet custody and outbox entries remain intact. Modern numbered account stores are carried through signed package lineage; the legacy unnumbered store is not automatically imported.

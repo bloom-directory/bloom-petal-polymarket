@@ -418,8 +418,6 @@ pub struct FundNewRequest {
     pub max_spend: String,
     #[serde(default)]
     pub from_token: Option<String>,
-    #[serde(default = "default_slippage_bps")]
-    pub slippage_bps: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,7 +427,6 @@ pub struct StoreFundSession {
     pub target_pusd: String,
     pub max_spend: String,
     pub from_token: String,
-    pub slippage_bps: u16,
     #[serde(default)]
     pub deposit_wallet: String,
     #[serde(default)]
@@ -484,8 +481,4 @@ impl PreparedFunding {
             .to_hex()
             .to_string()
     }
-}
-
-pub fn default_slippage_bps() -> u16 {
-    50
 }

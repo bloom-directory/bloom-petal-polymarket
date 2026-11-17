@@ -56,6 +56,3 @@ impl petal::RouteIdentity for __PetalRouteIdentity {
 
 #[cfg(test)]
 mod app_tests;
-
-#[cfg(test)]
-mod global_settings_tests;

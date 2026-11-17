@@ -13,7 +13,7 @@ petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
     };
     petal::DispatchResponse::Read(
         format!(
-            "# Polymarket funding request {}\n\nWallet: {}\nReceiver: {} ({})\nTarget pUSD: {}\nMax spend: {}\nFrom token: {}\nSlippage bps: {}\nStatus: {}\n",
+            "# Polymarket funding request {}\n\nWallet: {}\nReceiver: {} ({})\nTarget pUSD: {}\nMax spend: {}\nFrom token: {}\nStatus: {}\n",
             session.id,
             session.wallet,
             session.deposit_wallet,
@@ -21,7 +21,6 @@ petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
             session.target_pusd,
             session.max_spend,
             session.from_token,
-            session.slippage_bps,
             session.status
         )
         .into_bytes(),
