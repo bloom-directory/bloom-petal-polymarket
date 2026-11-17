@@ -6,6 +6,20 @@ use serde::{Deserialize, Serialize};
 use crate::polymarket::eip712::{self, Batch, CLOB_AUTH_MESSAGE, Call};
 use crate::polymarket::order::{self, Order, OrderType};
 
+/// The zero-spend CLOB login action, shared by construction and frozen validation.
+pub fn clob_auth_prepared_action(
+    owner: Address,
+    timestamp: u64,
+    nonce: u32,
+    chain_id: u64,
+) -> Result<petal::signing::PreparedAction, petal::signing::SigningError> {
+    Ok(petal::signing::eip712_action(
+        "polymarket.clob_auth.v1",
+        &eip712::clob_auth_typed_data(owner, timestamp, nonce, chain_id),
+    )?
+    .with_spend(petal::signing::Spend::None))
+}
+
 pub const ACTION_ID_DOMAIN_V1: &str = "bloom.polymarket.action_id.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,12 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::polymarket::claim;
 use crate::polymarket::fees::{FEE_BOUND_NOTE, MarketFee};
-use crate::polymarket::order::{LimitQuote, Order, OrderType, SIG_TYPE_POLY_1271, parse_micro};
+use crate::polymarket::order::{LimitQuote, OrderType, SIG_TYPE_POLY_1271, parse_micro};
 use crate::polymarket::trade as shared_trade;
 use crate::polymarket::{Market, PolymarketError, Side};
-use alloy::primitives::U256;
-use petal::ClaimEffects;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub struct TradeNewRequest {
@@ -266,22 +263,6 @@ impl StoreTradeDraft {
             Side::Buy => self.recorded_fee()?.buy_fee_cap(self.maker_micro),
             Side::Sell => Ok(0),
         }
-    }
-
-    /// What signing `order` for this draft moves: [`claim::order_effects`]
-    /// under the draft's recorded fee. `order` must carry the `makerAmount`
-    /// the owner reviewed, the amount the fee bound is taken on.
-    pub fn order_effects(
-        &self,
-        chain: &str,
-        order: &Order,
-    ) -> Result<ClaimEffects, PolymarketError> {
-        if order.makerAmount != U256::from(self.maker_micro) {
-            return Err(PolymarketError::signing(
-                "prepared order makerAmount does not match the reviewed draft",
-            ));
-        }
-        claim::order_effects(chain, order, self.neg_risk, self.recorded_fee()?)
     }
 
     fn recorded_fee(&self) -> Result<&MarketFee, PolymarketError> {
