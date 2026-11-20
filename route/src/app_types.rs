@@ -27,7 +27,9 @@ pub struct TradeNewRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolymarketVenueConfig {
-    #[serde(default)]
+    /// On unless the owner turns it off. It is not a guard against the agent,
+    /// which can write this file; the owner's approval of each order is.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default, with = "local_micro_opt")]
     pub max_order_usd: Option<u64>,
@@ -52,7 +54,7 @@ pub struct PolymarketVenueConfig {
 impl Default for PolymarketVenueConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             max_order_usd: None,
             max_daily_usd: None,
             require_flag_above_usd: None,
