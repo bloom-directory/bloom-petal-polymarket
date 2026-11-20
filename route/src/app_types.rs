@@ -392,6 +392,9 @@ pub struct TradeSnapshot {
     pub min_size_micro: u64,
     pub best_ask_micro: Option<u64>,
     pub best_bid_micro: Option<u64>,
+    /// `(price, size)` micro levels, best first.
+    pub asks: Vec<(u64, u64)>,
+    pub bids: Vec<(u64, u64)>,
     pub active: bool,
     pub closed: bool,
     pub order_book_enabled: bool,
@@ -408,6 +411,8 @@ impl TradeSnapshot {
             min_size_micro: self.min_size_micro,
             best_ask_micro: self.best_ask_micro,
             best_bid_micro: self.best_bid_micro,
+            asks: self.asks.clone(),
+            bids: self.bids.clone(),
         }
     }
 }

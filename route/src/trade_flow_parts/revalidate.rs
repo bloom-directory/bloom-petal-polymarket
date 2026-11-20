@@ -85,6 +85,7 @@ pub fn revalidate_trade_draft(
     };
     let limit_micro = match choose_trade_limit(
         draft.side,
+        amount_input,
         draft.marketable,
         draft.price_bound_micro,
         draft.limit_price_micro,
@@ -299,6 +300,7 @@ pub fn refresh_trade_post_inputs(
     };
     let limit_micro = choose_trade_limit(
         draft.side,
+        amount_input,
         draft.marketable,
         draft.price_bound_micro,
         draft.limit_price_micro,

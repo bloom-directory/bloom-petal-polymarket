@@ -25,6 +25,52 @@ pub struct Snapshot {
     pub min_size_micro: u64,
     pub best_ask_micro: Option<u64>,
     pub best_bid_micro: Option<u64>,
+    /// `(price, size)` levels in micro units, best first.
+    pub asks: Vec<(u64, u64)>,
+    pub bids: Vec<(u64, u64)>,
+}
+
+/// A book side as `(price, size)` micro levels, best first: asks ascending,
+/// bids descending. The live CLOB lists both best-last, so order is not trusted.
+pub fn book_levels(
+    levels: &[crate::polymarket::types::BookLevel],
+    ask: bool,
+) -> Result<Vec<(u64, u64)>> {
+    let mut parsed = levels
+        .iter()
+        .map(|l| Ok((order::parse_micro(&l.price)?, order::parse_micro(&l.size)?)))
+        .collect::<Result<Vec<_>>>()?;
+    parsed.sort_by_key(|&(price, _)| if ask { price } else { u64::MAX - price });
+    Ok(parsed)
+}
+
+/// The worst price a marketable order reaches to fill `amount_micro` (USD for a
+/// buy, shares for a sell) from `levels`, never past `bound_micro`. As
+/// Polymarket's own clients price a market order: the best price alone fills
+/// only the top level. `None` when no level is within the bound.
+fn fill_price(
+    side: Side,
+    amount_micro: u64,
+    levels: &[(u64, u64)],
+    bound_micro: u64,
+) -> Option<u64> {
+    let mut filled: u128 = 0;
+    let mut reached = None;
+    for &(price, size) in levels {
+        if (side == Side::Buy && price > bound_micro) || (side == Side::Sell && price < bound_micro)
+        {
+            break;
+        }
+        reached = Some(price);
+        filled += match side {
+            Side::Buy => u128::from(price) * u128::from(size) / 1_000_000,
+            Side::Sell => u128::from(size),
+        };
+        if filled >= u128::from(amount_micro) {
+            break;
+        }
+    }
+    reached
 }
 
 /// Fetch and cross-check the live market for `slug`/`outcome`. Refuses anything
@@ -107,6 +153,8 @@ pub async fn snapshot(
     };
     let best_ask_micro = parse_levels(&book.asks)?.into_iter().min();
     let best_bid_micro = parse_levels(&book.bids)?.into_iter().max();
+    let asks = book_levels(&book.asks, true)?;
+    let bids = book_levels(&book.bids, false)?;
 
     Ok(Snapshot {
         market,
@@ -116,13 +164,17 @@ pub async fn snapshot(
         min_size_micro,
         best_ask_micro,
         best_bid_micro,
+        asks,
+        bids,
     })
 }
 
 /// Resolve the limit price for this attempt. Marketable orders re-derive the
-/// limit from the live book under the user's bound; explicit limit orders pin it.
+/// limit from the live book under the user's bound: the worst level needed to
+/// fill `amount_micro`; explicit limit orders pin it.
 pub fn choose_limit(
     side: Side,
+    amount_micro: u64,
     marketable: bool,
     bound_micro: u64,
     pinned_limit_micro: u64,
@@ -147,8 +199,9 @@ pub fn choose_limit(
                     order::format_micro(bound_micro)
                 )));
             }
+            let price = fill_price(Side::Buy, amount_micro, &snap.asks, bound_micro).unwrap_or(ask);
             Ok(order::quantize_marketable_limit(
-                ask,
+                price,
                 snap.tick_micro,
                 Side::Buy,
             ))
@@ -164,7 +217,9 @@ pub fn choose_limit(
                     order::format_micro(bound_micro)
                 )));
             }
-            let limit = order::quantize_marketable_limit(bid, snap.tick_micro, Side::Sell);
+            let price =
+                fill_price(Side::Sell, amount_micro, &snap.bids, bound_micro).unwrap_or(bid);
+            let limit = order::quantize_marketable_limit(price, snap.tick_micro, Side::Sell);
             if limit < bound_micro {
                 return Err(PolymarketError::invalid(format!(
                     "best bid {} is above min price {}, but tick quantization gives {} below \
@@ -286,15 +341,17 @@ mod tests {
             min_size_micro: 5_000_000,
             best_ask_micro: best_ask,
             best_bid_micro: best_bid,
+            asks: vec![],
+            bids: vec![],
         }
     }
 
     #[test]
     fn choose_limit_marketable_buy_respects_bound_and_quantizes() {
         let s = snap(Some(695_000), Some(690_000));
-        assert!(choose_limit(Side::Buy, true, 690_000, 0, &s).is_err());
+        assert!(choose_limit(Side::Buy, 0, true, 690_000, 0, &s).is_err());
         assert_eq!(
-            choose_limit(Side::Buy, true, 700_000, 0, &s).unwrap(),
+            choose_limit(Side::Buy, 0, true, 700_000, 0, &s).unwrap(),
             690_000
         );
     }
@@ -302,18 +359,79 @@ mod tests {
     #[test]
     fn choose_limit_marketable_sell_refuses_below_min() {
         let s = snap(Some(695_000), Some(690_000));
-        assert!(choose_limit(Side::Sell, true, 700_000, 0, &s).is_err());
+        assert!(choose_limit(Side::Sell, 0, true, 700_000, 0, &s).is_err());
         assert_eq!(
-            choose_limit(Side::Sell, true, 680_000, 0, &s).unwrap(),
+            choose_limit(Side::Sell, 0, true, 680_000, 0, &s).unwrap(),
             690_000
         );
+    }
+
+    /// The recorded ceasefire Yes book: 8.99 shares at 0.68 cover only $6.11
+    /// of a $50 buy, so the order must reach 0.69, never past the bound.
+    #[test]
+    fn choose_limit_marketable_buy_reaches_the_level_that_fills_the_amount() {
+        let mut s = snap(Some(680_000), Some(660_000));
+        s.asks = vec![
+            (680_000, 8_990_000),
+            (690_000, 784_660_000),
+            (700_000, 1_300_910_000),
+        ];
+        assert_eq!(
+            choose_limit(Side::Buy, 50_000_000, true, 700_000, 0, &s).unwrap(),
+            690_000
+        );
+        assert_eq!(
+            choose_limit(Side::Buy, 5_000_000, true, 700_000, 0, &s).unwrap(),
+            680_000
+        );
+        // A book too thin for the amount stops at the bound.
+        assert_eq!(
+            choose_limit(Side::Buy, 2_000_000_000, true, 690_000, 0, &s).unwrap(),
+            690_000
+        );
+    }
+
+    #[test]
+    fn choose_limit_marketable_sell_reaches_the_level_that_fills_the_shares() {
+        let mut s = snap(Some(700_000), Some(690_000));
+        s.bids = vec![
+            (690_000, 3_000_000),
+            (680_000, 50_000_000),
+            (600_000, 50_000_000),
+        ];
+        assert_eq!(
+            choose_limit(Side::Sell, 20_000_000, true, 650_000, 0, &s).unwrap(),
+            680_000
+        );
+        assert_eq!(
+            choose_limit(Side::Sell, 200_000_000, true, 650_000, 0, &s).unwrap(),
+            680_000
+        );
+    }
+
+    #[test]
+    fn book_levels_sort_best_first() {
+        let level = |price: &str| crate::polymarket::types::BookLevel {
+            price: price.into(),
+            size: "1".into(),
+        };
+        let book = [level("0.85"), level("0.68"), level("0.7")];
+        let prices = |ask| {
+            book_levels(&book, ask)
+                .unwrap()
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(prices(true), [680_000, 700_000, 850_000]);
+        assert_eq!(prices(false), [850_000, 700_000, 680_000]);
     }
 
     #[test]
     fn choose_limit_pinned_quantizes_without_book() {
         let s = snap(None, None);
         assert_eq!(
-            choose_limit(Side::Buy, false, 0, 695_500, &s).unwrap(),
+            choose_limit(Side::Buy, 0, false, 0, 695_500, &s).unwrap(),
             690_000
         );
     }
