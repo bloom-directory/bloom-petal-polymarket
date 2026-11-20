@@ -222,9 +222,9 @@ pub fn choose_limit(
             let limit = order::quantize_marketable_limit(price, snap.tick_micro, Side::Sell);
             if limit < bound_micro {
                 return Err(PolymarketError::invalid(format!(
-                    "best bid {} is above min price {}, but tick quantization gives {} below \
+                    "the book reaches {} above min price {}, but tick quantization gives {} below \
                      your minimum — lower the min price or pin an explicit limit price",
-                    order::format_micro(bid),
+                    order::format_micro(price),
                     order::format_micro(bound_micro),
                     order::format_micro(limit)
                 )));
@@ -384,7 +384,7 @@ mod tests {
             choose_limit(Side::Buy, 5_000_000, true, 700_000, 0, &s).unwrap(),
             680_000
         );
-        // A book too thin for the amount stops at the bound.
+        // A book too thin for the amount takes every level within the bound.
         assert_eq!(
             choose_limit(Side::Buy, 2_000_000_000, true, 690_000, 0, &s).unwrap(),
             690_000
