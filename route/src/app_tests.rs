@@ -41,6 +41,8 @@ mod tests {
             min_size_micro: 5_000_000,
             best_ask_micro,
             best_bid_micro,
+            asks: vec![],
+            bids: vec![],
             active: true,
             closed: false,
             order_book_enabled: true,
@@ -399,7 +401,7 @@ mod tests {
     #[test]
     fn trade_quote_uses_live_best_ask_and_market_buy_rounding() {
         let snap = snapshot(Some(695_000), Some(690_000));
-        let limit = choose_trade_limit(Side::Buy, true, 700_000, 700_000, &snap).unwrap();
+        let limit = choose_trade_limit(Side::Buy, 0, true, 700_000, 700_000, &snap).unwrap();
         assert_eq!(limit, 690_000);
 
         let quote =
@@ -413,7 +415,7 @@ mod tests {
     #[test]
     fn trade_limit_rejects_sell_when_tick_rounding_breaks_min_price() {
         let snap = snapshot(Some(700_000), Some(695_000));
-        let err = choose_trade_limit(Side::Sell, true, 691_000, 691_000, &snap)
+        let err = choose_trade_limit(Side::Sell, 0, true, 691_000, 691_000, &snap)
             .expect_err("tick rounding should fall below min price");
         assert!(matches!(err, DispatchResponse::Error { code: -3, .. }));
     }

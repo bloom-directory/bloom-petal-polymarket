@@ -82,11 +82,17 @@ pub fn create_trade_draft(wallet: &str, body: &[u8]) -> DispatchResponse {
             _ => {}
         }
     }
-    let limit_micro =
-        match choose_trade_limit(side, marketable, bound_micro, pinned_limit_micro, &snapshot) {
-            Ok(limit) => limit,
-            Err(resp) => return resp,
-        };
+    let limit_micro = match choose_trade_limit(
+        side,
+        amount_micro,
+        marketable,
+        bound_micro,
+        pinned_limit_micro,
+        &snapshot,
+    ) {
+        Ok(limit) => limit,
+        Err(resp) => return resp,
+    };
     let quote = match build_trade_quote(side, amount_micro, limit_micro, &snapshot, order_type) {
         Ok(quote) => quote,
         Err(resp) => return resp,
