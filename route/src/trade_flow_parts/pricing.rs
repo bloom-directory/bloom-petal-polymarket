@@ -106,6 +106,10 @@ pub fn snapshot_from_book(
     };
     let best_ask_micro = best_price(&book.asks, true)?;
     let best_bid_micro = best_price(&book.bids, false)?;
+    let levels =
+        |levels, ask| shared_trade::book_levels(levels, ask).map_err(|e| error(-4, e.to_string()));
+    let asks = levels(&book.asks, true)?;
+    let bids = levels(&book.bids, false)?;
     let fee = MarketFee::from_market(&market);
     Ok(TradeSnapshot {
         market,
@@ -116,6 +120,8 @@ pub fn snapshot_from_book(
         min_size_micro,
         best_ask_micro,
         best_bid_micro,
+        asks,
+        bids,
         active: true,
         closed: false,
         order_book_enabled: true,
@@ -138,6 +144,7 @@ pub fn best_price(levels: &[BookLevel], ask: bool) -> Result<Option<u64>, Dispat
 
 pub fn choose_trade_limit(
     side: Side,
+    amount_micro: u64,
     marketable: bool,
     bound_micro: u64,
     pinned_limit_micro: u64,
@@ -145,6 +152,7 @@ pub fn choose_trade_limit(
 ) -> Result<u64, DispatchResponse> {
     shared_trade::choose_limit(
         side,
+        amount_micro,
         marketable,
         bound_micro,
         pinned_limit_micro,
