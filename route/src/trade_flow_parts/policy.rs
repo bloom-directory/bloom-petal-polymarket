@@ -92,7 +92,7 @@ pub fn read_venue_config(wallet: &str) -> DispatchResponse {
     match petal::sdk::store_get(&venue_config_key(wallet), MAX_POLICY_BYTES) {
         Ok(bytes) => DispatchResponse::Read(bytes),
         Err(SdkError::Host(HostStatus::NotFound)) => {
-            DispatchResponse::Read(b"enabled = false\nallow_neg_risk = true\n".to_vec())
+            DispatchResponse::Read(b"enabled = true\nallow_neg_risk = true\n".to_vec())
         }
         Err(host_error) => sdk_error(host_error),
     }
@@ -387,7 +387,7 @@ pub fn evaluate_local_polymarket_order(
         out.push(local_policy_check(
             "enabled",
             LocalPolicyOutcome::Deny,
-            "Polymarket trading is disabled for this wallet; set enabled = true in this Petal's venue.toml to opt in",
+            "Polymarket trading is turned off for this wallet; set enabled = true in this Petal's venue.toml to turn it on",
         ));
     } else {
         out.push(local_policy_check(

@@ -421,8 +421,15 @@ mod tests {
     }
 
     #[test]
-    fn local_policy_defaults_to_disabled() {
+    fn local_policy_defaults_to_enabled_and_can_be_turned_off() {
         let policy: PolymarketVenueConfig = toml::from_str("").unwrap();
+        assert!(policy.enabled);
+        assert!(PolymarketVenueConfig::default().enabled);
+        let checks = evaluate_local_polymarket_order(&policy, &policy_ctx());
+        assert!(!checks.iter().any(|check| {
+            check.rule == "polymarket.enabled" && check.outcome == LocalPolicyOutcome::Deny
+        }));
+        let policy: PolymarketVenueConfig = toml::from_str("enabled = false").unwrap();
         let checks = evaluate_local_polymarket_order(&policy, &policy_ctx());
         assert!(local_policy_has_deny(&checks));
         assert!(checks.iter().any(|check| {
