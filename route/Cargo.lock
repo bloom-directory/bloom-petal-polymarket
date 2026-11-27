@@ -84,6 +84,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
  "alloy-sol-types",
+ "derive_more",
  "itoa",
  "serde",
  "serde_json",
@@ -925,17 +926,23 @@ dependencies = [
 [[package]]
 name = "bloom-petal-contract"
 version = "0.1.0"
-source = "git+https://github.com/bloom-directory/petal?rev=4fefa736df67fa1ee51aeaa0c749d2f11414257d#4fefa736df67fa1ee51aeaa0c749d2f11414257d"
+source = "git+https://github.com/bloom-directory/petal?rev=66ac2b675aac7ea4f67ccf3b45c1d346b1f0ef37#66ac2b675aac7ea4f67ccf3b45c1d346b1f0ef37"
 dependencies = [
  "hex",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
+ "sha3",
 ]
 
 [[package]]
 name = "bloom-petal-sdk"
 version = "0.1.0"
-source = "git+https://github.com/bloom-directory/petal?rev=4fefa736df67fa1ee51aeaa0c749d2f11414257d#4fefa736df67fa1ee51aeaa0c749d2f11414257d"
+source = "git+https://github.com/bloom-directory/petal?rev=66ac2b675aac7ea4f67ccf3b45c1d346b1f0ef37#66ac2b675aac7ea4f67ccf3b45c1d346b1f0ef37"
 dependencies = [
+ "alloy-dyn-abi",
+ "alloy-primitives",
+ "bloom-petal-contract",
  "getrandom 0.2.17",
  "serde",
  "serde_jcs",
@@ -949,6 +956,7 @@ name = "bloom-polymarket-route"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-dyn-abi",
  "base64",
  "blake3",
  "bloom-petal-contract",

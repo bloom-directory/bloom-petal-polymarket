@@ -1,3 +1,5 @@
-petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
-    match petal::wallet_param(ctx) { Ok(wallet) => petal::read_store(&format!("actions/{wallet}/revoke-approvals/approval.json"), 1_048_576), Err(resp) => resp }
+petal::route_file!(spec: petal::store_read_spec().caps(&["bloom:store", "bloom:sign.status"]), read: |ctx: &petal::Ctx| {
+    let wallet = match petal::wallet_param(ctx) { Ok(w) => w, Err(r) => return r };
+    let scope = match crate::polymarket::relayer_batch::current_scope(&mut petal::signing::CtxHost(ctx), &format!("actions/{wallet}/revoke-approvals")) { Ok(Some(s)) => s, Ok(None) => return petal::error(-3, "no pending signing approval"), Err(r) => return r };
+    petal::signing::approval_read(ctx, wallet, &[&scope])
 });

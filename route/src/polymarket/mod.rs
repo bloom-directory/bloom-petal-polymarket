@@ -1,5 +1,4 @@
 pub mod builder_creds;
-pub mod claim;
 pub mod creds;
 pub mod eip712;
 pub mod fees;
@@ -7,6 +6,7 @@ pub mod order;
 pub mod order_model;
 #[cfg(test)]
 pub mod order_store;
+pub mod relayer_batch;
 pub mod signer;
 pub mod signing;
 pub mod trade;
